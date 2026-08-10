@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "express": "^5.2.1",
+    "protobufjs": "^8.7.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "ws": "^8.21.3"
+  }
+}

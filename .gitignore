@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Virtual Environments
+venv/
+.env
+.env.local
+.venv/
+
+# Environment variables (critical for secrets)
+.env
+
+# Logs
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Editor directories
+.history/
+.temporal/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Build artifacts
+build/
+dist/
+
+# Project-specific generated files
+selectors.json
