@@ -1,0 +1,15 @@
+{
+  "name": "security-core",
+  "version": "1.0.0",
+  "main": "index.js",
+  "napi": {
+    "name": "security-core"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  }
+}

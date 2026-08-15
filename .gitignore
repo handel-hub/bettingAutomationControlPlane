@@ -40,3 +40,30 @@ dist/
 
 # Project-specific generated files
 selectors.json
+
+
+# DB files
+*.db
+*.db-shm
+*.db-wal
+
+# Rust Build Artifacts
+target/
+target_custom/
+**/*.rs.bk
+
+# NAPI-RS / Native Node Addons
+*.node
+
+# SQLite (additional extensions)
+*.sqlite
+*.sqlite3
+
+# Test Coverage
+coverage/
+.nyc_output/
+
+# Backups and temporary copies
+*-clean/
+*-backup/
+*.bak

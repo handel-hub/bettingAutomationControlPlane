@@ -1,4 +1,7 @@
 {
+  "name": "control-plane-security-authority",
+  "version": "1.0.0",
+  "type": "module",
   "dependencies": {
     "busboy": "^1.6.0",
     "express": "^5.2.1",
@@ -6,5 +9,11 @@
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.8.6"
+  },
+  "allowScripts": {
+    "sqlite3@6.0.1": true
   }
 }
