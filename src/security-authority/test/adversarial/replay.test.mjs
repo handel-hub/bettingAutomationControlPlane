@@ -24,11 +24,11 @@ test('Replay Resistance Testing', async (t) => {
     const messageId = 'msg-auth-12345';
 
     // First delivery should succeed
-    const firstDelivery = replayGuard.checkAndRemember(messageId);
+    const firstDelivery = await replayGuard.checkAndRemember(messageId);
     assert.strictEqual(firstDelivery, true, 'First delivery of the message should be valid');
 
     // Second delivery of the EXACT SAME message should fail
-    const secondDelivery = replayGuard.checkAndRemember(messageId);
+    const secondDelivery = await replayGuard.checkAndRemember(messageId);
     assert.strictEqual(secondDelivery, false, 'Second delivery of the same message ID must be rejected as a replay');
   });
 
@@ -36,13 +36,13 @@ test('Replay Resistance Testing', async (t) => {
     let replayGuard = new ReplayGuard();
     const messageId = 'msg-auth-12345';
 
-    assert.strictEqual(replayGuard.checkAndRemember(messageId), true, 'First delivery');
-    assert.strictEqual(replayGuard.checkAndRemember(messageId), false, 'Already used in epoch 1');
+    assert.strictEqual(await replayGuard.checkAndRemember(messageId), true, 'First delivery');
+    assert.strictEqual(await replayGuard.checkAndRemember(messageId), false, 'Already used in epoch 1');
     
     // Changing the epoch simulates a new session/machine generation where nonces restart
     // In our architecture, a new generation means a new ReplayGuard instance is created
     replayGuard = new ReplayGuard();
-    const newEpochDelivery = replayGuard.checkAndRemember(messageId);
+    const newEpochDelivery = await replayGuard.checkAndRemember(messageId);
     assert.strictEqual(newEpochDelivery, true, 'Message ID should be valid again in a completely new epoch');
   });
 });

@@ -2,7 +2,6 @@
 
 import net from 'net';
 import crypto from 'crypto';
-import { ipcPeerVerification } from './peer-verification.mjs';
 import { NativeCore } from '../native/security-core.mjs';
 
 /**
@@ -10,8 +9,8 @@ import { NativeCore } from '../native/security-core.mjs';
  */
 export class SecurePipeManager {
   constructor() {
-    /** @type {Set<number>} */
-    this.activeChildPids = new Set();
+    /** @type {Set<string>} */
+    this.activeSessionKeys = new Set();
   }
 
   /**
@@ -30,19 +29,10 @@ export class SecurePipeManager {
         NativeCore.startSecurePipeServer(
           pipePath,
           (connId) => {
-            // Check PID natively
-            try {
-              if (!ipcPeerVerification.verifyPeerPid(connId, this.activeChildPids)) {
-                console.error(`[SecurePipeManager] Rejecting connection ${connId}: Unauthorized peer PID.`);
-                NativeCore.closePipe(connId);
-                return;
-              }
-              // Explicitly authorize the pipe to start reading data
-              NativeCore.authorizePipeRead(connId);
-            } catch (err) {
-              console.error("[SecurePipeManager] Failed to get PID", err);
-              NativeCore.closePipe(connId);
-            }
+            // Send the connId to the child process so it can compute HMAC
+            NativeCore.writePipe(connId, connId.toString());
+            // We wait for the client to send the HMAC in the onData handler
+            NativeCore.authorizePipeRead(connId);
           },
           (connId, data) => {
             // Process data...

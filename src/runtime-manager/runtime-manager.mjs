@@ -2,8 +2,8 @@
 
 import { executionAuthorization } from './execution-authorization.mjs';
 import { runtimeHeartbeat } from './heartbeat.mjs';
-import { spawnTokenManager } from '../security-authority/ipc/spawn-token.mjs';
 import { spawn } from 'child_process';
+import crypto from 'crypto';
 
 /**
  * Orchestrates the spawning, monitoring, and termination of 
@@ -23,13 +23,15 @@ export class RuntimeManager {
       throw new Error("Security Authority denied automation start");
     }
 
-    const token = spawnTokenManager.issueToken();
+    const sessionKey = crypto.randomBytes(32);
     
-    // Spawn the isolated runtime process, passing the one-time token
+    // Spawn the isolated runtime process, passing the session key via stdin
     const child = spawn('node', ['path/to/runtime/entry.mjs'], {
-      env: { ...process.env, SPAWN_TOKEN: token },
+      env: { ...process.env },
       stdio: ['pipe', 'pipe', 'pipe', 'ipc']
     });
+    
+    child.stdin.write(sessionKey);
 
     if (child.pid) {
       this.activeRuntimes.set(child.pid, child);

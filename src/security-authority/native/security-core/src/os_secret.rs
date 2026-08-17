@@ -67,7 +67,7 @@ fn protect_data(data: &[u8]) -> Result<Vec<u8>> {
         if result.is_ok() {
             let out_slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
             let vec = out_slice.to_vec();
-            windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
+            let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
             Ok(vec)
         } else {
             Err(Error::new(Status::GenericFailure, "DPAPI CryptProtectData failed".to_string()))
@@ -99,7 +99,7 @@ fn unprotect_data(data: &[u8]) -> Result<Vec<u8>> {
         if result.is_ok() {
             let out_slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
             let vec = out_slice.to_vec();
-            windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
+            let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
             Ok(vec)
         } else {
             Err(Error::new(Status::GenericFailure, "DPAPI CryptUnprotectData failed".to_string()))
@@ -261,7 +261,13 @@ pub fn get_machine_public_key() -> Result<String> {
 pub fn sign_machine_payload(payload: &[u8]) -> Result<String> {
     use ed25519_dalek::Signer;
     let signing_key = get_machine_private_key()?;
-    let signature = signing_key.sign(payload);
+    
+    // Domain separation
+    let mut prefixed_payload = Vec::with_capacity(16 + payload.len());
+    prefixed_payload.extend_from_slice(b"CONTROL_PLANE_V1");
+    prefixed_payload.extend_from_slice(payload);
+    
+    let signature = signing_key.sign(&prefixed_payload);
     Ok(hex::encode(signature.to_bytes()))
 }
 

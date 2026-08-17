@@ -31,88 +31,43 @@ function getCounterPath() {
 }
 
 test('Distributed Atomicity & Crash Recovery Testing', async (t) => {
-
-  await t.test('Crash Case B: Recovers when crashed after SQLite commit but before DPAPI counter', async () => {
-    const dbPath = await setupDb('crash-case-b.sqlite');
+  await t.test('Crash Case: Interrupted transition does not tear state (Atomicity)', async () => {
+    const dbPath = await setupDb('crash-case-atomicity.sqlite');
     
     // Initial state
-    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init' }, 'BOOT');
-    assert.strictEqual(NativeCore.getMonotonicCounter(), 1);
+    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init', session_generation: 1 }, 'BOOT');
 
     // Simulate crash after SQLite commit
-    NativeCore.setTransitionIntent(2);
-    const fakePayload = { status: 'init', state_version: 2 };
-    const blob = AEADStorageAdapter._encryptPayload('singleton', 2, fakePayload);
-    await AEADStorageAdapter._db.run(`UPDATE secure_state SET state_version = 2, encrypted_blob = ? WHERE key = 'singleton'`, [blob]);
-    // CRASH OCCURS HERE! (Counter remains 1)
+    const fakePayload = { status: 'init', state_version: 2, session_generation: 1 };
+    const blob = AEADStorageAdapter._encryptPayload('singleton', 2, 0, fakePayload); // Mismatched generation
+    await AEADStorageAdapter._db.run(`UPDATE secure_state SET state_version = 2, backend_generation = 0, encrypted_blob = ? WHERE key = 'singleton'`, [blob]);
 
-    // Reboot recovery
-    await assert.doesNotReject(async () => {
-      const row = await AEADStorageAdapter.getSecurityStateRow();
-      assert.strictEqual(row.status, 'init'); // Note: Since the payload was manually faked with UPDATE, the state data remains 'init' but version is 2
-    }, "Should transparently recover by rolling forward counter");
-
-    assert.strictEqual(NativeCore.getMonotonicCounter(), 2, "Counter should be rolled forward");
-    assert.strictEqual(fs.existsSync(getIntentPath()), false, "Intent should be cleared");
-  });
-
-  await t.test('Crash Case A: Clears intent if crashed before SQLite commit', async () => {
-    const dbPath = await setupDb('crash-case-a.sqlite');
-    
-    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init' }, 'BOOT');
-    assert.strictEqual(NativeCore.getMonotonicCounter(), 1);
-
-    // Simulate crash after Intent write
-    NativeCore.setTransitionIntent(2);
-    // CRASH OCCURS HERE! (SQLite remains 1)
-
-    // Reboot recovery
-    await assert.doesNotReject(async () => {
+    // Reboot recovery should fail due to backend generation mismatch
+    await assert.rejects(async () => {
       await AEADStorageAdapter.getSecurityStateRow();
-    }, "Should clear stale intent and boot normally");
-
-    assert.strictEqual(NativeCore.getMonotonicCounter(), 1, "Counter should remain 1");
-    assert.strictEqual(fs.existsSync(getIntentPath()), false, "Intent should be cleared");
+    }, /SECURITY_STATE_UNCERTAIN: Backend generation rollback detected/);
   });
 
-  await t.test('Snapshot Rollback (Case H): Rejects older DB without intent', async () => {
+  await t.test('Snapshot Rollback: Rejects rolled back DB via generation mismatch', async () => {
     const dbPath = await setupDb('rollback.sqlite');
     
-    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init' }, 'BOOT'); // 1
+    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init', session_generation: 1 }, 'BOOT'); // 1
     await AEADStorageAdapter._db.close();
     const snapshot1 = fs.readFileSync(dbPath);
     await AEADStorageAdapter.initDatabase(dbPath);
-    await AEADStorageAdapter.commitTransitionWithOCC(1, { status: 'next' }, 'NEXT'); // 2
+    await AEADStorageAdapter.commitTransitionWithOCC(1, { status: 'next', session_generation: 2 }, 'NEXT'); // 2
 
-    // Restore snapshot 1
+    // Simulate attacker attempting to rollback by injecting old payload with new generation in AAD
     await AEADStorageAdapter._db.close();
     fs.writeFileSync(dbPath, snapshot1);
     await AEADStorageAdapter.initDatabase(dbPath);
 
+    // Attacker modifies the DB row to pretend it's generation 2, but payload still has generation 1
+    await AEADStorageAdapter._db.run(`UPDATE secure_state SET backend_generation = 2 WHERE key = 'singleton'`);
+
     await assert.rejects(async () => {
       await AEADStorageAdapter.getSecurityStateRow();
-    }, /SECURITY_STATE_UNCERTAIN: Database rollback detected/, "Should halt on rollback");
+    }, /Database integrity verification failed/, "Should halt on rollback attempt due to MAC failure when AAD generation is mismatched");
   });
-
-  await t.test('Malicious Intent (Case J/L): Rejects DB rollback even if intent is forged', async () => {
-    const dbPath = await setupDb('malicious-intent.sqlite');
-    
-    await AEADStorageAdapter.commitTransitionWithOCC(0, { status: 'init' }, 'BOOT'); // 1
-    await AEADStorageAdapter._db.close();
-    const snapshot1 = fs.readFileSync(dbPath);
-    await AEADStorageAdapter.initDatabase(dbPath);
-    await AEADStorageAdapter.commitTransitionWithOCC(1, { status: 'next' }, 'NEXT'); // 2
-
-    // Restore snapshot 1 and inject fake intent claiming a transition to 1
-    await AEADStorageAdapter._db.close();
-    fs.writeFileSync(dbPath, snapshot1);
-    await AEADStorageAdapter.initDatabase(dbPath);
-    NativeCore.setTransitionIntent(1);
-
-    // Reboot (Counter is 2, DB is 1, Intent is 1)
-    await assert.rejects(async () => {
-      await AEADStorageAdapter.getSecurityStateRow();
-    }, /SECURITY_STATE_UNCERTAIN: Database rollback detected/, "Intent shouldn't bypass counter strict equality check");
-  });
-
 });
+

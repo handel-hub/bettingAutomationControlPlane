@@ -13,10 +13,6 @@ export const AEADStorageAdapter = {
   /** @type {import('sqlite').Database | null} */
   _db: null,
 
-  /**
-   * Initializes SQLite and creates the encrypted blob table.
-   * @param {string} dbPath 
-   */
   async initDatabase(dbPath) {
     if (!dbPath) throw new Error("Database path required");
     
@@ -32,6 +28,7 @@ export const AEADStorageAdapter = {
       CREATE TABLE IF NOT EXISTS secure_state (
         key TEXT PRIMARY KEY,
         state_version INTEGER NOT NULL,
+        backend_generation INTEGER NOT NULL DEFAULT 0,
         encrypted_blob BLOB NOT NULL
       );
       
@@ -41,20 +38,32 @@ export const AEADStorageAdapter = {
         event_type TEXT NOT NULL,
         encrypted_blob BLOB NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS seen_nonces (
+        nonce TEXT PRIMARY KEY,
+        seen_at INTEGER NOT NULL
+      );
     `);
+    
+    try {
+      await this._db.exec(`ALTER TABLE secure_state ADD COLUMN backend_generation INTEGER NOT NULL DEFAULT 0;`);
+    } catch (e) {
+      // Column might already exist
+    }
   },
 
   /**
    * Serializes state object to JSON, encrypts it, and returns the blob.
-   * AAD binds the key ('singleton') and the state_version.
+   * AAD binds the key ('singleton'), the state_version, and the backend_generation.
    * @param {string} key 
    * @param {number} stateVersion 
+   * @param {number} backendGeneration
    * @param {object} payload 
    * @returns {Buffer}
    */
-  _encryptPayload(key, stateVersion, payload) {
+  _encryptPayload(key, stateVersion, backendGeneration, payload) {
     const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
-    const aad = Buffer.from(`${key}:${stateVersion}`, 'utf8');
+    const aad = Buffer.from(`${key}:${stateVersion}:${backendGeneration}`, 'utf8');
     return NativeCore.encryptAead(plaintext, aad);
   },
 
@@ -62,11 +71,12 @@ export const AEADStorageAdapter = {
    * Decrypts the blob using AES-256-GCM and verifies AAD.
    * @param {string} key 
    * @param {number} stateVersion 
+   * @param {number} backendGeneration
    * @param {Buffer} encryptedBlob 
    * @returns {object}
    */
-  _decryptPayload(key, stateVersion, encryptedBlob) {
-    const aad = Buffer.from(`${key}:${stateVersion}`, 'utf8');
+  _decryptPayload(key, stateVersion, backendGeneration, encryptedBlob) {
+    const aad = Buffer.from(`${key}:${stateVersion}:${backendGeneration}`, 'utf8');
     const plaintext = NativeCore.decryptAead(encryptedBlob, aad);
     return JSON.parse(plaintext.toString('utf8'));
   },
@@ -79,7 +89,7 @@ export const AEADStorageAdapter = {
     if (!this._db) throw new Error("Database not initialized");
 
     const row = await this._db.get(
-      'SELECT state_version, encrypted_blob FROM secure_state WHERE key = ?',
+      'SELECT state_version, backend_generation, encrypted_blob FROM secure_state WHERE key = ?',
       ['singleton']
     );
 
@@ -87,28 +97,21 @@ export const AEADStorageAdapter = {
 
     let data;
     try {
-      data = this._decryptPayload('singleton', row.state_version, row.encrypted_blob);
+      data = this._decryptPayload('singleton', row.state_version, row.backend_generation, row.encrypted_blob);
     } catch (err) {
       // MAC failed! Cryptographically invalid or tampered row.
       console.error("[AEADStorageAdapter] CRITICAL: Decryption/MAC verification failed for security state!");
       throw new Error("SECURITY_STATE_UNCERTAIN: Database integrity verification failed.");
     }
 
-    let monotonicCounter = NativeCore.getMonotonicCounter();
-    const intent = NativeCore.getTransitionIntent();
+    // The Backend-Anchored Generation Protocol handles rollback detection now.
+    // DPAPI monotonic counters and intents are removed.
 
-    if (intent !== -1) {
-      if (row.state_version === intent && intent === monotonicCounter + 1) {
-        console.warn(`[AEADStorageAdapter] Recovering interrupted transition to state ${intent}`);
-        NativeCore.incrementMonotonicCounter();
-        monotonicCounter = NativeCore.getMonotonicCounter();
-      }
-      NativeCore.clearTransitionIntent();
-    }
-
-    if (row.state_version !== monotonicCounter) {
-      console.error(`[AEADStorageAdapter] CRITICAL: Snapshot rollback or desync detected! DB Version: ${row.state_version}, Monotonic Counter: ${monotonicCounter}`);
-      throw new Error("SECURITY_STATE_UNCERTAIN: Database rollback detected.");
+    
+    // Validate backend-anchored generation for rollback detection
+    if (data.session_generation && row.backend_generation !== data.session_generation) {
+       console.error(`[AEADStorageAdapter] CRITICAL: Backend generation mismatch! Row: ${row.backend_generation}, Payload: ${data.session_generation}`);
+       throw new Error("SECURITY_STATE_UNCERTAIN: Backend generation rollback detected.");
     }
 
     return data;
@@ -125,6 +128,7 @@ export const AEADStorageAdapter = {
     if (!this._db) throw new Error("Database not initialized");
     
     const nextVersion = expectedStateVersion + 1;
+    const backendGen = nextStateData.session_generation || 0;
     
     // Augment with metadata
     const payloadToEncrypt = {
@@ -134,39 +138,29 @@ export const AEADStorageAdapter = {
       last_transition_at: new Date().toISOString()
     };
 
-    const encryptedBlob = this._encryptPayload('singleton', nextVersion, payloadToEncrypt);
-
-    // Two-Phase Commit sequence
-    NativeCore.setTransitionIntent(nextVersion);
+    const encryptedBlob = this._encryptPayload('singleton', nextVersion, backendGen, payloadToEncrypt);
 
     const result = await this._db.run(
       `UPDATE secure_state 
-       SET state_version = ?, encrypted_blob = ? 
+       SET state_version = ?, backend_generation = ?, encrypted_blob = ? 
        WHERE key = 'singleton' AND state_version = ?`,
-      [nextVersion, encryptedBlob, expectedStateVersion]
+      [nextVersion, backendGen, encryptedBlob, expectedStateVersion]
     );
 
     if (result.changes === 0) {
       // If the row doesn't exist at all, we INSERT it (only happens at initialization)
       if (expectedStateVersion === 0) {
         const insertResult = await this._db.run(
-          `INSERT OR IGNORE INTO secure_state (key, state_version, encrypted_blob) 
-           VALUES ('singleton', ?, ?)`,
-          [nextVersion, encryptedBlob]
+          `INSERT OR IGNORE INTO secure_state (key, state_version, backend_generation, encrypted_blob) 
+           VALUES ('singleton', ?, ?, ?)`,
+          [nextVersion, backendGen, encryptedBlob]
         );
         if (insertResult.changes > 0) {
-          NativeCore.incrementMonotonicCounter();
-          NativeCore.clearTransitionIntent();
           return true;
         }
       }
-      NativeCore.clearTransitionIntent();
       return false; // OCC conflict
     }
-
-    // ENFORCE MONOTONIC COUNTER (INVARIANT 17 - SNAPSHOT ROLLBACK)
-    NativeCore.incrementMonotonicCounter();
-    NativeCore.clearTransitionIntent();
 
     return true;
   },
@@ -181,11 +175,36 @@ export const AEADStorageAdapter = {
 
     // Use timestamp as part of AAD
     const ts = Date.now();
-    const encryptedBlob = this._encryptPayload('audit', ts, eventRow);
+    // Audit logs don't use backend_generation, pass 0
+    const encryptedBlob = this._encryptPayload('audit', ts, 0, eventRow);
 
     await this._db.run(
       `INSERT INTO security_audit_log (timestamp, event_type, encrypted_blob) VALUES (?, ?, ?)`,
       [ts, eventRow.event_type || 'UNKNOWN', encryptedBlob]
+    );
+  },
+
+  /**
+   * Loads all previously seen nonces.
+   * @returns {Promise<string[]>}
+   */
+  async loadSeenNonces() {
+    if (!this._db) return [];
+    const rows = await this._db.all(`SELECT nonce FROM seen_nonces`);
+    return rows.map(r => r.nonce);
+  },
+
+  /**
+   * Saves a newly seen nonce.
+   * @param {string} nonce
+   * @param {number} seenAt
+   * @returns {Promise<void>}
+   */
+  async saveNonce(nonce, seenAt = Date.now()) {
+    if (!this._db) return;
+    await this._db.run(
+      `INSERT OR IGNORE INTO seen_nonces (nonce, seen_at) VALUES (?, ?)`,
+      [nonce, seenAt]
     );
   }
 };

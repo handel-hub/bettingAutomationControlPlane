@@ -93,8 +93,8 @@ pub fn close_pipe(conn_id: u32) -> Result<()> {
 }
 
 #[napi]
-pub fn get_pid_for_conn(conn_id: u32) -> Result<u32> {
-    os_pipe::get_pid_for_conn(conn_id)
+pub fn authorize_hmac(conn_id: u32, hmac: Buffer, session_key: Buffer) -> Result<bool> {
+    os_pipe::authorize_hmac(conn_id, hmac, session_key)
 }
 
 #[napi]

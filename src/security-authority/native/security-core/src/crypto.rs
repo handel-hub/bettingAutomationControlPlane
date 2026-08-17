@@ -170,7 +170,13 @@ pub fn sign_ed25519(private_key_hex: String, message: &[u8]) -> Result<String> {
     arr.copy_from_slice(&key_bytes);
     
     let signing_key = SigningKey::from_bytes(&arr);
-    let signature = signing_key.sign(message);
+    
+    // Domain separation
+    let mut prefixed_message = Vec::with_capacity(16 + message.len());
+    prefixed_message.extend_from_slice(b"CONTROL_PLANE_V1");
+    prefixed_message.extend_from_slice(message);
+    
+    let signature = signing_key.sign(&prefixed_message);
     
     Ok(hex::encode(signature.to_bytes()))
 }

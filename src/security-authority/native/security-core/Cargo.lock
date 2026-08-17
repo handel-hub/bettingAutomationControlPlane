@@ -558,6 +558,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "lazy_static",
  "napi",
  "napi-build",

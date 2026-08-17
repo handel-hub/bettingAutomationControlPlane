@@ -13,7 +13,7 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe,
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
@@ -257,8 +257,12 @@ pub fn close_pipe(conn_id: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn get_pid_for_conn(conn_id: u32) -> Result<u32> {
-    let handle = {
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use napi::bindgen_prelude::Buffer;
+
+pub fn authorize_hmac(conn_id: u32, hmac: Buffer, session_key: Buffer) -> Result<bool> {
+    let _handle = {
         let conns = CONNECTIONS.lock().unwrap();
         if let Some(c) = conns.get(&conn_id) {
             c.handle
@@ -270,16 +274,18 @@ pub fn get_pid_for_conn(conn_id: u32) -> Result<u32> {
         }
     };
 
-    let mut client_pid: u32 = 0;
-    unsafe {
-        let result = GetNamedPipeClientProcessId(handle, &mut client_pid);
-        if result.is_ok() {
-            Ok(client_pid)
-        } else {
-            Err(Error::new(
-                Status::GenericFailure,
-                "GetNamedPipeClientProcessId failed".to_string(),
-            ))
-        }
+    let mut mac = Hmac::<Sha256>::new_from_slice(&session_key).map_err(|_| {
+        Error::new(Status::GenericFailure, "HMAC init failed".to_string())
+    })?;
+
+    let mut msg = b"IPC_AUTH".to_vec();
+    msg.extend_from_slice(conn_id.to_string().as_bytes());
+    
+    mac.update(&msg);
+    if mac.verify_slice(&hmac).is_ok() {
+        Ok(true)
+    } else {
+        let _ = close_pipe(conn_id);
+        Ok(false)
     }
 }

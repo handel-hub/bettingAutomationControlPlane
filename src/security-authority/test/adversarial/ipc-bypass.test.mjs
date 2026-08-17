@@ -22,24 +22,27 @@ import { spawn } from 'child_process';
 import { securePipeManager } from '../../ipc/secure-pipe.mjs';
 
 test('IPC Bypass Testing', async (t) => {
-  await t.test('SecurePipeManager rejects connections from unauthorized PIDs', async () => {
+  await t.test('SecurePipeManager rejects connections without valid HMAC handshake', async () => {
     // 1. Create secure pipe server
     const { pipePath, server } = await securePipeManager.createSecurePipeServer();
 
     // 2. Spawn an unauthorized child process that tries to connect to the pipe
+    // It will receive the connId from the server but will fail to send a valid HMAC
     const script = `
       const net = require('net');
       const socket = net.connect('${pipePath.replace(/\\/g, '\\\\')}');
       socket.on('error', (err) => { process.exit(1); });
       socket.on('close', () => { process.exit(2); });
-      socket.write('hello');
+      
+      socket.once('data', (connIdBuf) => {
+        socket.write('invalid_hmac_data_that_is_32_bytes_long_or_more');
+        socket.end();
+      });
+      setTimeout(() => process.exit(1), 500);
     `;
 
     const child = spawn(process.execPath, ['-e', script]);
     
-    // Do NOT register the child PID in securePipeManager
-    // securePipeManager.registerChildPid(child.pid);
-
     const exitCode = await new Promise((resolve) => {
       child.on('exit', (code) => resolve(code));
     });

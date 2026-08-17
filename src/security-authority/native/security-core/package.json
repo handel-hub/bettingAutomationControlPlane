@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "napi": {
-    "name": "security-core"
+    "binaryName": "security-core"
   },
   "scripts": {
     "build": "napi build --platform --release",

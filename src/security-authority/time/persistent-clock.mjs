@@ -27,13 +27,13 @@ export class PersistentClock {
     }
 
     const row = await this.storage._db.get(
-      'SELECT state_version, encrypted_blob FROM secure_state WHERE key = ?',
+      'SELECT state_version, backend_generation, encrypted_blob FROM secure_state WHERE key = ?',
       ['time_anchor']
     );
 
     if (row) {
       try {
-        const data = this.storage._decryptPayload('time_anchor', row.state_version, row.encrypted_blob);
+        const data = this.storage._decryptPayload('time_anchor', row.state_version, row.backend_generation, row.encrypted_blob);
         this.lastKnownTime = data.last_known_time || 0;
 
         // Rollback detection
@@ -78,18 +78,18 @@ export class PersistentClock {
       
       const nextVersion = Date.now(); // We can just use timestamp as version for time_anchor
       const payload = { last_known_time: this.lastKnownTime };
-      const encryptedBlob = this.storage._encryptPayload('time_anchor', nextVersion, payload);
+      const encryptedBlob = this.storage._encryptPayload('time_anchor', nextVersion, 0, payload);
       
       const exists = await this.storage._db.get('SELECT 1 FROM secure_state WHERE key = ?', ['time_anchor']);
       if (exists) {
         await this.storage._db.run(
-          'UPDATE secure_state SET state_version = ?, encrypted_blob = ? WHERE key = ?',
+          'UPDATE secure_state SET state_version = ?, backend_generation = 0, encrypted_blob = ? WHERE key = ?',
           [nextVersion, encryptedBlob, 'time_anchor']
         );
       } else {
         await this.storage._db.run(
-          'INSERT INTO secure_state (key, state_version, encrypted_blob) VALUES (?, ?, ?)',
-          ['time_anchor', nextVersion, encryptedBlob]
+          'INSERT INTO secure_state (key, state_version, backend_generation, encrypted_blob) VALUES (?, ?, ?, ?)',
+          ['time_anchor', nextVersion, 0, encryptedBlob]
         );
       }
 
