@@ -67,3 +67,7 @@ coverage/
 *-clean/
 *-backup/
 *.bak
+*-databases/
+
+# security-authority
+src/security-authority/test/databases

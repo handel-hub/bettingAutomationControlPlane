@@ -58,46 +58,58 @@ It is not part of the Execution Plane.
 The service is explicitly decomposed into specialized subsystems to ensure a durable, resumable, and integrity-preserving architecture.
 
 ### FileTransferService (Facade)
+
 - **Responsibility:** Orchestrates high-level API operations by delegating to specific managers.
 - **Inputs:** Client requests (create, upload, download, cancel).
 - **Outputs:** Operation results, Domain Events.
 - **Dependencies:** All subsystems below.
 
 ### TransferManager
+
 - **Responsibility:** Coordinates the end-to-end lifecycle of a single transfer.
 - **Owned State:** In-memory coordination of active transfers.
 - **Dependencies:** `TransferStateManager`, `UploadManager`, `DownloadManager`, `StorageManager`.
 
 ### UploadManager & DownloadManager
+
 - **Responsibility:** Executes stream processing for data moving to/from the Backend.
 - **Dependencies:** `ChunkManager`, `IntegrityManager`, `BackendTransferClient`.
 
 ### TransferStateManager
+
 - **Responsibility:** Sole authority for reading and mutating persistent transfer state (SQLite).
 - **MUST NOT KNOW ABOUT:** Filesystem paths, network protocols.
 
 ### ChunkManager
+
 - **Responsibility:** Slices streams into deterministic chunks and tracks their individual states and offsets.
 
 ### IntegrityManager
+
 - **Responsibility:** Calculates and verifies SHA-256 hashes.
 
 ### RetryManager & ReconciliationManager
+
 - **Responsibility:** Determines when to retry versus when to query the Backend for ambiguous states.
 
 ### StorageManager & CacheManager
+
 - **Responsibility:** Manages all local filesystem paths, capacity accounting, and artifact retention policies. The Frontend MUST NOT control paths.
 
 ### GarbageCollector
+
 - **Responsibility:** Background sweeper for orphaned files and stale SQLite records.
 
 ### FailureClassifier
+
 - **Responsibility:** Categorizes errors (e.g., HTTP 5xx vs Disk Full) into actionable classes (RETRY, RECONCILE, FAIL, PAUSE).
 
 ### BackendTransferClient
+
 - **Responsibility:** Encapsulates raw HTTP/WebSocket transport to the Backend.
 
 ### TransferEventBus
+
 - **Responsibility:** Emits domain events to decouple the service from presentation gateways.
 
 ```text
@@ -278,6 +290,7 @@ That belongs to the appropriate authorization/licensing subsystem.
 The upload pipeline ensures the complete file never resides in RAM simultaneously. It relies strictly on streaming and bounded buffers.
 
 **Lifecycle:**
+
 1.  **Frontend** initiates request.
 2.  **Control Plane** validates request and creates transfer via `TransferStateManager`.
 3.  `StorageManager` reserves local capacity.
@@ -296,6 +309,7 @@ The upload pipeline ensures the complete file never resides in RAM simultaneousl
 The mirrored download pipeline enforces integrity before availability.
 
 **Lifecycle:**
+
 1.  **Backend** notifies Control Plane of a pending download.
 2.  `BackendTransferClient` requests data.
 3.  Data is streamed directly to a `StorageManager` Temporary File path.
@@ -304,9 +318,10 @@ The mirrored download pipeline enforces integrity before availability.
 6.  **Frontend** is permitted to access the verified artifact.
 
 **Failure Handling:**
-*   If interrupted, the temporary file is retained for resumability.
-*   If the hash mismatches, the corrupted file is deleted, and the process restarts or fails.
-*   If a verified cached artifact already exists, the download is safely skipped.
+
+- If interrupted, the temporary file is retained for resumability.
+- If the hash mismatches, the corrupted file is deleted, and the process restarts or fails.
+- If a verified cached artifact already exists, the download is safely skipped.
 
 ---
 
@@ -467,19 +482,22 @@ The transition should be atomic where the filesystem permits it.
 Transfer state must survive process termination, crashes, and machine restarts. The authoritative state lives in SQLite.
 
 **Persistent State Entities:**
-* `transfers`
-* `transfer_chunks`
-* `transfer_artifacts`
-* `transfer_attempts`
+
+- `transfers`
+- `transfer_chunks`
+- `transfer_artifacts`
+- `transfer_attempts`
 
 **Relationships and Invariants:**
-* A transfer cannot be marked complete unless all constituent chunks are acknowledged.
-* A chunk cannot exist without a parent transfer.
+
+- A transfer cannot be marked complete unless all constituent chunks are acknowledged.
+- A chunk cannot exist without a parent transfer.
 
 **Recovery Requirements:**
-* At startup, the Control Plane scans the database for non-terminal states and triggers reconciliation/resumption.
 
-*Note: The physical schema and indexes are left to the implementation, provided they support these transactional invariants. SQLite stores metadata and transfer state, not file contents.*
+- At startup, the Control Plane scans the database for non-terminal states and triggers reconciliation/resumption.
+
+_Note: The physical schema and indexes are left to the implementation, provided they support these transactional invariants. SQLite stores metadata and transfer state, not file contents._
 
 This separation prevents SQLite from becoming a large binary object store.
 
@@ -808,10 +826,11 @@ The transfer protocol should be designed around **idempotent operations** wherev
 The `RetryManager` handles errors classified as `Retryable`. Blind infinite retries are strictly forbidden.
 
 **Retry Mechanics:**
-*   **Exponential Backoff + Jitter:** Prevents thundering herds (e.g., `delay = base * 2^attempt + random_jitter`).
-*   **Maximum Attempts:** Transfers enforce a hard limit (e.g., 5 attempts) before permanently failing.
-*   **Maximum Retry Duration:** Prevents zombie transfers that retry for days.
-*   **Cancellation Awareness:** Active retries must be immediately aborted if the user triggers a `CancelTransfer` operation.
+
+- **Exponential Backoff + Jitter:** Prevents thundering herds (e.g., `delay = base * 2^attempt + random_jitter`).
+- **Maximum Attempts:** Transfers enforce a hard limit (e.g., 5 attempts) before permanently failing.
+- **Maximum Retry Duration:** Prevents zombie transfers that retry for days.
+- **Cancellation Awareness:** Active retries must be immediately aborted if the user triggers a `CancelTransfer` operation.
 
 The retry policy interacts safely with chunk idempotency, ensuring duplicate transmissions do not corrupt the file.
 
@@ -821,9 +840,9 @@ The retry policy interacts safely with chunk idempotency, ensuring duplicate tra
 
 The architecture must remain stable on machines with limited CPU, RAM, disk I/O, and network bandwidth. Concurrency limits are treated as **configurable global and per-transfer governance limits**.
 
-*   **Global Limits:** Maximum active transfers across the entire Control Plane.
-*   **Per-Transfer Limits:** Maximum concurrent chunks uploading simultaneously (e.g., configurable default of 4).
-*   **Resource Limits:** Maximum concurrent cryptographic hashing operations.
+- **Global Limits:** Maximum active transfers across the entire Control Plane.
+- **Per-Transfer Limits:** Maximum concurrent chunks uploading simultaneously (e.g., configurable default of 4).
+- **Resource Limits:** Maximum concurrent cryptographic hashing operations.
 
 This bounded model prevents the system from creating hundreds of simultaneous network connections merely because a file contains hundreds of chunks.
 
@@ -834,8 +853,9 @@ This bounded model prevents the system from creating hundreds of simultaneous ne
 Streaming is a mandatory architectural property. The complete file MUST NEVER reside in RAM simultaneously.
 
 **Backpressure Rules:**
-*   If the Backend is slower than the local disk (Upload), the local read stream pauses to prevent buffer bloat.
-*   If the local disk is slower than the network (Download), the TCP window shrinks automatically via Node stream backpressure.
+
+- If the Backend is slower than the local disk (Upload), the local read stream pauses to prevent buffer bloat.
+- If the local disk is slower than the network (Download), the TCP window shrinks automatically via Node stream backpressure.
 
 **Maximum Buffer Size:**
 The maximum buffer memory used by a transfer is strictly bounded by:
@@ -1048,6 +1068,7 @@ Only after successful verification should a downloaded file be promoted from tem
 The File Transfer Service handles untrusted input from the Frontend.
 
 The service must strictly validate all input:
+
 - MIME type
 - declared file size versus actual streamed bytes
 - declared hashes versus calculated hashes
@@ -1055,6 +1076,7 @@ The service must strictly validate all input:
 - transfer IDs
 
 The service must actively prevent:
+
 - **Path Traversal:** The client must NEVER specify filesystem paths. The Control Plane generates all paths.
 - **Arbitrary Filesystem Writes:** Temporary paths strictly isolate pending uploads.
 - **Oversized Transfers:** Streams are aborted if bytes exceed the declared/allowed size.
@@ -1138,9 +1160,9 @@ EXPIRED
 DELETED
 ```
 
-*   An artifact MUST NOT be deleted while it is actively required by a transfer.
-*   Failed, cancelled, or expired transfers have aggressive cleanup policies to reclaim space.
-*   Completed uploads/downloads are retained based on configurable LRU or time-to-live policies.
+- An artifact MUST NOT be deleted while it is actively required by a transfer.
+- Failed, cancelled, or expired transfers have aggressive cleanup policies to reclaim space.
+- Completed uploads/downloads are retained based on configurable LRU or time-to-live policies.
 
 ---
 
@@ -1149,6 +1171,7 @@ DELETED
 The background Garbage Collector acts as a defensive sweeper. It must be strictly conservative to prevent deleting files associated with active transfers.
 
 It detects and cleans up:
+
 - orphaned temporary files (files without SQLite records)
 - orphaned chunk directories
 - abandoned partial downloads
@@ -1192,6 +1215,7 @@ The exact API should be established after the state machine is finalized.
 The File Transfer Service must not depend directly on the Frontend WebSocket implementation. It emits domain events through a `TransferEventBus` to decouple transfer logic from presentation logic.
 
 These events include:
+
 - `TransferCreated`
 - `TransferStarted`
 - `ChunkUploadStarted`
@@ -1216,6 +1240,7 @@ Other Control Plane components (e.g., WebSocket Gateway, Telemetry) subscribe to
 The Backend communication is encapsulated behind a dedicated `BackendTransferClient`. The core File Transfer Service logic must not contain raw HTTP or WebSocket protocol details.
 
 **Abstracted Interface:**
+
 - `createTransfer()`
 - `getTransferStatus()`
 - `uploadChunk()`
@@ -1322,6 +1347,7 @@ This keeps licensing separate from file transfer.
 Every transfer utilizes a stable `transferId`. Telemetry and logging are critical for observability but must never leak sensitive file contents or secrets.
 
 **Tracked Metrics:**
+
 - Transfer duration
 - Upload and download throughput
 - Chunk latency
@@ -1341,6 +1367,7 @@ Logs should include sufficient context (`transferId`, `sessionId`, `operation`, 
 The service explicitly classifies failures into distinct categories that dictate specific system actions.
 
 ### 43.1 Retryable (Action: RETRY)
+
 - connection timeout
 - connection reset
 - DNS temporary failure
@@ -1348,11 +1375,13 @@ The service explicitly classifies failures into distinct categories that dictate
 - temporary Backend unavailability
 
 ### 43.2 Reconciliation-required (Action: RECONCILE)
+
 - request timeout after transmission
 - connection lost before acknowledgement
 - unknown Backend state
 
 ### 43.3 Non-retryable (Action: FAIL)
+
 - 401 unauthorized or 403 forbidden
 - unsupported file type
 - invalid request or chunk
@@ -1360,6 +1389,7 @@ The service explicitly classifies failures into distinct categories that dictate
 - malformed protocol message
 
 ### 43.4 Local resource failures (Action: PAUSE or FAIL)
+
 - disk full (PAUSE)
 - permission denied (FAIL)
 - filesystem corruption (FAIL)
@@ -1931,3 +1961,327 @@ The Backend should not need to trust that the Frontend successfully uploaded som
 The Control Plane bridges the two using a **durable, resumable, integrity-verified transfer protocol**.
 
 The service should therefore be treated as a standalone subsystem inside the Control Plane with explicit contracts, persistent state, deterministic recovery, and well-defined failure semantics—not as a collection of Express upload routes.
+
+Add this section to the File Transfer Service specification:
+
+---
+
+## File Transfer Service I/O Boundary and Transport Independence
+
+The File Transfer Service (FTS) is a **durable asynchronous data-transfer infrastructure subsystem**. It must remain independent of the Control Plane's application routes, authentication logic, frontend response handling, and backend network implementation.
+
+The FTS owns the lifecycle of a file transfer after ingestion has been handed to it. The Runtime owns authentication, authorization, HTTP response semantics, and frontend notification.
+
+### 1. Input Boundary — HTTP Request Ingestion
+
+The Runtime authenticates and authorizes the incoming request before passing the raw HTTP request object to the FTS:
+
+```javascript
+const result = await fts.consumeHttpRequest(req);
+```
+
+`consumeHttpRequest(req)` is the FTS's HTTP ingestion boundary.
+
+The FTS is responsible for:
+
+1. Consuming the request body as a stream.
+2. Applying backpressure.
+3. Enforcing transfer and request-size limits.
+4. Validating the incoming transfer metadata.
+5. Writing the incoming data to FTS-managed temporary/local storage.
+6. Computing the required integrity hashes while ingesting the stream.
+7. Persisting transfer metadata in the FTS SQLite database.
+8. Atomically finalizing the local file once ingestion succeeds.
+9. Registering the transfer for asynchronous backend synchronization.
+
+The FTS must **not** perform authentication or authorization of the user. Those responsibilities belong to the Runtime/Security Authority.
+
+### 2. Durable Ingestion Guarantee
+
+Successful completion of:
+
+```javascript
+await fts.consumeHttpRequest(req);
+```
+
+means that the FTS has durably accepted the transfer into its local transfer system.
+
+The original HTTP request must no longer be required for the transfer to continue.
+
+Once local durability has been established, the Runtime may immediately return:
+
+```http
+HTTP/1.1 202 Accepted
+```
+
+to the Frontend.
+
+The Frontend therefore does **not** wait for remote Backend synchronization.
+
+The conceptual boundary is:
+
+```text
+Frontend
+   │
+   │ HTTP request
+   ▼
+Runtime
+   │
+   │ authentication / authorization
+   │
+   │ consumeHttpRequest(req)
+   ▼
+File Transfer Service
+   │
+   │ durable local acceptance
+   ▼
+Runtime
+   │
+   ▼
+HTTP 202 Accepted
+```
+
+### 3. FTS Must Not Own HTTP Response Semantics
+
+The FTS consumes the HTTP request stream but must not construct or send the HTTP response.
+
+The following responsibility separation is mandatory:
+
+```text
+Runtime:
+    authentication
+    authorization
+    routing
+    HTTP status codes
+    HTTP response body
+    frontend notification
+
+FTS:
+    stream ingestion
+    local persistence
+    integrity
+    transfer state
+    scheduling
+    chunking
+    backend synchronization
+    retry/recovery
+    completion events
+```
+
+Therefore, the FTS must never contain application-specific logic such as:
+
+```javascript
+res.status(202)
+res.json(...)
+```
+
+The Runtime interprets the result returned by `consumeHttpRequest()` and constructs the appropriate HTTP response.
+
+### 4. Backend Egress Boundary
+
+The FTS must not directly depend on a concrete HTTP implementation for communicating with the remote Backend.
+
+Instead, the Runtime injects a `BackendTransferClient` implementation when constructing the FTS:
+
+```javascript
+const fts = new FileTransferService({
+  backendTransferClient,
+});
+```
+
+The FTS interacts exclusively with the interface/contract exposed by this client.
+
+For example:
+
+```javascript
+await backendTransferClient.uploadChunk({
+  transferId,
+  sequence,
+  data,
+  hash,
+});
+```
+
+The concrete client may internally use HTTP, `fetch`, `undici`, HTTP/2, or another transport. The FTS must remain unaware of that implementation.
+
+The architectural boundary is therefore:
+
+```text
+FTS
+ │
+ │ BackendTransferClient interface
+ ▼
+BackendTransferClient
+ │
+ │ concrete transport
+ ▼
+Remote Backend
+```
+
+### 5. Autonomous Backend Synchronization
+
+After local ingestion succeeds, the FTS independently processes the transfer.
+
+The synchronization pipeline is:
+
+```text
+Local File
+    │
+    ▼
+Transfer Scheduler
+    │
+    ▼
+Chunk Reader
+    │
+    ├── chunk extraction
+    ├── sequence assignment
+    ├── hash calculation
+    └── integrity validation
+    │
+    ▼
+BackendTransferClient.uploadChunk()
+    │
+    ▼
+Remote Backend
+```
+
+The FTS is responsible for handling:
+
+- chunking;
+- per-chunk hashing;
+- transfer ordering;
+- transfer state;
+- network timeouts;
+- connection failures;
+- retry policy;
+- interrupted transfers;
+- resumability;
+- final integrity verification;
+- successful completion detection.
+
+A failure of the remote Backend must **not invalidate an already-durable local transfer**.
+
+The transfer remains locally persisted and enters the appropriate retry/recovery state.
+
+### 6. Asynchronous Completion Boundary
+
+When the Backend has received all chunks, verified the final transfer hash, and permanently committed the object, the FTS transitions the transfer into its completed state and emits a `TransferCompleted` event.
+
+Conceptually:
+
+```javascript
+fts.on("TransferCompleted", (event) => {
+  // Runtime handles application consequences.
+});
+```
+
+The FTS event must contain sufficient transfer identity and Backend metadata for the Runtime to reconcile the transfer with the main Control Plane database.
+
+The FTS itself must **not** directly modify application-owned database records or send frontend WebSocket notifications.
+
+The Runtime owns those actions:
+
+```text
+Backend
+   │
+   │ successful finalization
+   ▼
+FTS
+   │
+   │ TransferCompleted
+   ▼
+Runtime
+   ├── update main Control Plane DB
+   └── notify Frontend through WebSocket
+```
+
+### 7. Complete Transfer Lifecycle
+
+The canonical lifecycle is:
+
+```text
+RAW HTTP REQUEST
+       │
+       ▼
+consumeHttpRequest(req)
+       │
+       ▼
+Stream ingestion
+       │
+       ▼
+Backpressure / validation / limits
+       │
+       ▼
+Local temporary storage
+       │
+       ▼
+Hash + integrity verification
+       │
+       ▼
+Atomic local finalization
+       │
+       ▼
+Persist transfer metadata
+       │
+       ▼
+LOCAL TRANSFER ACCEPTED
+       │
+       ├──────────────────────► Runtime → HTTP 202
+       │
+       ▼
+Background synchronization
+       │
+       ▼
+Chunk + hash
+       │
+       ▼
+BackendTransferClient
+       │
+       ▼
+Remote Backend
+       │
+       ├── failure → retry/recovery
+       │
+       └── success
+              │
+              ▼
+       Backend finalization
+              │
+              ▼
+       TransferCompleted
+              │
+              ▼
+           Runtime
+          /       \
+       Main DB   WebSocket
+```
+
+### 8. Core Architectural Invariant
+
+The following invariant is mandatory:
+
+> **The File Transfer Service must own durable transfer state and data movement, but must not own application-level network routing, authentication, authorization, HTTP response handling, or frontend notification.**
+
+The FTS therefore has two explicit external boundaries:
+
+**Ingress**
+
+```javascript
+fts.consumeHttpRequest(req);
+```
+
+**Egress**
+
+```javascript
+backendTransferClient.uploadChunk(...)
+```
+
+and one asynchronous application boundary:
+
+```text
+TransferCompleted
+```
+
+This makes the FTS independently testable and allows the HTTP ingress implementation and Backend transport implementation to change without changing the transfer engine itself.
+
+The FTS is consequently treated as **infrastructure rather than an application service**.
