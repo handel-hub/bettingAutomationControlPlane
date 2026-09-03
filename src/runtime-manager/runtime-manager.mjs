@@ -2,17 +2,47 @@
 
 import { executionAuthorization } from './execution-authorization.mjs';
 import { runtimeHeartbeat } from './heartbeat.mjs';
-import { spawn } from 'child_process';
-import crypto from 'crypto';
+import { NativeCore } from '../security-authority/native/security-core.mjs';
+import { CommandRouter } from '../command/commandRouter.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, and termination of 
- * automated betting Runtime instances in isolated processes.
+ * automated betting Runtime instances using NativeCore for OS security.
  */
 export class RuntimeManager {
   constructor() {
-    /** @type {Map<number, import('child_process').ChildProcess>} */
-    this.activeRuntimes = new Map();
+    /** @type {Set<number>} */
+    this.activeRuntimes = new Set();
+    this.pipeName = '\\\\.\\pipe\\control_plane_secure_ipc';
+    this.serverStarted = false;
+    this.router = new CommandRouter();
+  }
+
+  ensureServerStarted() {
+    if (this.serverStarted) return;
+    
+    NativeCore.startSecurePipeServer(
+      this.pipeName,
+      (connId) => {
+        console.log(`[RuntimeManager] Native IPC Client Connected: ${connId}`);
+      },
+      (connId, data) => {
+        try {
+          const payload = JSON.parse(data);
+          if (payload && payload.type === 'HEARTBEAT' && payload.pid) {
+            runtimeHeartbeat.recordHeartbeat(payload.pid);
+          } else {
+            this.router.route(payload);
+          }
+        } catch (e) {
+          console.error(`[RuntimeManager] Failed to route framed IPC payload: ${e}`);
+        }
+      },
+      (connId) => {
+        console.log(`[RuntimeManager] Native IPC Client Disconnected: ${connId}`);
+      }
+    );
+    this.serverStarted = true;
   }
 
   /**
@@ -23,46 +53,26 @@ export class RuntimeManager {
       throw new Error("Security Authority denied automation start");
     }
 
-    const sessionKey = crypto.randomBytes(32);
-    
-    // Spawn the isolated runtime process, passing the session key via stdin
-    const child = spawn('node', ['path/to/runtime/entry.mjs'], {
-      env: { ...process.env },
-      stdio: ['pipe', 'pipe', 'pipe', 'ipc']
+    this.ensureServerStarted();
+
+    const pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
+      this.activeRuntimes.delete(exitedPid);
+      console.log(`[RuntimeManager] Process ${exitedPid} exited.`);
     });
     
-    child.stdin.write(sessionKey);
-
-    if (child.pid) {
-      this.activeRuntimes.set(child.pid, child);
-      runtimeHeartbeat.recordHeartbeat(child.pid);
-
-      child.on('message', (msg) => {
-        // Handle heartbeat and IPC
-        // @ts-ignore
-        if (msg && msg.type === 'HEARTBEAT') {
-          // @ts-ignore
-          runtimeHeartbeat.recordHeartbeat(child.pid);
-        }
-      });
-
-      child.on('exit', () => {
-        // @ts-ignore
-        this.activeRuntimes.delete(child.pid);
-      });
-    }
-
-    return child;
+    this.activeRuntimes.add(pid);
+    runtimeHeartbeat.recordHeartbeat(pid);
+    
+    return pid;
   }
 
   /**
-   * Terminates a specific runtime instance.
+   * Terminates a specific runtime instance via NativeCore.
    * @param {number} pid 
    */
   terminateRuntime(pid) {
-    const child = this.activeRuntimes.get(pid);
-    if (child) {
-      child.kill('SIGKILL');
+    if (this.activeRuntimes.has(pid)) {
+      NativeCore.terminateExecutionProcess(pid);
       this.activeRuntimes.delete(pid);
     }
   }
@@ -71,7 +81,7 @@ export class RuntimeManager {
    * Terminates all instances.
    */
   terminateAll() {
-    for (const pid of this.activeRuntimes.keys()) {
+    for (const pid of this.activeRuntimes) {
       this.terminateRuntime(pid);
     }
   }

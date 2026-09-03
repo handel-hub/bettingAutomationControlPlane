@@ -46,7 +46,7 @@ test('Machine Identity Encapsulation Security Boundary', async (t) => {
     // Verify using generic crypto to prove the signature is mathematically sound Ed25519
     const isValid = CryptoProviderNativeWrapper.verifyEd25519(
       pubKeyHex,
-      Buffer.concat([Buffer.from('CONTROL_PLANE_V1'), payload]),
+      payload,
       signature
     );
     assert.strictEqual(isValid, true, 'Signature must be cryptographically valid');

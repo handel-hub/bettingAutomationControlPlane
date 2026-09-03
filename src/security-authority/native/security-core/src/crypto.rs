@@ -80,7 +80,12 @@ pub fn verify_signature(public_key: &[u8], message: &[u8], signature_bytes: &[u8
     sig_bytes.copy_from_slice(signature_bytes);
     let signature = Signature::from_bytes(&sig_bytes);
     
-    Ok(pub_key.verify(message, &signature).is_ok())
+    // Domain separation matching sign_ed25519
+    let mut prefixed_message = Vec::with_capacity(16 + message.len());
+    prefixed_message.extend_from_slice(b"CONTROL_PLANE_V1");
+    prefixed_message.extend_from_slice(message);
+    
+    Ok(pub_key.verify(&prefixed_message, &signature).is_ok())
 }
 
 pub fn random_bytes(length: usize) -> Result<Vec<u8>> {

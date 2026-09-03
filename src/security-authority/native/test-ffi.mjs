@@ -37,10 +37,10 @@ test('Native FFI Bindings Testing', async (t) => {
     NativeCore.setRevokedSync(false);
   });
 
-  await t.test('GetNamedPipeClientProcessId requires valid connId', async () => {
-    // We pass an invalid connId
+  await t.test('spawnExecutionProcess rejects invalid arguments', async () => {
     assert.throws(() => {
-      NativeCore.getNamedPipeClientProcessId(99999);
-    }, /Unknown connection ID/);
+      // @ts-ignore
+      NativeCore.spawnExecutionProcess(99999, () => {});
+    }, /Invalid arguments/);
   });
 });

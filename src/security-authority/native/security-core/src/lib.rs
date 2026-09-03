@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod crypto;
 mod os_secret;
 mod os_pipe;
+mod os_process;
 
 static IS_REVOKED: AtomicBool = AtomicBool::new(false);
 
@@ -18,6 +19,10 @@ pub fn is_revoked_sync() -> bool {
 #[napi]
 pub fn set_revoked_sync(revoked: bool) {
     IS_REVOKED.store(revoked, Ordering::SeqCst);
+    if revoked {
+        os_process::revoke_all_processes();
+        let _ = os_pipe::stop_secure_pipe_server();
+    }
 }
 
 #[napi]
@@ -105,6 +110,19 @@ pub fn authorize_pipe_read(conn_id: u32) -> Result<()> {
 #[napi]
 pub fn stop_secure_pipe_server() -> Result<()> {
     os_pipe::stop_secure_pipe_server()
+}
+
+#[napi(ts_args_type = "pipeName: string, onExit: (pid: number) => void")]
+pub fn spawn_execution_process(
+    pipe_name: String,
+    on_exit: napi::threadsafe_function::ThreadsafeFunction<u32, napi::threadsafe_function::ErrorStrategy::Fatal>,
+) -> Result<u32> {
+    os_process::spawn_execution_process(pipe_name, on_exit)
+}
+
+#[napi]
+pub fn terminate_execution_process(pid: u32) -> Result<bool> {
+    os_process::terminate_execution_process(pid)
 }
 
 #[napi]

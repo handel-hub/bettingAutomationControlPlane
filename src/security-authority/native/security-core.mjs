@@ -156,17 +156,26 @@ export const NativeCore = {
   },
 
   /**
-   * Queries the OS for the process ID connected to the other end of a Named Pipe.
-   * Windows-specific primitive for IPC peer verification.
-   * @param {number} connId 
-   * @returns {number} The PID of the client process.
-   * @throws {Error} If verification fails.
+   * Securely spawns the execution plane process from the native boundary.
+   * @param {string} pipeName 
+   * @param {function(number): void} onExit 
+   * @returns {number} The spawned PID
    */
-  getNamedPipeClientProcessId(connId) {
-    if (typeof connId !== 'number') {
-      throw new TypeError("connId must be a number");
+  spawnExecutionProcess(pipeName, onExit) {
+    if (typeof pipeName !== 'string' || typeof onExit !== 'function') {
+      throw new TypeError("Invalid arguments");
     }
-    return nativeBinding.getPidForConn(connId);
+    return nativeBinding.spawnExecutionProcess(pipeName, onExit);
+  },
+
+  /**
+   * Cleanly terminates the execution process.
+   * @param {number} pid 
+   * @returns {boolean} True if terminated
+   */
+  terminateExecutionProcess(pid) {
+    if (typeof pid !== 'number') throw new TypeError("pid must be a number");
+    return nativeBinding.terminateExecutionProcess(pid);
   },
 
   startSecurePipeServer(pipeName, onConnection, onData, onDisconnect) {
@@ -179,10 +188,6 @@ export const NativeCore = {
 
   closePipe(connId) {
     return nativeBinding.closePipe(connId);
-  },
-
-  authorizePipeRead(connId) {
-    return nativeBinding.authorizePipeRead(connId);
   },
 
   stopSecurePipeServer() {
