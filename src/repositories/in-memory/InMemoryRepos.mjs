@@ -16,6 +16,7 @@ export class InMemoryAccountsRepo extends IAccountsRepository {
   }
 
   _seed() {
+    this._isSeeded = true;
     const acc1 = {
       id: 'acc-1',
       name: 'SportyBet Primary',
@@ -51,6 +52,41 @@ export class InMemoryAccountsRepo extends IAccountsRepository {
     this.accounts.set(acc1.id, acc1);
     this.accounts.set(acc2.id, acc2);
   }
+
+  /**
+   * Hydrates repository with authoritative accounts from Cloud Backend or local cache.
+   * Preserves active browser and runtime states if already active in memory.
+   * @param {Array<any>} accountsList 
+   */
+  hydrate(accountsList) {
+    if (!Array.isArray(accountsList) || accountsList.length === 0) return;
+
+    // Clear seed data upon receiving real accounts
+    if (this._isSeeded) {
+      this.accounts.clear();
+      this._isSeeded = false;
+    }
+
+    for (const remoteAcc of accountsList) {
+      const existing = this.accounts.get(remoteAcc.id);
+      if (existing) {
+        this.accounts.set(remoteAcc.id, {
+          ...remoteAcc,
+          accountStatus: existing.accountStatus || remoteAcc.accountStatus || 'IDLE',
+          browserStatus: existing.browserStatus || remoteAcc.browserStatus || 'STOPPED',
+          lastSynchronization: new Date().toISOString()
+        });
+      } else {
+        this.accounts.set(remoteAcc.id, {
+          ...remoteAcc,
+          accountStatus: remoteAcc.accountStatus || 'IDLE',
+          browserStatus: remoteAcc.browserStatus || 'STOPPED',
+          lastSynchronization: new Date().toISOString()
+        });
+      }
+    }
+  }
+
 
   async list(filters = {}, pagination = { offset: 0, limit: 50 }) {
     let items = Array.from(this.accounts.values());
@@ -234,9 +270,32 @@ export class InMemoryConfigRepo extends IAutomationConfigRepository {
     this.accountConfigs = new Map();
   }
 
+  /**
+   * Hydrates configuration with authoritative global and per-account settings from Backend or local cache.
+   * @param {Object} [globalConfig]
+   * @param {Record<string, any>} [accountConfigs]
+   */
+  hydrate(globalConfig, accountConfigs = {}) {
+    if (globalConfig && typeof globalConfig === 'object') {
+      for (const [cat, vals] of Object.entries(globalConfig)) {
+        if (this.globalConfig[cat] && typeof vals === 'object') {
+          this.globalConfig[cat] = { ...this.globalConfig[cat], ...vals };
+        } else if (vals && typeof vals === 'object') {
+          this.globalConfig[cat] = vals;
+        }
+      }
+    }
+    if (accountConfigs && typeof accountConfigs === 'object') {
+      for (const [accId, cfg] of Object.entries(accountConfigs)) {
+        this.accountConfigs.set(accId, cfg);
+      }
+    }
+  }
+
   async getGlobalConfig() {
     return JSON.parse(JSON.stringify(this.globalConfig));
   }
+
 
   async updateCategory(category, values) {
     if (!this.globalConfig[category]) {

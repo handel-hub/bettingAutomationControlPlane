@@ -5,10 +5,12 @@ import { securityFacade } from './security-authority/facade.mjs';
 import { operationTracker } from './state/operationTracker.mjs';
 import { wsServer } from './api-server/websocket/wsServer.mjs';
 import { logger } from './shared/logging.mjs';
+import { repositoryFactory } from './repositories/repositoryFactory.mjs';
+import { backendSyncService } from './sync/backendSyncService.mjs';
+
 /**
  * Registers default Ingress Command Handlers into CommandRouter.
- * In Phase 1, handlers act as authoritative coordinators.
- * In Phase 2 & 3, execution commands pipe to RuntimeManager and persistence to SQLite.
+ * Connects persistence commands to InMemoryRepos and initiates asynchronous backend sync.
  */
 function registerDefaultCommandHandlers() {
   // Execution category
@@ -49,8 +51,12 @@ function registerDefaultCommandHandlers() {
 
   // Persistence category
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName }, '[Command] REGISTER_ACCOUNT executed');
-    return { registered: true };
+    logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName }, '[Command] REGISTER_ACCOUNT executing');
+    const created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
+    backendSyncService.syncMutation('REGISTER_ACCOUNT', cmd.payload).catch(err => {
+      logger.warn({ err: err.message }, '[Command] Async backend sync failed for REGISTER_ACCOUNT');
+    });
+    return created;
   });
 
   commandRouter.register('Persistence', 'ACCOUNT_ACTION', async (cmd) => {
@@ -65,17 +71,23 @@ function registerDefaultCommandHandlers() {
 
   commandRouter.register('Persistence', 'TOGGLE_BET_CYCLE', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target, enabled: cmd.payload?.enabled }, '[Command] TOGGLE_BET_CYCLE executed');
-    return { toggled: true, enabled: cmd.payload?.enabled };
+    const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { betCycleEnabled: cmd.payload?.enabled });
+    return { toggled: true, enabled: cmd.payload?.enabled, updated };
   });
 
   commandRouter.register('Persistence', 'UPDATE_ACCOUNT_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target, category: cmd.payload?.category }, '[Command] UPDATE_ACCOUNT_CONFIG executed');
-    return { updated: true };
+    const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { [cmd.payload?.category]: cmd.payload?.values });
+    return { updated: true, accountConfig: updated };
   });
 
   commandRouter.register('Persistence', 'UPDATE_GLOBAL_CONFIG', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, category: cmd.payload?.category }, '[Command] UPDATE_GLOBAL_CONFIG executed');
-    return { updated: true };
+    logger.info({ traceId: cmd.traceId, category: cmd.payload?.category }, '[Command] UPDATE_GLOBAL_CONFIG executing');
+    const updated = await repositoryFactory.getConfigRepo().updateCategory(cmd.payload.category, cmd.payload.values);
+    backendSyncService.syncMutation('UPDATE_GLOBAL_CONFIG', cmd.payload).catch(err => {
+      logger.warn({ err: err.message }, '[Command] Async backend sync failed for UPDATE_GLOBAL_CONFIG');
+    });
+    return updated;
   });
 
   // Billing category
@@ -84,6 +96,7 @@ function registerDefaultCommandHandlers() {
     return { verified: true };
   });
 }
+
 
 // Wire operation tracker events to WebSocket deltas
 operationTracker.on('operation:completed', ({ operationId, result }) => {
@@ -123,7 +136,16 @@ async function bootstrap() {
 
     logger.info(`[ControlPlane] Ready for Next.js console connections at http://localhost:${port}`);
     logger.info(`[ControlPlane] WebSocket stream active at ws://localhost:${port}/ws/v1/events`);
+
+    // 4. Initialize Backend Synchronization & Hydration Pipeline
+    try {
+      await backendSyncService.initialize();
+      logger.info('[ControlPlane] Backend synchronization pipeline initialized');
+    } catch (syncErr) {
+      logger.warn({ error: syncErr.message }, '[ControlPlane] Backend sync initialization warning; operating in local mode');
+    }
   } catch (err) {
+
     logger.fatal({ err }, '[ControlPlane] Fatal startup error');
     process.exit(1);
   }

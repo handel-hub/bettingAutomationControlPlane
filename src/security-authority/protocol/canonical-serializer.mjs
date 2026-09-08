@@ -1,63 +1,103 @@
 // @ts-check
 
-import crypto from 'crypto';
-
 /**
- * Provides language-agnostic deterministic byte serialization for protocol envelopes.
- * This defeats JSON stringify non-determinism vulnerabilities.
+ * Provides deterministic RFC 8785 JSON canonicalization and byte serialization.
+ * Recursively sorts object keys alphabetically while preserving arrays and primitives,
+ * defeating JSON stringify non-determinism across languages and platforms.
  */
 export class CanonicalSerializer {
   /**
-   * Serializes the envelope metadata into a strict, deterministic byte array.
-   * Format: version_u8 || msgId_bytes_16 || generation_u64_le || timestamp_u64_le || epoch_u64_le || SHA256(payload_bytes)
-   * Domain Separation: b"CONTROL_PLANE_V1" is prepended or appended as per spec.
-   * Spec says: 'b"CONTROL_PLANE_V1" appended to CanonicalBytes.'
+   * Recursively sorts object keys alphabetically.
+   * Conforms to RFC 8785 (JSON Canonicalization Scheme).
+   * 
+   * @param {any} value 
+   * @returns {any}
+   */
+  static canonicalize(value) {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(CanonicalSerializer.canonicalize);
+    }
+
+    const sortedKeys = Object.keys(value).sort();
+    /** @type {Record<string, any>} */
+    const result = {};
+    for (const key of sortedKeys) {
+      result[key] = CanonicalSerializer.canonicalize(value[key]);
+    }
+    return result;
+  }
+
+  /**
+   * Returns a canonicalized, deterministic JSON string representation without extra whitespace.
+   * 
+   * @param {any} value 
+   * @returns {string}
+   */
+  static canonicalStringify(value) {
+    return JSON.stringify(CanonicalSerializer.canonicalize(value));
+  }
+
+  /**
+   * Serializes an outbound client ProtocolEnvelopeV2 for Ed25519 signing.
+   * Includes all canonical request envelope fields in strict RFC 8785 format.
    * 
    * @param {Object} envelope 
-   * @param {number} envelope.v
-   * @param {string} envelope.msgId
-   * @param {number|bigint} envelope.generation
-   * @param {number|bigint} envelope.timestamp
-   * @param {number|bigint} envelope.server_epoch
-   * @param {string} envelope.payload - Base64 encoded payload
+   * @param {number} [envelope.version]
+   * @param {string} envelope.sessionId
+   * @param {string} envelope.machineId
+   * @param {string} envelope.nonce
+   * @param {string} envelope.timestamp
+   * @param {number|bigint} envelope.clientGeneration
+   * @param {number|bigint} envelope.clientServerEpoch
+   * @param {any} envelope.payload
+   * @returns {Buffer}
+   */
+  static serializeClientRequest(envelope) {
+    const envelopeToSign = {
+      version: envelope.version ?? 2,
+      sessionId: envelope.sessionId || '',
+      machineId: envelope.machineId,
+      nonce: envelope.nonce,
+      timestamp: envelope.timestamp,
+      clientGeneration: Number(envelope.clientGeneration ?? 1),
+      clientServerEpoch: Number(envelope.clientServerEpoch ?? 1),
+      payload: envelope.payload
+    };
+
+    const canonicalString = CanonicalSerializer.canonicalStringify(envelopeToSign);
+    return Buffer.from(canonicalString, 'utf8');
+  }
+
+  /**
+   * Serializes an inbound Backend ProtocolEnvelopeV2 for verification against pinned public key.
+   * 
+   * @param {Object} envelope 
+   * @returns {Buffer}
+   */
+  static serializeBackendResponse(envelope) {
+    const envelopeToVerify = {
+      version: envelope.version ?? envelope.v ?? 2,
+      timestamp: envelope.timestamp,
+      server_epoch: Number(envelope.server_epoch ?? envelope.epoch ?? 1),
+      payload: envelope.payload,
+      generation: Number(envelope.generation ?? 1)
+    };
+
+    const canonicalString = CanonicalSerializer.canonicalStringify(envelopeToVerify);
+    return Buffer.from(canonicalString, 'utf8');
+  }
+
+  /**
+   * Compatibility wrapper for existing callers.
+   * @param {Object} envelope 
    * @returns {Buffer}
    */
   static serializeForSignature(envelope) {
-    const versionBuf = Buffer.alloc(1);
-    versionBuf.writeUInt8(envelope.v, 0);
-
-    // Convert UUID string to 16 bytes
-    const msgIdClean = envelope.msgId.replace(/-/g, '');
-    const msgIdBuf = Buffer.from(msgIdClean, 'hex');
-    if (msgIdBuf.length !== 16) {
-      throw new Error('msgId must be a valid 16-byte UUID');
-    }
-
-    // Convert to BigInt for 64-bit precision
-    const generationBuf = Buffer.alloc(8);
-    generationBuf.writeBigUInt64LE(BigInt(envelope.generation), 0);
-
-    const timestampBuf = Buffer.alloc(8);
-    timestampBuf.writeBigUInt64LE(BigInt(envelope.timestamp), 0);
-
-    const epochBuf = Buffer.alloc(8);
-    epochBuf.writeBigUInt64LE(BigInt(envelope.server_epoch), 0);
-
-    // Hash the payload
-    const payloadBuffer = Buffer.from(envelope.payload, 'base64');
-    const payloadHash = crypto.createHash('sha256').update(payloadBuffer).digest();
-
-    const canonicalBytes = Buffer.concat([
-      versionBuf,
-      msgIdBuf,
-      generationBuf,
-      timestampBuf,
-      epochBuf,
-      payloadHash
-    ]);
-
-    const domainSeparation = Buffer.from('CONTROL_PLANE_V1', 'utf8');
-    
-    return Buffer.concat([canonicalBytes, domainSeparation]);
+    return CanonicalSerializer.serializeBackendResponse(envelope);
   }
 }
+
