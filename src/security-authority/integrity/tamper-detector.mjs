@@ -1,5 +1,5 @@
 // @ts-check
-
+import crypto from 'crypto';
 import { CryptoProviderNativeWrapper } from '../crypto/bindings.mjs';
 
 /**
@@ -32,7 +32,7 @@ export class TamperDetector {
   computeHash(assetBuffer) {
     // We could add SHA-256 to CryptoProviderNativeWrapper, but for now 
     // we use Node.js crypto for simple hashing as it's not key material.
-    const crypto = require('crypto');
+    
     return crypto.createHash('sha256').update(assetBuffer).digest('hex');
   }
 }

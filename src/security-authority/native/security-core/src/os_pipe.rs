@@ -12,10 +12,13 @@ use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorA, SDDL_REVISION_1,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileA, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_SHARE_NONE, OPEN_EXISTING,
+};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeA, DisconnectNamedPipe, GetNamedPipeClientProcessId, PeekNamedPipe,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -81,7 +84,7 @@ pub fn start_secure_pipe_server(
                 match CreateNamedPipeA(
                     PCSTR::from_raw(pipe_name_c.as_ptr() as *const u8),
                     windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(3 | 0x00080000), 
-                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                     255, 
                     65536,
                     65536,
@@ -133,6 +136,7 @@ pub fn start_secure_pipe_server(
                 let pid_success = unsafe { GetNamedPipeClientProcessId(handle, &mut client_pid) };
                 
                 if pid_success.is_err() || !os_process::is_valid_pid(client_pid) {
+                    eprintln!("[NativePipe] Connection rejected: client_pid {} is invalid or unknown", client_pid);
                     unsafe {
                         let _ = DisconnectNamedPipe(handle);
                         let _ = CloseHandle(handle);
@@ -142,6 +146,7 @@ pub fn start_secure_pipe_server(
 
                 let session_key_opt = os_process::get_session_key(client_pid);
                 if session_key_opt.is_none() {
+                    eprintln!("[NativePipe] Connection rejected: no session key for client_pid {}", client_pid);
                     unsafe {
                         let _ = DisconnectNamedPipe(handle);
                         let _ = CloseHandle(handle);
@@ -149,6 +154,7 @@ pub fn start_secure_pipe_server(
                     continue;
                 }
                 let session_key = session_key_opt.unwrap();
+                eprintln!("[NativePipe] Client PID {} connected, awaiting HMAC...", client_pid);
 
                 let mut id_lock = NEXT_CONN_ID.lock().unwrap();
                 let conn_id = *id_lock;
@@ -167,6 +173,7 @@ pub fn start_secure_pipe_server(
                     // 1. Wait for HMAC with 2000ms timeout
                     loop {
                         if start.elapsed() > Duration::from_millis(2000) {
+                            eprintln!("[NativePipe] Timeout waiting for HMAC from PID {}", client_pid);
                             break;
                         }
                         
@@ -191,12 +198,16 @@ pub fn start_secure_pipe_server(
                             if success.is_ok() && bytes_read == 32 {
                                 let mut mac = Hmac::<Sha256>::new_from_slice(&session_key).unwrap();
                                 let mut msg = b"IPC_AUTH".to_vec();
-                                msg.extend_from_slice(conn_id.to_string().as_bytes());
+                                msg.extend_from_slice(client_pid.to_string().as_bytes());
                                 mac.update(&msg);
                                 
-                                if mac.verify_slice(&hmac_buf).is_ok() {
+                                let is_match = mac.verify_slice(&hmac_buf).is_ok();
+                                eprintln!("[NativePipe] Received 32-byte HMAC from PID {}. Match: {}", client_pid, is_match);
+                                if is_match {
                                     authenticated = true;
                                 }
+                            } else {
+                                eprintln!("[NativePipe] ReadFile for HMAC failed or read {} bytes", bytes_read);
                             }
                             break;
                         }
@@ -204,6 +215,7 @@ pub fn start_secure_pipe_server(
                     }
 
                     if !authenticated {
+                        eprintln!("[NativePipe] Authentication failed for PID {}, disconnecting", client_pid);
                         unsafe {
                             let _ = DisconnectNamedPipe(handle);
                             let _ = CloseHandle(handle);
@@ -219,52 +231,95 @@ pub fn start_secure_pipe_server(
                         napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
                     );
 
-                    // Proceed to framing loop
+                    // Proceed to framing loop with non-blocking peek
                     loop {
-                        let mut len_buf = [0u8; 4];
-                        let mut bytes_read = 0;
-                        let success = unsafe {
-                            ReadFile(handle, Some(&mut len_buf), Some(&mut bytes_read), None)
+                        if !SERVER_RUNNING.load(Ordering::SeqCst) {
+                            break;
+                        }
+
+                        let mut bytes_avail = 0;
+                        let peek_res = unsafe {
+                            PeekNamedPipe(
+                                handle,
+                                None,
+                                0,
+                                None,
+                                Some(&mut bytes_avail),
+                                None,
+                            )
                         };
 
-                        if success.is_err() || bytes_read == 0 {
+                        if peek_res.is_err() {
+                            break; // Pipe broken / client disconnected
+                        }
+
+                        if bytes_avail < 4 {
+                            thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+
+                        let mut len_buf = [0u8; 4];
+                        let mut total_len_read = 0;
+                        while total_len_read < 4 {
+                            let mut chunk = 0;
+                            let res = unsafe {
+                                ReadFile(handle, Some(&mut len_buf[total_len_read..]), Some(&mut chunk), None)
+                            };
+                            if res.is_err() || chunk == 0 {
+                                break;
+                            }
+                            total_len_read += chunk as usize;
+                        }
+
+                        if total_len_read < 4 {
                             break; // Disconnected
                         }
 
-                        if bytes_read == 4 {
-                            let msg_len = u32::from_be_bytes(len_buf) as usize;
-                            if msg_len > 10 * 1024 * 1024 {
-                                break; // Max message size exceeded
-                            }
-                            
-                            let mut msg_buf = vec![0u8; msg_len];
-                            let mut total_read = 0;
-                            while total_read < msg_len {
-                                let mut chunk_read = 0;
-                                let chunk_success = unsafe {
-                                    ReadFile(
-                                        handle,
-                                        Some(&mut msg_buf[total_read..]),
-                                        Some(&mut chunk_read),
-                                        None
-                                    )
-                                };
-                                if chunk_success.is_err() || chunk_read == 0 {
-                                    break;
-                                }
-                                total_read += chunk_read as usize;
-                            }
-                            
-                            if total_read == msg_len {
-                                if let Ok(msg_str) = std::str::from_utf8(&msg_buf) {
-                                    on_data_clone.call(
-                                        (conn_id, msg_str.to_string()),
-                                        napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
-                                    );
-                                }
-                            } else {
+                        let msg_len = u32::from_be_bytes(len_buf) as usize;
+                        if msg_len > 10 * 1024 * 1024 {
+                            break; // Max message size exceeded
+                        }
+                        
+                        let mut msg_buf = vec![0u8; msg_len];
+                        let mut total_read = 0;
+                        while total_read < msg_len {
+                            let mut frame_avail = 0;
+                            let p_res = unsafe {
+                                PeekNamedPipe(handle, None, 0, None, Some(&mut frame_avail), None)
+                            };
+                            if p_res.is_err() {
                                 break;
                             }
+                            if frame_avail == 0 {
+                                thread::sleep(Duration::from_millis(2));
+                                continue;
+                            }
+
+                            let to_read = (msg_len - total_read).min(frame_avail as usize);
+                            let mut chunk_read = 0;
+                            let chunk_success = unsafe {
+                                ReadFile(
+                                    handle,
+                                    Some(&mut msg_buf[total_read..total_read + to_read]),
+                                    Some(&mut chunk_read),
+                                    None,
+                                )
+                            };
+                            if chunk_success.is_err() || chunk_read == 0 {
+                                break;
+                            }
+                            total_read += chunk_read as usize;
+                        }
+                        
+                        if total_read == msg_len {
+                            if let Ok(msg_str) = std::str::from_utf8(&msg_buf) {
+                                on_data_clone.call(
+                                    (conn_id, msg_str.to_string()),
+                                    napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            }
+                        } else {
+                            break;
                         }
                     }
 
@@ -299,7 +354,24 @@ pub fn stop_secure_pipe_server() -> Result<()> {
     SERVER_RUNNING.store(false, Ordering::SeqCst);
     let pipe_name = SERVER_PIPE_NAME.lock().unwrap().clone();
     if !pipe_name.is_empty() {
-        let _ = std::fs::OpenOptions::new().read(true).write(true).open(&pipe_name);
+        if let Ok(pipe_c) = CString::new(pipe_name) {
+            unsafe {
+                let h = CreateFileA(
+                    PCSTR::from_raw(pipe_c.as_ptr() as *const u8),
+                    FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                    FILE_SHARE_NONE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    HANDLE::default(),
+                );
+                if let Ok(handle) = h {
+                    if handle != INVALID_HANDLE_VALUE {
+                        let _ = CloseHandle(handle);
+                    }
+                }
+            }
+        }
     }
     let mut conns = CONNECTIONS.lock().unwrap();
     for (_, handle) in conns.drain() {

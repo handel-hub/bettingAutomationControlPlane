@@ -25,10 +25,12 @@ export class MachineIdentity {
     // Retrieve only the public key
     this.publicKeyHex = NativeCore.getMachinePublicKey();
     
-    // Derive deterministic hardware identifier based on public key hash or securely from Rust
-    // For now we just use a securely generated native random ID to match previous interface
-    // In production, this should ideally be derived natively from the DPAPI material
-    this.hardwareId = `hw_${NativeCore.secureRandom(16).toString('hex')}`;
+    // Derive deterministic hardware identifier securely from Rust.
+    // Instead of importing Node crypto or relying on random bytes (which break clone detection),
+    // we use the NativeCore to sign a static seed. The DPAPI private key remains entirely
+    // within the Rust boundary, and the resulting signature is deterministic across reboots.
+    const signatureHex = NativeCore.signMachinePayload(Buffer.from("MACHINE_IDENTITY_SEED", "utf8"));
+    this.hardwareId = `hw_${signatureHex.substring(0, 32)}`;
   }
 
   /**
@@ -42,7 +44,7 @@ export class MachineIdentity {
     return {
       hardwareId: this.hardwareId,
       machineKeyPub: this.publicKeyHex,
-      generation: "gen_1"
+      generation: "gen_1" // TODO: Wire to machine generation from SQLite
     };
   }
 

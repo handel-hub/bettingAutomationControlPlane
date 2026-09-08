@@ -159,13 +159,15 @@ export const NativeCore = {
    * Securely spawns the execution plane process from the native boundary.
    * @param {string} pipeName 
    * @param {function(number): void} onExit 
+   * @param {string} [scriptPath]
+   * @param {string} [expectedSha256]
    * @returns {number} The spawned PID
    */
-  spawnExecutionProcess(pipeName, onExit) {
+  spawnExecutionProcess(pipeName, onExit, scriptPath, expectedSha256) {
     if (typeof pipeName !== 'string' || typeof onExit !== 'function') {
       throw new TypeError("Invalid arguments");
     }
-    return nativeBinding.spawnExecutionProcess(pipeName, onExit);
+    return nativeBinding.spawnExecutionProcess(pipeName, onExit, scriptPath || null, expectedSha256 || null);
   },
 
   /**
@@ -179,7 +181,14 @@ export const NativeCore = {
   },
 
   startSecurePipeServer(pipeName, onConnection, onData, onDisconnect) {
-    return nativeBinding.startSecurePipeServer(pipeName, onConnection, onData, onDisconnect);
+    const wrappedOnData = (arg0, arg1) => {
+      if (Array.isArray(arg0)) {
+        onData(arg0[0], arg0[1]);
+      } else {
+        onData(arg0, arg1);
+      }
+    };
+    return nativeBinding.startSecurePipeServer(pipeName, onConnection, wrappedOnData, onDisconnect);
   },
 
   writePipe(connId, data) {

@@ -1,6 +1,7 @@
 // @ts-check
 
-import { StorageAdapter } from '../persistence/storage-adapter.mjs';
+import crypto from 'crypto';
+import { auditWriter } from './audit-writer.mjs';
 
 /**
  * Validates that no secret material is included in the metadata.
@@ -20,33 +21,32 @@ function scrubMetadata(metadata) {
 }
 
 /**
- * Writes a security event to the log.
+ * Enqueues a security event for asynchronous, non-blocking cryptographic logging.
  * @param {string} eventType
  * @param {"INFO" | "WARN" | "SIGNIFICANT" | "CRITICAL"} severity
- * @param {import('../state-machine/states.mjs').SecurityStateData} stateData
- * @param {Record<string, unknown>} metadata
+ * @param {any} stateData
+ * @param {Record<string, unknown>} [metadata]
  * @returns {Promise<void>}
  */
-export async function writeSecurityEvent(eventType, severity, stateData, metadata) {
+export async function writeSecurityEvent(eventType, severity, stateData, metadata = {}) {
   const safeMetadata = structuredClone(metadata);
   scrubMetadata(safeMetadata);
 
-  // In a real implementation this would integrate with StorageAdapter or Crypto to generate event_hash.
-  // Using a mock hashing strategy for structural completion.
   const eventRow = {
     event_id: crypto.randomUUID(),
     event_type: eventType,
     severity: severity,
     timestamp: new Date().toISOString(),
-    session_generation: stateData.state === 'OPERATIONAL' ? stateData.session.session_generation : null,
-    machine_generation: stateData.state === 'OPERATIONAL' ? stateData.machine.machine_generation : null,
-    authorization_revision: stateData.state === 'OPERATIONAL' ? stateData.authorization.authorization_revision : null,
-    transaction_id: metadata.transaction_id ? String(metadata.transaction_id) : null,
-    result: "RECORDED",
+    session_generation: stateData && stateData.session ? stateData.session.session_generation : null,
+    machine_generation: stateData && stateData.machine ? stateData.machine.machine_generation : null,
+    authorization_revision: stateData && stateData.authorization ? stateData.authorization.authorization_revision : null,
+    transaction_id: safeMetadata.transaction_id ? String(safeMetadata.transaction_id) : null,
+    result: safeMetadata.result || "RECORDED",
     metadata: safeMetadata,
-    prev_event_hash: null, // to be populated by storage layer chain
-    event_hash: "PENDING_HASH" // to be computed by storage layer
+    prev_event_hash: null, // populated asynchronously by auditWriter
+    event_hash: null       // populated asynchronously by auditWriter
   };
 
-  await StorageAdapter.writeEvent(eventRow);
+  // Push to the background worker to avoid blocking the main CP execution path
+  auditWriter.enqueue(eventRow);
 }

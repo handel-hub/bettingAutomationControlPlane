@@ -112,12 +112,14 @@ pub fn stop_secure_pipe_server() -> Result<()> {
     os_pipe::stop_secure_pipe_server()
 }
 
-#[napi(ts_args_type = "pipeName: string, onExit: (pid: number) => void")]
+#[napi(ts_args_type = "pipeName: string, onExit: (pid: number) => void, scriptPath?: string, expectedSha256?: string")]
 pub fn spawn_execution_process(
     pipe_name: String,
     on_exit: napi::threadsafe_function::ThreadsafeFunction<u32, napi::threadsafe_function::ErrorStrategy::Fatal>,
+    script_path: Option<String>,
+    expected_sha256: Option<String>,
 ) -> Result<u32> {
-    os_process::spawn_execution_process(pipe_name, on_exit)
+    os_process::spawn_execution_process(pipe_name, on_exit, script_path, expected_sha256)
 }
 
 #[napi]

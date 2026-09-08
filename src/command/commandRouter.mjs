@@ -1,13 +1,13 @@
-import { logger } from '../config.mjs';
+import { logger } from '../shared/logging.mjs';
 import { EventEmitter } from 'node:events';
+import { CommandPayloadSchema, ContractViolationError } from './commandSchema.mjs';
 
 /**
- * Authoritative Ingress Gateway for routing IPC/WebSocket command payloads.
- * Enforces CommandPayloadSchema contracts, governs STRICT/SHADOW/DISABLED enforcement modes,
- * and tracks ingress telemetry metrics.
+ * Authoritative Ingress Gateway for routing IPC/WebSocket/REST command payloads.
+ * Enforces CommandPayloadSchema contracts and tracks ingress telemetry metrics.
  */
 export class CommandRouter extends EventEmitter {
-    constructor(scheduler = null, flagManager = null, telemetryCollector = null) {
+    constructor(scheduler = null, flagManager = null) {
         super();
         this.handlers = new Map();
         this._metrics = {
@@ -15,13 +15,8 @@ export class CommandRouter extends EventEmitter {
             rejected: 0,
             routed: 0
         };
-        this.featureFlagManager = flagManager || featureFlagManager;
-
-
-        attachCommandRouterAdapter(this);
+        this.featureFlagManager = flagManager;
     }
-
-
 
     /**
      * Returns a snapshot of ingress metrics.
@@ -58,8 +53,12 @@ export class CommandRouter extends EventEmitter {
      * @private
      */
     _emitViolation(errorMsg, payload) {
-        TelemetryCollector.registry.recordFailureCode('LF-701');
-        logger.warn(`[CommandRouter] [LF-701] Violation emitted for command [${payload?.id || payload?.commandId || 'unknown'}]: ${errorMsg}`);
+        logger.warn({
+            event: 'LF_701_VIOLATION',
+            code: 'LF-701',
+            commandId: payload?.id || payload?.commandId || 'unknown',
+            message: errorMsg
+        }, `[CommandRouter] [LF-701] Ingress Contract Violation`);
     }
 
     /**
@@ -80,6 +79,12 @@ export class CommandRouter extends EventEmitter {
         return '2.0';
     }
 
+    /**
+     * Registers a command handler for a category and type.
+     * @param {string} category 
+     * @param {string} type 
+     * @param {Function} handler 
+     */
     register(category, type, handler) {
         if (!this.handlers.has(category)) {
             this.handlers.set(category, new Map());
@@ -96,7 +101,7 @@ export class CommandRouter extends EventEmitter {
      * Ingests, validates, and routes an incoming command to registered handlers.
      * @param {string | object} rawCommand - Incoming command payload
      * @param {object} [headers] - Optional wire headers for protocol version negotiation
-     * @returns {Promise<boolean>} true if routed successfully, false if rejected or unhandled
+     * @returns {Promise<{ success: boolean, results: any[] }>}
      */
     async route(rawCommand, headers = null) {
         this._metrics.received++;
@@ -117,7 +122,7 @@ export class CommandRouter extends EventEmitter {
             this._metrics.rejected++;
             logger.warn('Received invalid command object without category or type');
             this.emit('rejected', { command, reason: 'Missing category and type', headers });
-            return false;
+            return { success: false, results: [] };
         }
 
         if (!Object.isExtensible(command)) {
@@ -134,7 +139,7 @@ export class CommandRouter extends EventEmitter {
             command.traceId = (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).substring(2);
         }
 
-        // v3 Ingress Contract Gating
+        // Ingress Contract Gating
         const validation = CommandPayloadSchema.validate(command);
         if (!validation.valid) {
             const errorMsg = `[LF-701] Ingress Contract Violation (${command.id || command.commandId || 'unknown'}): ${validation.errors.join('; ')}`;
@@ -143,14 +148,14 @@ export class CommandRouter extends EventEmitter {
             this._metrics.rejected++;
             logger.error(`[CommandRouter] STRICT mode rejecting command: ${errorMsg}`);
             this.emit('rejected', { command, reason: 'Schema Validation Failed (STRICT)', headers });
-            throw new ContractViolationError(errorMsg);
+            throw new ContractViolationError(errorMsg, { errors: validation.errors });
         }
 
         const category = command.category || (command.type === 'NAVIGATE' || command.type === 'navigate' ? 'Navigation' : 'Execution');
         const categoryMap = this.handlers.get(category);
         if (!categoryMap) {
             logger.debug(`No handlers registered for category [${category}]`);
-            return false;
+            return { success: false, results: [] };
         }
 
         const exactHandlers = categoryMap.get(command.type) || [];
@@ -159,7 +164,7 @@ export class CommandRouter extends EventEmitter {
 
         if (allHandlers.length === 0) {
             logger.error(`[Telemetry] {"event":"UNHANDLED_COMMAND_DROPPED","commandId":"${command.id}","category":"${category}","type":"${command.type}"}`);
-            return false;
+            return { success: false, results: [] };
         }
 
         logger.info(`[CommandRouter] Routing [${category}:${command.type}] (${command.id || command.commandId}) [Protocol v${protocolVersion}]`);
@@ -171,28 +176,22 @@ export class CommandRouter extends EventEmitter {
             handlers: allHandlers.length,
             headers
         });
-        
-        observabilityCollector.emitTransition({
-            commandId: command.id || command.commandId,
-            traceId: command.traceId,
-            interactionId: command.interactionId || null,
-            prevState: 'NORMALIZED',
-            newState: 'ROUTED',
-            eventName: 'COMMAND_ROUTED',
-            owner: 'CommandRouter'
-        });
 
-        const promises = allHandlers.map(async (handler) => {
+        const results = [];
+        for (const handler of allHandlers) {
             try {
-                await handler(command);
+                const res = await handler(command);
+                results.push(res);
             } catch (err) {
                 logger.error(`Error in Command handler for [${category}:${command.type}]: ${err.message}`);
                 throw err;
             }
-        });
+        }
 
-        await Promise.allSettled(promises);
         this._metrics.routed++;
-        return true;
+        return { success: true, results };
     }
 }
+
+export const commandRouter = new CommandRouter();
+

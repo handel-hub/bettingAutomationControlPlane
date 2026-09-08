@@ -9,24 +9,10 @@ import pino from 'pino';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const isTest = process.env.NODE_ENV === 'test';
+
 export const logger = pino({
-    transport: {
-        targets: [
-            {
-                target: 'pino-pretty',
-                options: {
-                    colorize: true
-                }
-            },
-            {
-                target: 'pino/file',
-                options: {
-                    destination: './logs/app.log',
-                    mkdir: true
-                }
-            }
-        ]
-    },
+    level: process.env.LOG_LEVEL || (isTest ? 'silent' : 'info'),
     hooks: {
         logMethod(inputArgs, method, level) {
             if (process.env.RKP_PINO_DUAL_WRITE === 'true') {
