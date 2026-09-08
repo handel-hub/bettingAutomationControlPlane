@@ -5,9 +5,6 @@ import { securityFacade } from './security-authority/facade.mjs';
 import { operationTracker } from './state/operationTracker.mjs';
 import { wsServer } from './api-server/websocket/wsServer.mjs';
 import { logger } from './shared/logging.mjs';
-import { runtimeManager } from './runtime-manager/runtime-manager.mjs';
-import { repositoryFactory } from './repositories/repositoryFactory.mjs';
-
 /**
  * Registers default Ingress Command Handlers into CommandRouter.
  * In Phase 1, handlers act as authoritative coordinators.
@@ -17,128 +14,36 @@ function registerDefaultCommandHandlers() {
   // Execution category
   commandRouter.register('Execution', 'START_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] START_AUTOMATION executed');
-    const workerScript = process.env.EXECUTION_WORKER_PATH || 'C:/Users/John/Documents/CODE/back/bettingAutomation/src/worker/index.mjs';
-
-    let pid = null;
-    try {
-      pid = runtimeManager.spawnRuntime(workerScript);
-      logger.info(`[Command] Spawned execution worker with PID: ${pid}`);
-
-      const accountsRepo = repositoryFactory.getAccountsRepository();
-      const configRepo = repositoryFactory.getAutomationConfigRepository();
-      const [accounts, globalConfig] = await Promise.all([
-        accountsRepo.listAccounts(),
-        configRepo.getGlobalConfig()
-      ]);
-
-      const workerSettings = {
-        Spawning: {
-          max_accounts_to_spawn: String(globalConfig?.browserSpawning?.maxAccountsToSpawn || accounts.length || 2),
-          slave_mode: globalConfig?.browserSpawning?.slaveMode?.toLowerCase() || 'headful',
-          master_use_proxy: 'false',
-          debug_slow_mo: '0'
-        },
-        Proxy: {
-          proxy_failure_mode: 'loose',
-          proxy_allocation_mode: 'round_robin',
-          max_accounts_per_proxy: '5'
-        },
-        AntiDetection: {
-          use_stealth_plugin: 'false',
-          browser_binary: 'chrome',
-          randomize_user_agent: 'false',
-          block_webrtc: 'false',
-          match_proxy_timezone: 'true',
-          canvas_spoofing: 'false'
-        },
-        Memory: {
-          record_action_sequence: 'true',
-          replay_action_sequence: 'false'
-        },
-        Triggers: {
-          trigger_type: 'terminal'
-        }
-      };
-
-      const workerAccounts = accounts.map(a => ({
-        username: a.accountUsername,
-        password: a.encryptedPassword || 'Princess12',
-        platform: a.platformDisplayName
-      }));
-
-      runtimeManager.once('clientConnected', () => {
-        runtimeManager.initializeWorker({
-          settings: workerSettings,
-          accounts: workerAccounts,
-          proxies: [],
-          policy: {}
-        }, cmd.traceId);
-      });
-
-      return { started: true, pid };
-    } catch (err) {
-      logger.warn({ err }, `[Command] spawnRuntime deferred or fallback: ${err.message}`);
-      return { started: true, pid };
-    }
+    return { started: true };
   });
 
   commandRouter.register('Execution', 'STOP_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] STOP_AUTOMATION executed');
-    try {
-      runtimeManager.stopCluster(5000, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] stopCluster error: ${err.message}`);
-    }
     return { stopped: true };
   });
 
   commandRouter.register('Execution', 'PLACE_BET', async (cmd) => {
     logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] PLACE_BET executed');
-    try {
-      runtimeManager.placeBet(cmd.payload, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] placeBet error: ${err.message}`);
-    }
     return { operationId: cmd.payload?.operationId, queued: true };
   });
 
   commandRouter.register('Execution', 'CASH_OUT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] CASH_OUT executed');
-    try {
-      runtimeManager.cashOut(cmd.payload, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] cashOut error: ${err.message}`);
-    }
     return { operationId: cmd.payload?.operationId, queued: true };
   });
 
   commandRouter.register('Execution', 'VALIDATE', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] VALIDATE executed');
-    try {
-      runtimeManager.validateTactical(cmd.payload, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] validateTactical error: ${err.message}`);
-    }
     return { valid: true };
   });
 
   commandRouter.register('Execution', 'ACTIVATE_ACCOUNT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target }, '[Command] ACTIVATE_ACCOUNT executed');
-    try {
-      runtimeManager.activateAccount(cmd.payload, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] activateAccount error: ${err.message}`);
-    }
     return { activated: true, accountId: cmd.target };
   });
 
   commandRouter.register('Execution', 'DEACTIVATE_ACCOUNT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target }, '[Command] DEACTIVATE_ACCOUNT executed');
-    try {
-      runtimeManager.deactivateAccount(cmd.payload, cmd.traceId);
-    } catch (err) {
-      logger.warn({ err }, `[Command] deactivateAccount error: ${err.message}`);
-    }
     return { deactivated: true, accountId: cmd.target };
   });
 
