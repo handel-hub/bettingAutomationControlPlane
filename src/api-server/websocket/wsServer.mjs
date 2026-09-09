@@ -31,6 +31,21 @@ class WsStreamer {
         this.send(ws, 'automation:snapshot', automationSnapshot);
         this.send(ws, 'billing:snapshot', billingSnapshot);
         this.send(ws, 'settings:snapshot', settingsSnapshot);
+
+        const accountsView = await repositoryFactory.getAccountsRepo().list({}, { offset: 0, limit: 50 });
+        this.send(ws, 'accounts:view', accountsView);
+
+        this.send(ws, 'customerCare:snapshot', {
+          openTicketCount: 0,
+          contactMethods: [
+            { id: '1', title: 'Support Ticket', description: 'Create a new support request', actionType: 'INTERNAL_ROUTE', actionTarget: '/workspace/support/tickets/new', available: true },
+            { id: '2', title: 'Live Chat', description: 'Chat with an agent', actionType: 'INTERNAL_ROUTE', actionTarget: '/workspace/support/chat', available: true },
+            { id: '3', title: 'Discord Community', description: 'Join other users', actionType: 'EXTERNAL_LINK', actionTarget: 'https://discord.com', available: true }
+          ],
+          documentationState: { cached: true },
+          documentationLastSync: new Date().toISOString(),
+          systemHealthSummary: 'Healthy'
+        });
       } catch (err) {
         logger.error({ err }, '[WebSocket] Error sending initial handshake');
       }

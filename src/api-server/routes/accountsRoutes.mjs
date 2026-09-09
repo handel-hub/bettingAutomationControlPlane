@@ -33,8 +33,8 @@ accountsRouter.post('/', async (req, res) => {
     category: 'Persistence',
     type: 'REGISTER_ACCOUNT',
     payload: { name, platformDisplayName, accountUsername, accountPassword, tags },
-    onSuccess: async () => {
-      const created = await repositoryFactory.getAccountsRepo().create({
+    onSuccess: async (commandResult) => {
+      const created = commandResult?.id ? commandResult : await repositoryFactory.getAccountsRepo().create({
         name: name || accountUsername,
         platformDisplayName,
         accountUsername,
