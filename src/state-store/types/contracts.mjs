@@ -207,3 +207,44 @@ export function createDefaultUserSettings(userId = 'usr_default') {
     }
   };
 }
+
+/**
+ * Default automation strategy options catalog.
+ */
+export const DEFAULT_STRATEGY_CATALOG = Object.freeze({
+  pricingModes: [
+    { id: 'PROFIT_TARGET', label: 'Profit Target', description: 'Calculate stake to reach target profit margin', enabled: true },
+    { id: 'FIXED', label: 'Fixed Stake', description: 'Flat stake amount placed on every eligible market', enabled: true }
+  ],
+  resolutionStrategies: [
+    { id: 'CLAMP_THEN_REDUCE_PROFIT', label: 'Clamp Then Reduce Profit', description: 'Clamp stake to maximum threshold and accept reduced profit', enabled: true },
+    { id: 'ABORT', label: 'Abort', description: 'Reject bet order immediately if odds drift', enabled: true }
+  ],
+  selectionPreferences: [
+    { id: 'ROUND_NUMBERS', label: 'Round Numbers', description: 'Round calculated stakes to nearest round unit', enabled: true },
+    { id: 'EXACT', label: 'Exact', description: 'Execute mathematically exact stake calculation', enabled: true }
+  ],
+  proxyAllocationModes: [
+    { id: 'round_robin', label: 'Round Robin (Distribute Evenly)', description: 'Cycle through proxy pool sequentially', enabled: true },
+    { id: 'sticky', label: 'Sticky Session (Dedicated Per Runner)', description: 'Keep runner locked to single residential IP', enabled: true },
+    { id: 'random', label: 'Random Selection', description: 'Pick random proxy from pool on every request', enabled: true }
+  ],
+  proxyFailureModes: [
+    { id: 'loose', label: 'Loose (Fallback to Direct Connection)', description: 'Continue automation without proxy if proxy node fails', enabled: true },
+    { id: 'strict', label: 'Strict (Fail Fast if Proxy Fails)', description: 'Pause automation immediately if proxy connection breaks', enabled: true }
+  ],
+  slaveModes: [
+    { id: 'headful', label: 'Headful (Visible on Desktop)', description: 'Launch visible browser windows for live monitoring', enabled: true },
+    { id: 'headless', label: 'Headless (Background Process)', description: 'Run headless background processes for minimal RAM consumption', enabled: true }
+  ],
+  supportedBrowserBinaries: [
+    { id: 'chrome', label: 'Google Chrome (Installed system binary)', description: 'Recommended for high antidetect fidelity', enabled: true },
+    { id: 'chromium', label: 'Chromium Engine', description: 'Bundled standalone Chromium engine', enabled: true },
+    { id: 'firefox', label: 'Mozilla Firefox', description: 'Gecko rendering engine', enabled: false }
+  ]
+});
+
+export function createDefaultStrategyCatalog() {
+  return JSON.parse(JSON.stringify(DEFAULT_STRATEGY_CATALOG));
+}
+

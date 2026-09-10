@@ -11,6 +11,8 @@ import { settingsRouter } from './routes/settingsRoutes.mjs';
 import { notificationsRouter } from './routes/notificationsRoutes.mjs';
 import { systemRouter } from './routes/systemRoutes.mjs';
 import { supportRouter } from './routes/supportRoutes.mjs';
+import { platformsRouter } from './routes/platformsRoutes.mjs';
+import { preludeRouter } from './routes/preludeRoute.mjs';
 import { wsServer } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
 
@@ -58,6 +60,8 @@ export class ApiServer {
     this.app.use('/api/v1/notifications', notificationsRouter);
     this.app.use('/api/v1/system', systemRouter);
     this.app.use('/api/v1/support', supportRouter);
+    this.app.use('/api/v1/platforms', platformsRouter);
+    this.app.use('/api/v1/prelude', preludeRouter);
 
     // Attach WebSocket server
     wsServer.attach(this.server);

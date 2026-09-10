@@ -77,6 +77,13 @@ export function ingressAuthMiddleware(req, res, next) {
   if (!isValidToken(token)) {
     return res.status(401).json({
       error: 'UNAUTHORIZED',
+      code: 'AUTH_001',
+      protocolError: {
+        code: 'AUTH_001',
+        domain: 'AUTH',
+        message: 'Missing or invalid authentication token. Provide Authorization: Bearer <token>',
+        retryable: false
+      },
       message: 'Missing or invalid authentication token. Provide Authorization: Bearer <token>'
     });
   }
@@ -92,6 +99,13 @@ export function requireOperational(req, res, next) {
   if (securityFacade.isDegraded()) {
     return res.status(503).json({
       error: 'DEGRADED_MODE',
+      code: 'EXEC_001',
+      protocolError: {
+        code: 'EXEC_001',
+        domain: 'EXECUTION',
+        message: 'Control Plane is in DEGRADED mode (Backend or Internet Offline). Execution Plane access is disabled.',
+        retryable: true
+      },
       message: 'Control Plane is in DEGRADED mode (Backend or Internet Offline). Execution Plane access is disabled.'
     });
   }

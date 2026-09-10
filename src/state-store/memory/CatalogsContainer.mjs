@@ -1,5 +1,5 @@
 // @ts-check
-import { createDefaultPlansCatalog, createDefaultPlatformRegistry } from '../types/contracts.mjs';
+import { createDefaultPlansCatalog, createDefaultPlatformRegistry, createDefaultStrategyCatalog } from '../types/contracts.mjs';
 
 /**
  * In-memory container for public reference catalogs:
@@ -12,7 +12,7 @@ export class CatalogsContainer {
     /** @type {Map<string, any>} */
     this._platformRegistry = new Map();
     /** @type {any} */
-    this._strategyCatalog = null;
+    this._strategyCatalog = Object.freeze(createDefaultStrategyCatalog());
     /** @type {string | null} */
     this._plansEtag = null;
     /** @type {string | null} */
@@ -52,7 +52,7 @@ export class CatalogsContainer {
     for (const p of defaultRegistry.platforms) {
       this._platformRegistry.set(p.id, Object.freeze(p));
     }
-    this._strategyCatalog = null;
+    this._strategyCatalog = Object.freeze(createDefaultStrategyCatalog());
     this._plansEtag = null;
     this._platformEtag = null;
     this._revision = 1;
@@ -82,6 +82,8 @@ export class CatalogsContainer {
 
     if (strategyCatalog && typeof strategyCatalog === 'object') {
       this._strategyCatalog = Object.freeze(JSON.parse(JSON.stringify(strategyCatalog)));
+    } else if (!this._strategyCatalog) {
+      this._strategyCatalog = Object.freeze(createDefaultStrategyCatalog());
     }
 
     if (metadata.plansEtag) this._plansEtag = metadata.plansEtag;
@@ -114,7 +116,7 @@ export class CatalogsContainer {
    * Returns strategy options catalog.
    */
   getStrategyCatalog() {
-    return this._strategyCatalog;
+    return this._strategyCatalog || Object.freeze(createDefaultStrategyCatalog());
   }
 
   /**

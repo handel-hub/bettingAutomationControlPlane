@@ -21,7 +21,14 @@ export async function executeCommand({ req, res, category, type, target = null, 
     if (authResult.status !== 'OPERATIONAL') {
       return res.status(403).json({
         success: false,
-        error: authResult.message || 'Action prohibited by Security Authority'
+        code: 'CAP_001',
+        error: authResult.message || 'Action prohibited by Security Authority',
+        protocolError: {
+          code: 'CAP_001',
+          domain: 'CAPABILITY',
+          message: authResult.message || 'Action prohibited by Security Authority',
+          retryable: false
+        }
       });
     }
   }

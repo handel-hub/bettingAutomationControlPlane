@@ -41,11 +41,16 @@ accountsRouter.post('/', async (req, res) => {
         accountPassword,
         tags
       });
+      const sanitized = {
+        ...created,
+        accountPassword: '[PROTECTED]'
+      };
       wsServer.broadcast('accounts:delta', {
         type: 'ACCOUNT_CREATED',
-        partialSnapshot: created
+        partialSnapshot: sanitized
       });
-      res.status(201).json(created);
+      res.setHeader('X-Protocol-Version', '2.0');
+      res.status(201).json(sanitized);
     }
   });
 });

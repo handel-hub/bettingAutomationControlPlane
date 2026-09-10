@@ -185,6 +185,7 @@ export class PreludeProjection {
       },
       system: {
         appName: 'Betting Automation Console',
+        version: 'v1.4.1',
         currentVersion: 'v1.4.1',
         hasUpdateDownloaded: false,
         availableVersion: 'v1.4.1',

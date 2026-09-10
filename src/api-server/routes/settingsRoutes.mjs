@@ -71,6 +71,11 @@ settingsRouter.post('/intent', async (req, res) => {
       await settingsRepo.updateSecurity({ accountStatus: 'ACTIVE', deletionScheduledAt: null });
       section = 'SECURITY';
       break;
+    case 'UPDATE_PRESENTATION':
+    case 'UPDATE_PREFERENCES':
+      await settingsRepo.updatePreferences(payload);
+      section = 'PRESENTATION';
+      break;
   }
 
   const updatedSnapshot = await settingsRepo.getSnapshot();

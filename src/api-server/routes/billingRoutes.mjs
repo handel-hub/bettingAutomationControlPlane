@@ -4,13 +4,27 @@ import crypto from 'node:crypto';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
+import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 
 export const billingRouter = Router();
 
 // GET billing snapshot
 billingRouter.get('/', async (req, res) => {
   const snapshot = await repositoryFactory.getBillingRepo().getSnapshot();
+  res.setHeader('X-Protocol-Version', '2.0');
   res.json(snapshot);
+});
+
+// GET subscription plans catalog
+billingRouter.get('/plans', (req, res) => {
+  try {
+    const store = getSharedStateStore();
+    const catalog = store.catalogs.getPlansCatalog();
+    res.setHeader('X-Protocol-Version', '2.0');
+    res.json(catalog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST initialize checkout

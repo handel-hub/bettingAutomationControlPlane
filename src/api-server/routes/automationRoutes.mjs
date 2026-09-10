@@ -6,6 +6,8 @@ import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { CAPABILITY } from '../../security-authority/authorization/capabilities.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
+import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
+import { DEFAULT_STRATEGY_CATALOG } from '../../state-store/types/contracts.mjs';
 
 export const automationRouter = Router();
 
@@ -14,6 +16,18 @@ automationRouter.get('/snapshot', async (req, res) => {
   try {
     const snapshot = await workspaceAggregator.getSnapshot();
     res.json(snapshot);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET strategy options catalog
+automationRouter.get('/strategy-catalog', (req, res) => {
+  try {
+    const store = getSharedStateStore();
+    const catalog = store.catalogs.getStrategyCatalog() || DEFAULT_STRATEGY_CATALOG;
+    res.setHeader('X-Protocol-Version', '2.0');
+    res.json(catalog);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
