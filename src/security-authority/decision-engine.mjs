@@ -21,9 +21,17 @@ export class DecisionEngine {
    * Initializes the Decision Engine and synchronizes state from persistence.
    */
   async initialize() {
-    const rawState = await StorageAdapter.getSecurityStateRow();
+    let rawState = await StorageAdapter.getSecurityStateRow();
     if (!rawState) {
-      throw new Error("Cannot initialize DecisionEngine: Missing security state in persistence.");
+      // Establish baseline UNINITIALIZED row for cold-boot on fresh database
+      await StorageAdapter.commitTransitionWithOCC(0, {
+        state: SecurityState.UNINITIALIZED,
+        state_version: 0
+      }, 'SYSTEM_BOOT');
+      rawState = await StorageAdapter.getSecurityStateRow();
+    }
+    if (!rawState) {
+      throw new Error("Cannot initialize DecisionEngine: Failed to establish security state in persistence.");
     }
     
     // In memory projection

@@ -2,6 +2,8 @@
 
 import { engineInstance } from './decision-engine.mjs';
 import { TransitionEvent } from './state-machine/transitions.mjs';
+import { SecurityState } from './state-machine/states.mjs';
+import { StorageAdapter } from './persistence/storage-adapter.mjs';
 import { NativeCore } from './native/security-core.mjs';
 import { writeSecurityEvent } from './audit/event-log.mjs';
 import { SecureCdpProxy } from './execution/cdp-proxy.mjs';
@@ -23,8 +25,13 @@ import { envelopeValidator } from './protocol/envelope.mjs';
 export class SecurityFacade {
   /**
    * Initializes the Security Authority subsystem natively.
+   * @param {string} [dbPath]
    */
-  async initialize() {
+  async initialize(dbPath) {
+    if (!StorageAdapter._db) {
+      const resolvedPath = dbPath || process.env.CP_SECURITY_DB_PATH || './data/control_plane_security.db';
+      await StorageAdapter.initDatabase(resolvedPath);
+    }
     await engineInstance.initialize();
   }
 
@@ -87,6 +94,43 @@ export class SecurityFacade {
   getSystemState() {
     if (!engineInstance.inMemoryState) return "UNINITIALIZED";
     return engineInstance.inMemoryState.state;
+  }
+
+  /**
+   * Returns true if system is in full OPERATIONAL state.
+   * @returns {boolean}
+   */
+  isOperational() {
+    return this.getSystemState() === SecurityState.OPERATIONAL;
+  }
+
+  /**
+   * Returns true if system is degraded, offline, revoked, or uninitialized.
+   * In any of these states, Execution Plane access is strictly forbidden.
+   * @returns {boolean}
+   */
+  isDegraded() {
+    const s = this.getSystemState();
+    return s !== SecurityState.OPERATIONAL;
+  }
+
+  /**
+   * Explicitly triggers transition to OFFLINE_GRACE / degraded state when backend or internet drops.
+   * @param {string} [reason]
+   * @returns {Promise<boolean>}
+   */
+  async transitionToDegraded(reason = 'BACKEND_UNREACHABLE') {
+    const currentState = this.getSystemState();
+    if (currentState === SecurityState.OPERATIONAL) {
+      // Must first transition via RENEW_THRESHOLD_REACHED or RENEW_BACKEND_UNREACHABLE
+      await engineInstance.dispatch(TransitionEvent.RENEW_THRESHOLD_REACHED, {
+        now: Date.now() + 10000,
+        renewAfter: 0,
+        renewalMutexHeld: false
+      });
+      return await engineInstance.dispatch(TransitionEvent.RENEW_BACKEND_UNREACHABLE, { reason });
+    }
+    return true;
   }
 
   /**

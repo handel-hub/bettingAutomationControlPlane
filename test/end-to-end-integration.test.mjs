@@ -8,6 +8,7 @@ import { ExecutionMessageType } from '../src/runtime-manager/executionProtocol.m
 import { operationTracker } from '../src/state/operationTracker.mjs';
 import { NativeCore } from '../src/security-authority/native/security-core.mjs';
 import { executionAuthorization } from '../src/runtime-manager/execution-authorization.mjs';
+import { securityFacade } from '../src/security-authority/facade.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,7 @@ const __dirname = path.dirname(__filename);
 test('End-to-End Control Plane <-> Execution Plane Orchestration Contract', async (t) => {
   NativeCore.init();
   executionAuthorization.canStartAutomation = () => true;
+  securityFacade.isDegraded = () => false;
 
   const workerScript = path.resolve(__dirname, 'fixtures', 'mock-orchestrated-worker.mjs');
 

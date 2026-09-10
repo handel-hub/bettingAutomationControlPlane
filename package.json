@@ -2,6 +2,14 @@
   "name": "control-plane-security-authority",
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node src/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:statestore": "node --test test/state-store/**/*.test.mjs",
+    "test:adversarial": "node --test --test-concurrency=1 src/security-authority/test/adversarial/*.test.mjs",
+    "test:all": "node --test --test-concurrency=1 test/*.test.mjs test/state-store/**/*.test.mjs src/security-authority/test/adversarial/*.test.mjs"
+  },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "busboy": "^1.6.0",

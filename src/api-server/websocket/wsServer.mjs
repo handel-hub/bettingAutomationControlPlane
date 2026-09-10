@@ -4,6 +4,8 @@ import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { commandRouter } from '../../command/commandRouter.mjs';
 import { logger } from '../../shared/logging.mjs';
+import { isValidToken } from '../middleware/auth.mjs';
+import { securityFacade } from '../../security-authority/facade.mjs';
 
 class WsStreamer {
   constructor() {
@@ -19,6 +21,19 @@ class WsStreamer {
     this.wss = new WebSocketServer({ server: httpServer, path: '/ws/v1/events' });
 
     this.wss.on('connection', async (ws, req) => {
+      // Authenticate WebSocket connection
+      const parsedUrl = new URL(req.url || '', 'http://localhost');
+      const token = req.headers['authorization'] || 
+                    req.headers['x-acp-token'] || 
+                    parsedUrl.searchParams.get('token') ||
+                    req.headers['sec-websocket-protocol'];
+
+      if (!isValidToken(token)) {
+        logger.warn({ remoteAddress: req.socket.remoteAddress }, '[WebSocket] Unauthorized connection rejected');
+        ws.close(4401, 'Unauthorized');
+        return;
+      }
+
       logger.info({ remoteAddress: req.socket.remoteAddress }, '[WebSocket] Client connected on /ws/v1/events');
 
       // 1. Send initial state handshake matching Section 5

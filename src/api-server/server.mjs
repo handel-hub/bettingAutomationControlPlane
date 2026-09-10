@@ -3,6 +3,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { traceIdMiddleware } from './middleware/traceId.mjs';
 import { rawBodySaver } from './middleware/rawBody.mjs';
+import { ingressAuthMiddleware } from './middleware/auth.mjs';
 import { automationRouter } from './routes/automationRoutes.mjs';
 import { accountsRouter } from './routes/accountsRoutes.mjs';
 import { billingRouter } from './routes/billingRoutes.mjs';
@@ -13,6 +14,14 @@ import { supportRouter } from './routes/supportRoutes.mjs';
 import { wsServer } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
 
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : [])
+]);
+
 export class ApiServer {
   constructor() {
     this.app = express();
@@ -21,11 +30,15 @@ export class ApiServer {
   }
 
   _configure() {
-    // CORS headers
+    // CORS headers - validated origin check
     this.app.use((req, res, next) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      const origin = req.headers.origin;
+      if (!origin || ALLOWED_ORIGINS.has(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+      }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature, X-ACP-Token');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
       if (req.method === 'OPTIONS') return res.sendStatus(204);
       next();
     });
@@ -33,6 +46,9 @@ export class ApiServer {
     // Trace ID & JSON parsing with rawBody retention
     this.app.use(traceIdMiddleware);
     this.app.use(express.json({ verify: rawBodySaver }));
+
+    // Ingress Authentication Middleware
+    this.app.use(ingressAuthMiddleware);
 
     // Mount 7 Domain Routers
     this.app.use('/api/v1/automation', automationRouter);
@@ -48,14 +64,15 @@ export class ApiServer {
   }
 
   /**
-   * Starts listening on the specified port.
+   * Starts listening on the specified port and host (defaults to loopback).
    * @param {number} [port=8000]
+   * @param {string} [host='127.0.0.1']
    * @returns {Promise<number>}
    */
-  async listen(port = 8000) {
+  async listen(port = 8000, host = '127.0.0.1') {
     return new Promise((resolve) => {
-      this.server.listen(port, () => {
-        logger.info(`[ApiServer] Listening on HTTP & WebSocket port ${port}`);
+      this.server.listen(port, host, () => {
+        logger.info(`[ApiServer] Listening on HTTP & WebSocket ${host}:${port}`);
         resolve(port);
       });
     });

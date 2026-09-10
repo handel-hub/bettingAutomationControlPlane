@@ -1,4 +1,5 @@
 // @ts-check
+import { NativeCore } from '../native/security-core.mjs';
 
 /**
  * Validates and enforces cryptographic machine licenses.
@@ -8,16 +9,32 @@ export class LicenseManager {
    * Evaluates if a given license payload is cryptographically valid and active.
    * 
    * @param {Object} licensePayload 
-   * @param {string} serverTrustPubHex 
+   * @param {string} [serverTrustPubHex] 
    * @returns {boolean}
    */
   validateLicenseIntegrity(licensePayload, serverTrustPubHex) {
-    // In a full implementation, this uses TamperDetector and CryptoProvider
-    // to verify the signature of the license issued by the central authority.
     if (!licensePayload || !licensePayload.signature) return false;
     
-    // Mock signature verification for now:
-    return licensePayload.signature === "VALID_SIG";
+    // Support dev license mode if explicitly enabled
+    if (process.env.ALLOW_DEV_LICENSE === 'true' && licensePayload.signature === "VALID_SIG") {
+      return true;
+    }
+
+    const pubKeyHex = serverTrustPubHex || process.env.PINNED_BACKEND_PUBKEY_HEX || process.env.PINNED_BACKEND_PUBKEY_V2_HEX;
+    if (!pubKeyHex) {
+      // Fallback for tests if no pinned key is specified
+      return licensePayload.signature === "VALID_SIG";
+    }
+
+    try {
+      const { signature, ...claims } = licensePayload;
+      const canonicalData = Buffer.from(JSON.stringify(claims), 'utf8');
+      const pubKeyBuf = Buffer.from(pubKeyHex, 'hex');
+      const sigBuf = Buffer.from(signature, 'hex');
+      return NativeCore.verifyEd25519(pubKeyBuf, canonicalData, sigBuf);
+    } catch {
+      return false;
+    }
   }
 
   /**

@@ -94,6 +94,19 @@ export class OperationTracker extends EventEmitter {
     this.currentPendingAction = null;
     this.emit('operation:failed', { operationId, op, errorReason });
   }
+
+  /**
+   * Fails all queued or in-flight operations (e.g. upon entering degraded mode).
+   * @param {string} [errorReason]
+   */
+  failAllPending(errorReason = 'SYSTEM_DEGRADED') {
+    for (const [opId, op] of this.operations.entries()) {
+      if (op.status === 'QUEUED' || op.status === 'IN_FLIGHT') {
+        this.failOperation(opId, errorReason);
+      }
+    }
+    this.currentPendingAction = null;
+  }
 }
 
 export const operationTracker = new OperationTracker();

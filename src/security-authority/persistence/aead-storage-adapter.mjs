@@ -1,5 +1,7 @@
 // @ts-check
 
+import fs from 'node:fs';
+import path from 'node:path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { NativeCore } from '../native/security-core.mjs';
@@ -16,6 +18,11 @@ export const AEADStorageAdapter = {
   async initDatabase(dbPath) {
     if (!dbPath) throw new Error("Database path required");
     
+    const dir = path.dirname(dbPath);
+    if (dir && dir !== '.' && !fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
     // Initialize Rust crypto layer (generates/fetches root key)
     NativeCore.init();
 

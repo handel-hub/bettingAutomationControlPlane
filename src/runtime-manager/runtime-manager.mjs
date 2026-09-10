@@ -11,6 +11,7 @@ import {
 } from './executionProtocol.mjs';
 import { operationTracker } from '../state/operationTracker.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
+import { securityFacade } from '../security-authority/facade.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -143,7 +144,9 @@ export class RuntimeManager extends EventEmitter {
         }
 
         default:
-          this.router.route(envelope.payload);
+          Promise.resolve(this.router.route(envelope.payload)).catch((err) => {
+            console.error(`[RuntimeManager] Command routing rejected from conn ${connId}: ${err.message}`);
+          });
           break;
       }
     } catch (e) {
@@ -179,6 +182,9 @@ export class RuntimeManager extends EventEmitter {
   }
 
   startCluster(options = {}, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.START_CLUSTER, options, traceId);
   }
 
@@ -187,31 +193,89 @@ export class RuntimeManager extends EventEmitter {
   }
 
   placeBet(betPayload, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.PLACE_BET, betPayload, traceId);
   }
 
   cashOut(cashOutPayload, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.CASH_OUT, cashOutPayload, traceId);
   }
 
   validateTactical(validatePayload = {}, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.VALIDATE, validatePayload, traceId);
   }
 
   activateAccount(accountPayload, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.ACTIVATE_ACCOUNT, accountPayload, traceId);
   }
 
   deactivateAccount(deactivatePayload, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.DEACTIVATE_ACCOUNT, deactivatePayload, traceId);
   }
 
   setBetCycle(targetBrowserId, isEnabled, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.SET_BET_CYCLE, { targetBrowserId, isEnabled }, traceId);
   }
 
   updatePolicy(category, values, traceId) {
+    if (securityFacade.isDegraded()) {
+      throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
+    }
     return this.sendEnvelope(ExecutionMessageType.UPDATE_POLICY, { category, values }, traceId);
+  }
+
+  /**
+   * Quarantines the Execution Plane: halts active clusters, terminates worker processes,
+   * fails in-flight operations, and transitions status to DEGRADED_HALTED.
+   * @param {string} [reason]
+   */
+  quarantineExecution(reason = 'BACKEND_OFFLINE_DEGRADED') {
+    this.engineStatus = 'DEGRADED_HALTED';
+    this.activeBrowserCount = 0;
+
+    // 1. Dispatch emergency stop over pipe if connected
+    if (this.activeConnections.size > 0) {
+      this.sendEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs: 1000, reason });
+    }
+
+    // 2. Terminate all active runtime processes
+    for (const pid of this.activeRuntimes) {
+      try {
+        NativeCore.terminateExecutionProcess(pid);
+      } catch (err) {
+        // Process may already have exited
+      }
+    }
+    this.activeRuntimes.clear();
+
+    // 3. Fail all in-flight or queued operations in tracker
+    operationTracker.failAllPending(`Execution Quarantined: ${reason}`);
+
+    // 4. Notify frontend console of hard halt
+    wsServer.broadcast('automation:delta', {
+      type: 'LIFECYCLE_CHANGED',
+      lifecycle: 'DEGRADED_HALTED',
+      degraded: true,
+      reason
+    });
+    this.emit('executionQuarantined', { reason });
   }
 
   /**
@@ -220,8 +284,8 @@ export class RuntimeManager extends EventEmitter {
    * @param {string} [expectedSha256]
    */
   spawnRuntime(scriptPath, expectedSha256) {
-    if (!executionAuthorization.canStartAutomation()) {
-      throw new Error("Security Authority denied automation start");
+    if (securityFacade.isDegraded() || !executionAuthorization.canStartAutomation()) {
+      throw new Error("Security Authority denied automation start: System is in DEGRADED mode (Backend Offline)");
     }
 
     this.ensureServerStarted();
