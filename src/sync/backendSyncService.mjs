@@ -1,11 +1,14 @@
-﻿// @ts-check
+// @ts-check
 import fs from 'fs';
 import path from 'path';
+import { WebSocket } from 'ws';
 import { backendClient } from '../security-authority/protocol/backend-client.mjs';
 import { repositoryFactory } from '../repositories/repositoryFactory.mjs';
 import { machineIdentity } from '../security-authority/identity/machine-identity.mjs';
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
+import { securityFacade } from '../security-authority/facade.mjs';
+import { FreshnessEvaluator } from '../state-store/hydration/FreshnessEvaluator.mjs';
 import { logger } from '../shared/logging.mjs';
 
 /**
@@ -15,18 +18,35 @@ import { logger } from '../shared/logging.mjs';
  * 2. Hydrating in-memory repositories from the authoritative backend snapshot.
  * 3. Maintaining an encrypted DPAPI local cache for resilient offline cold boots.
  * 4. Dispatching mutation intents to the Backend and local state.
+ * 5. Maintaining persistent Server-to-ACP Event Stream (/ws/v1/events) with monotonic gap detection.
+ * 6. Enforcing 2-hour offline operational grace period.
  */
 export class BackendSyncService {
   /**
    * @param {Object} [options]
    * @param {import('../security-authority/protocol/backend-client.mjs').BackendClient} [options.client]
    * @param {string} [options.cachePath]
+   * @param {boolean} [options.enableWebSocket]
    */
   constructor(options = {}) {
     this.client = options.client || backendClient;
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
+    this.enableWebSocket = options.enableWebSocket !== undefined ? options.enableWebSocket : true;
+
+    /** @type {WebSocket | null} */
+    this.ws = null;
+    /** @type {number} */
+    this.lastObservedSequence = 0;
+    /** @type {Map<string, number>} */
+    this.accountSequences = new Map();
+    /** @type {NodeJS.Timeout | null} */
+    this.reconnectTimer = null;
+    /** @type {number} */
+    this.reconnectAttempts = 0;
+    /** @type {boolean} */
+    this.isStopping = false;
 
     const baseDir = process.env.APPDATA || process.cwd();
     const secDir = path.join(baseDir, '.security_authority');
@@ -96,12 +116,224 @@ export class BackendSyncService {
       // 6. Save encrypted cache for future offline cold boot
       this.saveLocalCache();
       logger.info('[BackendSyncService] Authoritative state hydrated and local encrypted cache updated.');
+
+      // 7. Establish Server-to-ACP Event Stream WebSocket connection
+      if (this.enableWebSocket && this.client.sessionId) {
+        this.connectWebSocket();
+      }
     } catch (err) {
       logger.error({ err: err.message }, '[BackendSyncService] Error pulling snapshot from backend; falling back to cache');
       this.loadLocalCache();
     }
 
     return { isConnected: this.isConnected, isHydrated: this.isHydrated };
+  }
+
+  /**
+   * Connects to the Server-to-ACP Event Stream (/ws/v1/events) on Backend.
+   */
+  connectWebSocket() {
+    if (this.isStopping) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    if (!this.client.sessionId) {
+      logger.debug('[BackendSyncService] Cannot connect WebSocket: no authenticated session ID');
+      return;
+    }
+
+    const wsUrl = `${this.client.endpoint.replace(/^http/, 'ws')}/ws/v1/events?session=${encodeURIComponent(this.client.sessionId)}`;
+    logger.info({ url: wsUrl }, '[BackendSyncService] Connecting to Server-to-ACP Event Stream...');
+
+    try {
+      const ws = new WebSocket(wsUrl);
+      this.ws = ws;
+
+      ws.on('open', () => {
+        logger.info('[BackendSyncService] Connected to Backend Server Event Stream');
+        this.reconnectAttempts = 0;
+      });
+
+      ws.on('message', async (data) => {
+        try {
+          const raw = data.toString('utf8');
+          const event = JSON.parse(raw);
+          await this.handleServerEvent(event);
+        } catch (err) {
+          logger.warn({ err: err.message }, '[BackendSyncService] Error handling incoming server event');
+        }
+      });
+
+      ws.on('error', (err) => {
+        logger.warn({ err: err.message }, '[BackendSyncService] Server Event Stream error');
+      });
+
+      ws.on('close', (code, reason) => {
+        logger.warn({ code, reason: reason?.toString() }, '[BackendSyncService] Server Event Stream closed');
+        this.ws = null;
+        this.scheduleReconnect();
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, '[BackendSyncService] Failed to establish Server Event Stream');
+      this.scheduleReconnect();
+    }
+  }
+
+  /**
+   * Schedules reconnect with exponential backoff.
+   */
+  scheduleReconnect() {
+    if (this.isStopping || !this.enableWebSocket || !this.client.sessionId) return;
+    if (this.reconnectTimer) return;
+
+    this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWebSocket();
+    }, delay);
+    if (this.reconnectTimer && typeof this.reconnectTimer.unref === 'function') {
+      this.reconnectTimer.unref();
+    }
+  }
+
+  /**
+   * Disconnects from Server Event Stream and cancels reconnect timer.
+   */
+  disconnectWebSocket() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        this.ws.removeAllListeners();
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+  }
+
+  /**
+   * Processes incoming Server-to-ACP Event Stream frames with monotonic gap detection.
+   * @param {Object} event
+   */
+  async handleServerEvent(event) {
+    if (!event || typeof event !== 'object') return;
+
+    const eventType = event.eventType || event.topic;
+    const seq = event.sequenceNumber;
+    const payload = event.payload || {};
+
+    // 1. Monotonic Gap Detection
+    const accountId = payload.accountId || payload.id || 'global';
+    const lastSeq = this.accountSequences.get(accountId) ?? (this.lastObservedSequence ?? 0);
+
+    if (seq !== undefined && seq !== null && typeof seq === 'number') {
+      if (lastSeq === 0) {
+        // First frame observed
+        this.accountSequences.set(accountId, seq);
+        this.lastObservedSequence = Math.max(this.lastObservedSequence, seq);
+      } else if (seq === lastSeq + 1) {
+        // Strictly in order
+        this.accountSequences.set(accountId, seq);
+        this.lastObservedSequence = Math.max(this.lastObservedSequence, seq);
+      } else if (seq > lastSeq + 1) {
+        // Gap detected!
+        logger.warn({ accountId, expected: lastSeq + 1, received: seq }, '[BackendSyncService] Monotonic sequence gap detected! Triggering full authoritative state reconciliation');
+        this.accountSequences.set(accountId, seq);
+        this.lastObservedSequence = Math.max(this.lastObservedSequence, seq);
+        
+        // Trigger full state reconciliation
+        this.pullAuthoritativeSnapshot().catch(err => {
+          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed after gap');
+        });
+      } else {
+        // Duplicate or stale frame (seq <= lastSeq)
+        logger.debug({ accountId, seq, lastSeq }, '[BackendSyncService] Dropping duplicate or stale frame');
+        return;
+      }
+    }
+
+    // 2. Domain Event Routing
+    switch (eventType) {
+      case 'LICENSE_UPDATED': {
+        const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
+        wsServer.broadcast('billing:snapshot', billingSnapshot);
+        break;
+      }
+
+      case 'LICENSE_REVOKED': {
+        logger.warn('[BackendSyncService] Authoritative license revoked by Backend. Transitioning to degraded mode.');
+        await securityFacade.transitionToDegraded('LICENSE_REVOKED');
+        wsServer.broadcast('app:state', 'Degraded');
+        break;
+      }
+
+      case 'SUBSCRIPTION_STATUS_CHANGED': {
+        if (payload.subscription) {
+          await repositoryFactory.getBillingRepo().updateSubscription(payload.subscription);
+        }
+        const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
+        wsServer.broadcast('billing:snapshot', billingSnapshot);
+        break;
+      }
+
+      case 'ACCOUNT_LOCKED':
+      case 'ACCOUNT_STATUS_CHANGED': {
+        const targetAccId = payload.accountId || payload.id;
+        if (targetAccId) {
+          await repositoryFactory.getAccountsRepo().update(targetAccId, {
+            backendState: payload.status || (eventType === 'ACCOUNT_LOCKED' ? 'LOCKED' : 'SUSPENDED')
+          });
+        }
+        wsServer.broadcast('accounts:delta', payload);
+        break;
+      }
+
+      case 'ALERT_TRIGGERED': {
+        const notif = await repositoryFactory.getNotificationsRepo().add({
+          id: event.eventId || payload.id,
+          severity: payload.severity || 'WARN',
+          category: payload.category || 'SYSTEM',
+          title: payload.title || 'Security / System Alert',
+          message: payload.message || JSON.stringify(payload),
+          metadata: payload
+        });
+        wsServer.broadcast('notifications:delta', notif);
+        break;
+      }
+
+      case 'FORCE_LOGOUT': {
+        logger.warn('[BackendSyncService] Backend issued FORCE_LOGOUT. Invalidating session context.');
+        this.client.setSession(null, null);
+        await securityFacade.logout().catch(() => {});
+        wsServer.broadcast('app:state', 'Unauthenticated');
+        this.disconnectWebSocket();
+        break;
+      }
+
+      case 'app:state':
+      default: {
+        logger.debug({ eventType, payload }, '[BackendSyncService] Processed server event');
+        break;
+      }
+    }
+  }
+
+  /**
+   * Evaluates the 2-hour offline operational grace period.
+   * If exceeded, transitions Security Authority into Degraded mode.
+   * @returns {boolean} True if within grace period, false if expired.
+   */
+  checkGracePeriod() {
+    if (!this.lastSyncTimestamp) return false;
+    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(this.lastSyncTimestamp);
+    if (!isWithin && !securityFacade.isDegraded()) {
+      logger.warn('[BackendSyncService] 2-hour offline operational grace period expired. Transitioning to degraded mode.');
+      securityFacade.transitionToDegraded('GRACE_PERIOD_EXPIRED').catch(() => {});
+    }
+    return isWithin;
   }
 
   /**
@@ -198,7 +430,8 @@ export class BackendSyncService {
 
   /**
    * Synchronizes an ingress mutation with the Cloud Backend.
-   * @param {'REGISTER_ACCOUNT' | 'UPDATE_GLOBAL_CONFIG' | 'UPDATE_ACCOUNT_CONFIG'} type 
+   * Preserves full account payload including accountPassword per boundary contract.
+   * @param {'REGISTER_ACCOUNT' | 'UPDATE_GLOBAL_CONFIG' | 'UPDATE_ACCOUNT_CONFIG' | 'TOGGLE_BET_CYCLE' | 'ACCOUNT_ACTION' | 'CANCEL_SUBSCRIPTION' | 'RESUME_SUBSCRIPTION' | 'SUBMIT_SETTINGS'} type 
    * @param {any} payload 
    * @returns {Promise<any>}
    */
@@ -211,10 +444,43 @@ export class BackendSyncService {
 
     try {
       let result;
-      if (type === 'REGISTER_ACCOUNT') {
-        result = await this.client.createBettingAccount(payload);
-      } else if (type === 'UPDATE_GLOBAL_CONFIG') {
-        result = await this.client.updateGlobalConfig(payload.category, payload.values);
+      switch (type) {
+        case 'REGISTER_ACCOUNT':
+          // NOTE: Do NOT scrub accountPassword! Backend database encrypts it with AES-256-GCM AEAD.
+          result = await this.client.createBettingAccount(payload);
+          break;
+
+        case 'UPDATE_GLOBAL_CONFIG':
+          result = await this.client.updateGlobalConfig(payload.category, payload.values);
+          break;
+
+        case 'UPDATE_ACCOUNT_CONFIG':
+          result = await this.client.updateAccountConfigOverride(payload.accountId, payload.config);
+          break;
+
+        case 'TOGGLE_BET_CYCLE':
+          result = await this.client.toggleBetCycle(payload.accountId, payload.action || (payload.enabled ? 'ACTIVATE' : 'DEACTIVATE'));
+          break;
+
+        case 'ACCOUNT_ACTION':
+          result = await this.client.executeAccountAction(payload.accountId, payload.action, payload.parameters);
+          break;
+
+        case 'CANCEL_SUBSCRIPTION':
+          result = await this.client.cancelSubscription();
+          break;
+
+        case 'RESUME_SUBSCRIPTION':
+          result = await this.client.resumeSubscription();
+          break;
+
+        case 'SUBMIT_SETTINGS':
+          result = await this.client.submitSettingsIntent(payload);
+          break;
+
+        default:
+          logger.warn({ type }, '[BackendSyncService] Unknown mutation type for backend sync');
+          break;
       }
 
       this.saveLocalCache();
@@ -225,6 +491,14 @@ export class BackendSyncService {
       this.saveLocalCache();
       return { localOnly: true, error: err.message };
     }
+  }
+
+  /**
+   * Shuts down the sync service, disconnecting WebSockets and timers.
+   */
+  stop() {
+    this.isStopping = true;
+    this.disconnectWebSocket();
   }
 }
 

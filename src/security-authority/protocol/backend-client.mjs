@@ -18,6 +18,12 @@ export class ProtocolError extends Error {
     this.name = 'ProtocolError';
     this.code = code;
     this.details = details;
+    if (details && typeof details === 'object') {
+      this.legacyCode = details.legacyCode;
+      this.category = details.category;
+      this.retryable = details.retryable;
+      this.requestId = details.requestId;
+    }
   }
 }
 
@@ -38,8 +44,9 @@ export const Errors = {
 
 /**
  * Fatal error codes from Backend that MUST NOT trigger network retries.
+ * Covers both legacy codes and standardized BE_* error taxonomy.
  */
-const FATAL_PROTOCOL_ERRORS = new Set([
+export const FATAL_PROTOCOL_ERRORS = new Set([
   'NONCE_EXPIRED',
   'NONCE_REPLAYED',
   'INVALID_SIGNATURE',
@@ -48,6 +55,23 @@ const FATAL_PROTOCOL_ERRORS = new Set([
   'ACCOUNT_LOCKED',
   'INVALID_CREDENTIALS',
   'GENERATION_MISMATCH',
+  // Standardized BE_* Error Taxonomy
+  'BE_AUTH_NONCE_EXPIRED',
+  'BE_AUTH_NONCE_REPLAYED',
+  'BE_AUTH_INVALID_SIGNATURE',
+  'BE_AUTH_MACHINE_NOT_FOUND',
+  'BE_AUTH_MACHINE_REVOKED',
+  'BE_AUTH_INVALID_CREDENTIALS',
+  'BE_AUTH_SESSION_EXPIRED',
+  'BE_AUTH_SESSION_REVOKED',
+  'BE_AUTH_ACCOUNT_LOCKED',
+  'BE_REV_GENERATION_MISMATCH',
+  'BE_REV_EPOCH_MISMATCH',
+  'BE_VAL_SCHEMA_VIOLATION',
+  'BE_STATE_ACCOUNT_EXISTS',
+  'BE_PERM_ENTITLEMENT_EXCEEDED',
+  'BE_PERM_LICENSE_EXPIRED',
+  'BE_PERM_STEP_UP_REQUIRED',
   Errors.ErrInvalidCredentials,
   Errors.ErrInvalidSignature,
   Errors.ErrRevoked,
@@ -135,14 +159,18 @@ export class BackendClient {
 
         // 1. If backend returns an explicit protocol or domain error
         if (json.error) {
-          const code = typeof json.error === 'string' ? json.error : (json.error.code || 'UNKNOWN_ERROR');
-          const message = typeof json.error === 'string' ? json.error : (json.error.message || 'Backend rejected request');
+          const errObj = typeof json.error === 'object' ? json.error : { message: json.error, code: json.error };
+          const code = errObj.code || 'UNKNOWN_ERROR';
+          const legacyCode = errObj.legacyCode;
+          const message = errObj.message || 'Backend rejected request';
+          const retryable = errObj.retryable ?? false;
 
-          // If it's a fatal protocol error, never retry
-          if (FATAL_PROTOCOL_ERRORS.has(code)) {
-            throw new ProtocolError(code, message, json.error);
+          const isFatal = !retryable || FATAL_PROTOCOL_ERRORS.has(code) || (legacyCode && FATAL_PROTOCOL_ERRORS.has(legacyCode));
+          if (isFatal) {
+            throw new ProtocolError(code, message, errObj);
           }
-          throw new ProtocolError(code, message, json.error);
+          // Retryable error (e.g. BE_STATE_RESOURCE_LOCKED, BE_RATE_LIMIT_EXCEEDED, BE_SYS_SERVICE_UNAVAILABLE)
+          throw new ProtocolError(code, message, { ...errObj, retryable: true });
         }
 
         // 2. Cryptographic Validation Pipeline if response is wrapped in an envelope
@@ -169,9 +197,12 @@ export class BackendClient {
         return { envelope: json.signatures ? json : undefined, data: decodedPayload };
 
       } catch (err) {
-        // Bubble fatal or semantic errors immediately without retry
-        if (err instanceof ProtocolError && (err.code !== Errors.ErrNetwork || FATAL_PROTOCOL_ERRORS.has(err.code))) {
-          throw err;
+        // Bubble fatal or non-retryable errors immediately without retry
+        if (err instanceof ProtocolError) {
+          const isRetryable = err.retryable === true || err.code === Errors.ErrNetwork;
+          if (!isRetryable) {
+            throw err;
+          }
         }
 
         attempt++;
@@ -475,6 +506,173 @@ export class BackendClient {
   async queryTransferStatus(params) {
     const { remoteSessionId } = params;
     return this._getWithSession(`/api/v1/transfers/${remoteSessionId}/status`);
+  }
+
+  /**
+   * Toggles betting cycle participation for an account on Backend.
+   * @param {string} accountId 
+   * @param {boolean} enabled 
+   * @returns {Promise<any>}
+   */
+  async toggleBetCycle(accountId, enabled) {
+    const url = `${this.endpoint}/api/v1/automation/accounts/${accountId}/bet-cycle`;
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}` } : {})
+      },
+      body: JSON.stringify({ enabled })
+    });
+    if (!res.ok) {
+      throw new ProtocolError(`HTTP_${res.status}`, `Failed to toggle bet cycle for ${accountId}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * Updates per-account automation config overrides on Backend.
+   * @param {string} accountId 
+   * @param {string} category 
+   * @param {Object} values 
+   * @param {string} [source='CUSTOM']
+   * @returns {Promise<any>}
+   */
+  async updateAccountConfigOverride(accountId, category, values, source = 'CUSTOM') {
+    const { data } = await this._postWithRetry(`/api/v1/automation/accounts/${accountId}/override`, {
+      category,
+      source,
+      values
+    });
+    return data;
+  }
+
+  /**
+   * Fetches the billing snapshot from Backend.
+   * @returns {Promise<any>}
+   */
+  async getBillingSnapshot() {
+    return this._getWithSession('/api/v1/billing');
+  }
+
+  /**
+   * Initiates payment checkout session on Backend.
+   * @param {string} planId 
+   * @param {string} [billingInterval='monthly'] 
+   * @param {string} [returnUrl] 
+   * @returns {Promise<any>}
+   */
+  async initiateCheckout(planId, billingInterval = 'monthly', returnUrl = undefined) {
+    const { data } = await this._postWithRetry('/api/v1/billing/checkout', {
+      planId,
+      billingInterval,
+      returnUrl
+    });
+    return data;
+  }
+
+  /**
+   * Verifies checkout payment reference on Backend.
+   * @param {string} reference 
+   * @returns {Promise<any>}
+   */
+  async verifyCheckout(reference) {
+    const { data } = await this._postWithRetry('/api/v1/billing/checkout/verify', {
+      reference
+    });
+    return data;
+  }
+
+  /**
+   * Cancels subscription auto-renewal on Backend.
+   * @returns {Promise<any>}
+   */
+  async cancelSubscription() {
+    const { data } = await this._postWithRetry('/api/v1/billing/subscription/cancel', {});
+    return data;
+  }
+
+  /**
+   * Resumes subscription auto-renewal on Backend.
+   * @returns {Promise<any>}
+   */
+  async resumeSubscription() {
+    const { data } = await this._postWithRetry('/api/v1/billing/subscription/resume', {});
+    return data;
+  }
+
+  /**
+   * Fetches subscription plans catalog from Backend with optional ETag revalidation.
+   * @param {Object} [options]
+   * @param {string} [options.ifNoneMatch]
+   * @returns {Promise<{ notModified?: boolean; catalog?: any; etag?: string }>}
+   */
+  async getPlansCatalog(options = {}) {
+    const url = `${this.endpoint}/api/v1/billing/plans`;
+    const headers = {
+      'Accept': 'application/json',
+      ...(options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {})
+    };
+    const res = await fetch(url, { headers });
+    if (res.status === 304) {
+      return { notModified: true, etag: options.ifNoneMatch };
+    }
+    if (!res.ok) {
+      throw new ProtocolError(`HTTP_${res.status}`, `Failed to fetch plans catalog: ${res.status}`);
+    }
+    const catalog = await res.json();
+    return {
+      notModified: false,
+      catalog,
+      etag: res.headers.get('etag') || undefined
+    };
+  }
+
+  /**
+   * Fetches platform registry catalog from Backend with optional ETag revalidation.
+   * @param {Object} [options]
+   * @param {string} [options.ifNoneMatch]
+   * @returns {Promise<{ notModified?: boolean; registry?: any; etag?: string }>}
+   */
+  async getPlatformRegistry(options = {}) {
+    const url = `${this.endpoint}/api/v1/platforms`;
+    const headers = {
+      'Accept': 'application/json',
+      ...(options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {})
+    };
+    const res = await fetch(url, { headers });
+    if (res.status === 304) {
+      return { notModified: true, etag: options.ifNoneMatch };
+    }
+    if (!res.ok) {
+      throw new ProtocolError(`HTTP_${res.status}`, `Failed to fetch platforms: ${res.status}`);
+    }
+    const registry = await res.json();
+    return {
+      notModified: false,
+      registry,
+      etag: res.headers.get('etag') || undefined
+    };
+  }
+
+  /**
+   * Submits settings mutation intent to Backend.
+   * @param {Object} intent 
+   * @returns {Promise<any>}
+   */
+  async submitSettingsIntent(intent) {
+    const { data } = await this._postWithRetry('/api/v1/settings/intent', intent);
+    return data;
+  }
+
+  /**
+   * Submits diagnostic telemetry to Backend.
+   * @param {Object} report 
+   * @returns {Promise<any>}
+   */
+  async submitDiagnostics(report) {
+    const { data } = await this._postWithRetry('/api/v1/support/diagnostics', report);
+    return data;
   }
 }
 
