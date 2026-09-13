@@ -1,13 +1,21 @@
 import { logger } from '../shared/logging.mjs';
 import { EventEmitter } from 'node:events';
 import { CommandPayloadSchema, ContractViolationError } from './commandSchema.mjs';
+import { CAPABILITY } from '../security-authority/authorization/capabilities.mjs';
+import { securityFacade } from '../security-authority/facade.mjs';
+
+export const COMMAND_CAPABILITY_MAP = Object.freeze({
+    'START_AUTOMATION': CAPABILITY.AUTOMATION_START,
+    'STOP_AUTOMATION': CAPABILITY.AUTOMATION_STOP,
+    'UPDATE_GLOBAL_CONFIG': CAPABILITY.CONFIG_MODIFY
+});
 
 /**
  * Authoritative Ingress Gateway for routing IPC/WebSocket/REST command payloads.
  * Enforces CommandPayloadSchema contracts and tracks ingress telemetry metrics.
  */
 export class CommandRouter extends EventEmitter {
-    constructor(scheduler = null, flagManager = null) {
+    constructor(scheduler = null, flagManager = null, security = null) {
         super();
         this.handlers = new Map();
         this._metrics = {
@@ -16,6 +24,7 @@ export class CommandRouter extends EventEmitter {
             routed: 0
         };
         this.featureFlagManager = flagManager;
+        this.security = security;
     }
 
     /**
@@ -149,6 +158,21 @@ export class CommandRouter extends EventEmitter {
             logger.error(`[CommandRouter] STRICT mode rejecting command: ${errorMsg}`);
             this.emit('rejected', { command, reason: 'Schema Validation Failed (STRICT)', headers });
             throw new ContractViolationError(errorMsg, { errors: validation.errors });
+        }
+
+        // Ingress Capability Validation
+        const requiredCap = COMMAND_CAPABILITY_MAP[command.type];
+        const sec = this.security || (this === commandRouter ? securityFacade : null);
+        if (requiredCap && sec && typeof sec.authorize === 'function') {
+            const authResult = sec.authorize(requiredCap);
+            if (authResult && authResult.status !== 'OPERATIONAL') {
+                const errorMsg = `[LF-701] Execution Denied: Missing required capability [${requiredCap}]`;
+                this._emitViolation(errorMsg, command);
+                this._metrics.rejected++;
+                logger.error(`[CommandRouter] Capability check failed for ${command.type}: ${errorMsg}`);
+                this.emit('rejected', { command, reason: errorMsg, headers });
+                throw new ContractViolationError(errorMsg);
+            }
         }
 
         const category = command.category || (command.type === 'NAVIGATE' || command.type === 'navigate' ? 'Navigation' : 'Execution');

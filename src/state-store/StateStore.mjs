@@ -112,7 +112,54 @@ export class StateStore {
 
     // Execute hydration pipeline
     const stats = this.hydrate(this.userId);
+
     return stats;
+  }
+
+  /**
+   * Seeds baseline accounts when cold booting an unpopulated database.
+   * @private
+   */
+  _seedDefaultAccounts() {
+    const now = new Date().toISOString();
+    const acc1 = {
+      id: 'acc-1',
+      name: 'SportyBet Primary',
+      platformDisplayName: 'SportyBet',
+      accountUsername: 'sporty_pro_01',
+      accountPassword: '••••••••',
+      backendState: 'ACTIVE',
+      presentationCategory: 'Healthy',
+      statusDescription: 'Operating normally',
+      isSelectable: true,
+      availableActions: ['ACTIVATE', 'DEACTIVATE', 'DELETE'],
+      pendingOperation: null,
+      tags: ['primary', 'vip'],
+      lastKnownBalance: 154200,
+      currencySymbol: '₦',
+      lastUpdated: now,
+      lastSynchronization: now
+    };
+    const acc2 = {
+      id: 'acc-2',
+      name: 'Bet9ja Secondary',
+      platformDisplayName: 'Bet9ja',
+      accountUsername: 'bet9ja_runner_02',
+      accountPassword: '••••••••',
+      backendState: 'ACTIVE',
+      presentationCategory: 'Healthy',
+      statusDescription: 'Operating normally',
+      isSelectable: true,
+      availableActions: ['ACTIVATE', 'DEACTIVATE', 'DELETE'],
+      pendingOperation: null,
+      tags: ['backup'],
+      lastKnownBalance: 48950,
+      currencySymbol: '₦',
+      lastUpdated: now,
+      lastSynchronization: now
+    };
+    this.accounts.upsert(acc1);
+    this.accounts.upsert(acc2);
   }
 
   /**
@@ -405,6 +452,17 @@ export class StateStore {
           this.preludeProjection.invalidate();
           return res.settings;
         }).result;
+      },
+      updateSecurity: (sec, expectedRevision) => {
+        return this.consistencyGroups.executeGroupTransaction('settings', expectedRevision, (nextRev) => {
+          const res = this.settingsContainer.updateSecurity(sec, expectedRevision);
+          this.settingsAdapter.save(this.userId, res.settings);
+          this.preludeProjection.invalidate();
+          return res.settings;
+        }).result;
+      },
+      updatePreferences: (prefs, expectedRevision) => {
+        return this.settings.updatePresentation(prefs, expectedRevision);
       }
     };
 
@@ -412,12 +470,17 @@ export class StateStore {
     this.notifications = {
       getAll: () => this.notificationsContainer.getAll(),
       getUnreadCount: () => this.notificationsContainer.unreadCount,
+      getSnapshot: () => ({
+        notifications: this.notificationsContainer.getAll(),
+        unreadCount: this.notificationsContainer.unreadCount
+      }),
       add: (notif) => {
         const record = this.notificationsContainer.add(notif);
         this.notificationsAdapter.save(this.userId, record);
         this.preludeProjection.invalidate();
         return record;
       },
+      append: (notif) => this.notifications.add(notif),
       markRead: (id) => {
         const changed = this.notificationsContainer.markRead(id);
         if (changed) {
@@ -433,6 +496,13 @@ export class StateStore {
           this.preludeProjection.invalidate();
         }
         return changed;
+      },
+      delete: (id) => {
+        const deleted = this.notificationsContainer.delete(id);
+        if (deleted) {
+          this.preludeProjection.invalidate();
+        }
+        return deleted;
       }
     };
   }

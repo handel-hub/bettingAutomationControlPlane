@@ -8,6 +8,7 @@ import { logger } from './shared/logging.mjs';
 import { repositoryFactory } from './repositories/repositoryFactory.mjs';
 import { backendSyncService } from './sync/backendSyncService.mjs';
 import { runtimeManager } from './runtime-manager/runtime-manager.mjs';
+import { executionBoundaryManager } from './runtime-manager/boundary/index.mjs';
 import { workspaceAggregator } from './state/workspaceAggregator.mjs';
 import { initDevToken } from './api-server/middleware/auth.mjs';
 
@@ -22,15 +23,16 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
+    executionBoundaryManager.startServer();
     const pid = runtimeManager.spawnRuntime();
-    runtimeManager.startCluster({ traceId: cmd.traceId });
+    executionBoundaryManager.startCluster({ traceId: cmd.traceId });
     workspaceAggregator.setLifecycle('STARTING');
     return { started: true, pid };
   });
 
   commandRouter.register('Execution', 'STOP_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] STOP_AUTOMATION executing');
-    runtimeManager.stopCluster(3000, cmd.traceId);
+    executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
     workspaceAggregator.setLifecycle('STOPPED');
     return { stopped: true };
   });
@@ -40,7 +42,7 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = runtimeManager.placeBet(cmd.payload, cmd.traceId);
+    const sent = executionBoundaryManager.placeBet(cmd.payload, { traceId: cmd.traceId });
     return { operationId: cmd.payload?.operationId, queued: true, sent };
   });
 
@@ -49,7 +51,7 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = runtimeManager.cashOut(cmd.payload, cmd.traceId);
+    const sent = executionBoundaryManager.cashOut(cmd.payload, { traceId: cmd.traceId });
     return { operationId: cmd.payload?.operationId, queued: true, sent };
   });
 
@@ -58,7 +60,7 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = runtimeManager.validateTactical(cmd.payload, cmd.traceId);
+    const sent = executionBoundaryManager.validateTactical(cmd.payload, { traceId: cmd.traceId });
     return { valid: true, sent };
   });
 
@@ -67,7 +69,7 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = runtimeManager.activateAccount({ accountId: cmd.target }, cmd.traceId);
+    const sent = executionBoundaryManager.activateAccount({ accountId: cmd.target }, { traceId: cmd.traceId });
     return { activated: true, accountId: cmd.target, sent };
   });
 
@@ -76,7 +78,7 @@ function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = runtimeManager.deactivateAccount({ accountId: cmd.target }, cmd.traceId);
+    const sent = executionBoundaryManager.deactivateAccount({ accountId: cmd.target }, { traceId: cmd.traceId });
     return { deactivated: true, accountId: cmd.target, sent };
   });
 
@@ -153,6 +155,19 @@ runtimeManager.on('runtimeExited', (pid) => {
   workspaceAggregator.setLifecycle('STOPPED');
 });
 
+// Wire Execution Boundary Manager events
+executionBoundaryManager.on('quarantineRequired', (data) => {
+  logger.warn({ data }, '[ExecutionBoundary] Quarantine required by watchdog. Quarantining runtime.');
+  runtimeManager.quarantineExecution('WATCHDOG_HEARTBEAT_DEAD');
+  securityFacade.transitionToDegraded('EXECUTION_HEARTBEAT_TIMEOUT');
+  workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Execution heartbeat lost: runtime quarantined');
+});
+
+executionBoundaryManager.on('livenessDegraded', (data) => {
+  logger.warn({ data }, '[ExecutionBoundary] Execution plane liveness degraded');
+  workspaceAggregator.setLifecycle('DEGRADED', 'Execution process liveness degraded');
+});
+
 async function bootstrap() {
   try {
     logger.info('========================================================');
@@ -205,6 +220,7 @@ async function bootstrap() {
 const shutdown = async (signal) => {
   logger.info({ signal }, '[ControlPlane] Graceful shutdown initiated');
   try {
+    executionBoundaryManager.stopServer();
     runtimeManager.quarantineExecution(`SHUTDOWN_${signal}`);
     await apiServer.close();
     logger.info('[ControlPlane] Shutdown complete');

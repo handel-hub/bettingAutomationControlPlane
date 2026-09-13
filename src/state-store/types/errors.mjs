@@ -51,6 +51,7 @@ export class ValidationError extends StateStoreError {
   constructor(message, details = null) {
     super(message, 'ERR_VALIDATION_FAILED');
     this.details = details;
+    this.status = 409;
   }
 }
 

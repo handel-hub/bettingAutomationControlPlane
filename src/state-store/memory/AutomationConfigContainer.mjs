@@ -41,11 +41,19 @@ export class AutomationConfigContainer {
    * @param {number} [revision]
    */
   hydrate(globalConfig = null, accountOverrides = {}, revision = null) {
+    const base = createDefaultGlobalConfig();
     if (globalConfig && typeof globalConfig === 'object') {
-      PayloadValidators.validateGlobalConfig(globalConfig);
-      this._globalConfig = JSON.parse(JSON.stringify(globalConfig));
+      for (const [cat, vals] of Object.entries(globalConfig)) {
+        if (base[cat] && typeof vals === 'object') {
+          base[cat] = { ...base[cat], ...vals };
+        } else if (vals && typeof vals === 'object') {
+          base[cat] = vals;
+        }
+      }
+      PayloadValidators.validateGlobalConfig(base);
+      this._globalConfig = JSON.parse(JSON.stringify(base));
     } else {
-      this._globalConfig = createDefaultGlobalConfig();
+      this._globalConfig = base;
     }
 
     this._accountOverrides.clear();

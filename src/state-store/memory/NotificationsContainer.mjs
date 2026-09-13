@@ -110,6 +110,22 @@ export class NotificationsContainer {
     return record;
   }
 
+  append(notification) {
+    return this.add(notification);
+  }
+
+  delete(id) {
+    const existing = this._notifications.get(id);
+    if (!existing) return false;
+    if (!existing.read) {
+      this._unreadCount = Math.max(0, this._unreadCount - 1);
+    }
+    this._notifications.delete(id);
+    this._revision += 1;
+    this._lastUpdated = new Date().toISOString();
+    return true;
+  }
+
   /**
    * Marks a single notification as read.
    * @param {string} id

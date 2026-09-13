@@ -109,4 +109,27 @@ export class SettingsContainer {
 
     return { settings: this._settings, revision: this._revision };
   }
+
+  /**
+   * Updates security section with OCC.
+   * @param {any} sec
+   * @param {number} [expectedRevision]
+   */
+  updateSecurity(sec, expectedRevision) {
+    if (expectedRevision !== undefined && expectedRevision !== this._revision) {
+      throw new RevisionConflictError('settings_security', expectedRevision, this._revision);
+    }
+    const updated = {
+      ...this._settings,
+      security: {
+        ...this._settings.security,
+        ...sec
+      }
+    };
+    this._settings = Object.freeze(updated);
+    this._revision += 1;
+    this._lastUpdated = new Date().toISOString();
+
+    return { settings: this._settings, revision: this._revision };
+  }
 }

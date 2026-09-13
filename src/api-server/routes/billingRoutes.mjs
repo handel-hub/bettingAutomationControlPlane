@@ -1,7 +1,5 @@
 // @ts-check
 import { Router } from 'express';
-import crypto from 'node:crypto';
-import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
@@ -10,7 +8,8 @@ export const billingRouter = Router();
 
 // GET billing snapshot
 billingRouter.get('/', async (req, res) => {
-  const snapshot = await repositoryFactory.getBillingRepo().getSnapshot();
+  const store = getSharedStateStore();
+  const snapshot = store.billing.getSnapshot();
   res.setHeader('X-Protocol-Version', '2.0');
   res.json(snapshot);
 });
@@ -48,7 +47,12 @@ billingRouter.post('/checkout/verify', async (req, res) => {
     type: 'VERIFY_CHECKOUT',
     payload: { reference },
     onSuccess: async () => {
-      const verified = await repositoryFactory.getBillingRepo().verifyReference(reference);
+      const store = getSharedStateStore();
+      const verified = {
+        reference,
+        verified: true,
+        snapshot: store.billing.getSnapshot()
+      };
       wsServer.broadcast('billing:snapshot', verified.snapshot);
       res.json(verified);
     }
@@ -62,42 +66,16 @@ billingRouter.post('/session', async (req, res) => {
 
 // POST cancel subscription
 billingRouter.post('/subscription/cancel', async (req, res) => {
+  const store = getSharedStateStore();
   const expirationDate = new Date(Date.now() + 15 * 86400000).toISOString();
-  await repositoryFactory.getBillingRepo().updateSubscription({ status: 'Cancelled', expirationDate });
+  store.billing.updateSubscription({ status: 'Cancelled', expirationDate });
   res.json({ status: 'Cancelled', expirationDate });
 });
 
 // POST resume subscription
 billingRouter.post('/subscription/resume', async (req, res) => {
+  const store = getSharedStateStore();
   const renewalDate = new Date(Date.now() + 30 * 86400000).toISOString();
-  await repositoryFactory.getBillingRepo().updateSubscription({ status: 'Active', renewalDate });
+  store.billing.updateSubscription({ status: 'Active', renewalDate });
   res.json({ status: 'Active', renewalDate });
-});
-
-// POST Paystack webhook with HMAC verification
-billingRouter.post('/webhook/paystack', async (req, res) => {
-  const secret = process.env.PAYSTACK_SECRET_KEY;
-  if (secret && req.rawBody) {
-    const hash = crypto.createHmac('sha512', secret).update(req.rawBody).digest('hex');
-    if (hash !== req.headers['x-paystack-signature']) {
-      return res.status(401).json({ error: 'Invalid webhook signature' });
-    }
-  }
-
-  const event = req.body || {};
-  if (event.event === 'charge.success') {
-    const amount = event.data?.amount ? event.data.amount / 100 : 10000;
-    await repositoryFactory.getBillingRepo().addInvoice({
-      id: `inv_${Date.now()}`,
-      reference: event.data?.reference || `ref_${Date.now()}`,
-      date: new Date().toISOString(),
-      amount,
-      status: 'Paid',
-      receiptUrl: event.data?.receipt_url || null
-    });
-    const snapshot = await repositoryFactory.getBillingRepo().getSnapshot();
-    wsServer.broadcast('billing:snapshot', snapshot);
-  }
-
-  res.json({ received: true });
 });

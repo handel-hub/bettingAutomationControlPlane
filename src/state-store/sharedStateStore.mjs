@@ -15,6 +15,9 @@ export function getSharedStateStore(options = {}) {
     const userId = options.userId || process.env.ACP_USER_ID || 'usr_operator';
     _sharedStore = new StateStore({ dbPath, userId });
     _sharedStore.initialize();
+    if (_sharedStore.accountsContainer.getAll().length === 0) {
+      _sharedStore._seedDefaultAccounts();
+    }
   }
   return _sharedStore;
 }
