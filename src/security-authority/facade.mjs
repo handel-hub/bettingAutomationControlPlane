@@ -79,6 +79,14 @@ export class SecurityFacade {
   }
 
   /**
+   * Registers dynamic check function for active execution runtime.
+   * @param {() => boolean} fn
+   */
+  setActiveExecutionChecker(fn) {
+    engineInstance.setActiveExecutionChecker(fn);
+  }
+
+  /**
    * Revokes the current session explicitly.
    */
   async logout() {

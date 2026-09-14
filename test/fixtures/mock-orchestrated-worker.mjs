@@ -34,6 +34,14 @@ async function main() {
         break;
       }
 
+      case ExecutionMessageType.START_CLUSTER: {
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: 'RUNNING',
+          message: 'Automation cluster started'
+        }, traceId);
+        break;
+      }
+
       case ExecutionMessageType.PLACE_BET: {
         const { operationId } = payload;
         client.sendEnvelope(ExecutionMessageType.OPERATION_ACK, {
@@ -47,6 +55,23 @@ async function main() {
             operationId,
             status: 'SUCCESS',
             metrics: { cycles: 1 }
+          }, traceId);
+        }, 50);
+        break;
+      }
+
+      case ExecutionMessageType.CASH_OUT: {
+        const { operationId } = payload;
+        client.sendEnvelope(ExecutionMessageType.OPERATION_ACK, {
+          operationId,
+          status: 'IN_FLIGHT'
+        }, traceId);
+
+        setTimeout(() => {
+          client.sendEnvelope(ExecutionMessageType.OPERATION_RESULT, {
+            operationId,
+            status: 'SUCCESS',
+            metrics: { cashedOut: true }
           }, traceId);
         }, 50);
         break;

@@ -103,6 +103,28 @@ export class SqliteStorageEngine {
   }
 
   /**
+   * Executes a query returning all rows.
+   * @param {string} sql
+   * @param {...any} params
+   */
+  query(sql, ...params) {
+    if (!this.db) throw new Error('Database not open');
+    const flatParams = Array.isArray(params[0]) ? params[0] : params;
+    return this.db.prepare(sql).all(...flatParams);
+  }
+
+  /**
+   * Executes a statement returning run result.
+   * @param {string} sql
+   * @param {...any} params
+   */
+  run(sql, ...params) {
+    if (!this.db) throw new Error('Database not open');
+    const flatParams = Array.isArray(params[0]) ? params[0] : params;
+    return this.db.prepare(sql).run(...flatParams);
+  }
+
+  /**
    * Executes multiple SQL statements.
    * @param {string} sql
    */

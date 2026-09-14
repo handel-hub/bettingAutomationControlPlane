@@ -191,7 +191,13 @@ export class CommandRouter extends EventEmitter {
             return { success: false, results: [] };
         }
 
-        logger.info(`[CommandRouter] Routing [${category}:${command.type}] (${command.id || command.commandId}) [Protocol v${protocolVersion}]`);
+        logger.info({
+            traceId: command.traceId,
+            commandId: command.id || command.commandId,
+            category,
+            type: command.type,
+            protocolVersion
+        }, `[CommandRouter] Routing [${category}:${command.type}] (${command.id || command.commandId}) [Protocol v${protocolVersion}]`);
         
         this.emit('routed', {
             command,
@@ -207,7 +213,13 @@ export class CommandRouter extends EventEmitter {
                 const res = await handler(command);
                 results.push(res);
             } catch (err) {
-                logger.error(`Error in Command handler for [${category}:${command.type}]: ${err.message}`);
+                logger.error({
+                    traceId: command.traceId,
+                    commandId: command.id || command.commandId,
+                    category,
+                    type: command.type,
+                    err: err.message
+                }, `Error in Command handler for [${category}:${command.type}]: ${err.message}`);
                 throw err;
             }
         }

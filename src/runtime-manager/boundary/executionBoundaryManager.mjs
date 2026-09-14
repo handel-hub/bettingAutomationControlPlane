@@ -238,13 +238,12 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * Gated by SecurityAuthority and serialized via lifecycleMutex.
    * @param {object} [options]
    */
-  async startCluster(options = {}) {
-    return this.lifecycleMutex.runExclusive(async () => {
-      if (this.security.isDegraded()) {
-        throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
-      }
-      return this.dispatchEnvelope(ExecutionMessageType.START_CLUSTER, options.payload || {}, options);
-    });
+  startCluster(options = {}) {
+    const opts = typeof options === 'string' ? { traceId: options } : (options || {});
+    if (this.security.isDegraded()) {
+      throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
+    }
+    return this.dispatchEnvelope(ExecutionMessageType.START_CLUSTER, opts.payload || {}, opts);
   }
 
   /**
@@ -253,10 +252,9 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * @param {number} [timeoutMs=5000]
    * @param {object} [options]
    */
-  async stopCluster(timeoutMs = 5000, options = {}) {
-    return this.lifecycleMutex.runExclusive(async () => {
-      return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, options);
-    });
+  stopCluster(timeoutMs = 5000, options = {}) {
+    const opts = typeof options === 'string' ? { traceId: options } : (options || {});
+    return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, opts);
   }
 
   /**
@@ -648,3 +646,6 @@ export class ExecutionBoundaryManager extends EventEmitter {
     }
   }
 }
+
+export const executionBoundaryManager = new ExecutionBoundaryManager();
+

@@ -27,20 +27,49 @@ export function registerDefaultCommandHandlers() {
     }
 
     return executionBoundaryManager.lifecycleMutex.runExclusive(async () => {
-      // 1. Record Desired State = RUNNING
       const store = getSharedStateStore();
+      const currentLifecycle = store.lifecycle.getState();
+
+      // Invariant: Prevent duplicate process spawns
+      if (
+        currentLifecycle.observedState === 'RUNNING' ||
+        currentLifecycle.observedState === 'STARTING_HANDSHAKE' ||
+        runtimeManager.activeRuntimes.size > 0
+      ) {
+        throw new Error('[LF-701] Execution Denied: Automation is already running or initializing');
+      }
+
+      // 1. Record Desired State = RUNNING
       store.lifecycle.setDesiredState('RUNNING', 'USER_COMMAND_START');
 
       // 2. Start IPC server & spawn worker
       executionBoundaryManager.startServer();
-      const pid = runtimeManager.spawnRuntime();
+      let pid;
+      try {
+        pid = runtimeManager.spawnRuntime();
+      } catch (spawnErr) {
+        store.lifecycle.setDesiredState('STOPPED', 'SPAWN_FAILED');
+        store.lifecycle.setObservedState('STOPPED', 'SPAWN_FAILED');
+        workspaceAggregator.setLifecycle('STOPPED', 'SPAWN_FAILED');
+        throw spawnErr;
+      }
 
       // 3. Mark observed state = STARTING_HANDSHAKE
       store.lifecycle.setObservedState('STARTING_HANDSHAKE', `PID_${pid}_SPAWNED`);
       workspaceAggregator.setLifecycle('STARTING');
 
-      // 4. Send startCluster instruction over pipe
-      await executionBoundaryManager.startCluster({ traceId: cmd.traceId });
+      // 4. Two-Phase Spawn Commit: Send startCluster instruction over pipe with rollback on failure
+      try {
+        await executionBoundaryManager.startCluster({ traceId: cmd.traceId });
+      } catch (clusterErr) {
+        logger.error({ err: clusterErr.message, pid }, '[Command] Failed to start cluster on newly spawned runtime. Rolling back process.');
+        runtimeManager.terminateRuntime(pid);
+        executionBoundaryManager.stopServer();
+        store.lifecycle.setDesiredState('STOPPED', 'START_CLUSTER_FAILED');
+        store.lifecycle.setObservedState('STOPPED', 'START_CLUSTER_FAILED');
+        workspaceAggregator.setLifecycle('STOPPED', 'START_CLUSTER_FAILED');
+        throw clusterErr;
+      }
 
       return { started: true, pid };
     });
@@ -54,12 +83,22 @@ export function registerDefaultCommandHandlers() {
       store.lifecycle.setDesiredState('STOPPED', 'USER_COMMAND_STOP');
       store.lifecycle.setObservedState('STOPPING', 'USER_COMMAND_STOP');
 
-      // 2. Dispatch graceful stop to Execution Plane
-      await executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
-
-      // 3. Update Observed State = STOPPED
-      store.lifecycle.setObservedState('STOPPED', 'STOP_COMPLETED');
-      workspaceAggregator.setLifecycle('STOPPED');
+      // 2. Dispatch graceful stop to Execution Plane with force-kill fallback
+      try {
+        await executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
+      } catch (stopErr) {
+        logger.warn({ err: stopErr.message }, '[Command] Graceful stopCluster timed out or failed. Enforcing force-kill fallback.');
+        runtimeManager.terminateAll();
+      } finally {
+        // Enforce physical process termination
+        if (runtimeManager.activeRuntimes.size > 0) {
+          runtimeManager.terminateAll();
+        }
+        executionBoundaryManager.stopServer();
+        // 3. Update Observed State = STOPPED
+        store.lifecycle.setObservedState('STOPPED', 'STOP_COMPLETED');
+        workspaceAggregator.setLifecycle('STOPPED');
+      }
 
       return { stopped: true };
     });
@@ -70,8 +109,11 @@ export function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = executionBoundaryManager.placeBet(cmd.payload, { traceId: cmd.traceId });
-    return { operationId: cmd.payload?.operationId, queued: true, sent };
+    const result = executionBoundaryManager.placeBet(cmd.payload, { traceId: cmd.traceId });
+    if (result && typeof result === 'object' && result.duplicate) {
+      return { operationId: cmd.payload?.operationId, ...result };
+    }
+    return { operationId: cmd.payload?.operationId, queued: true, sent: result };
   });
 
   commandRouter.register('Execution', 'CASH_OUT', async (cmd) => {
@@ -79,8 +121,11 @@ export function registerDefaultCommandHandlers() {
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    const sent = executionBoundaryManager.cashOut(cmd.payload, { traceId: cmd.traceId });
-    return { operationId: cmd.payload?.operationId, queued: true, sent };
+    const result = executionBoundaryManager.cashOut(cmd.payload, { traceId: cmd.traceId });
+    if (result && typeof result === 'object' && result.duplicate) {
+      return { operationId: cmd.payload?.operationId, ...result };
+    }
+    return { operationId: cmd.payload?.operationId, queued: true, sent: result };
   });
 
   commandRouter.register('Execution', 'VALIDATE', async (cmd) => {
@@ -114,9 +159,15 @@ export function registerDefaultCommandHandlers() {
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName }, '[Command] REGISTER_ACCOUNT executing');
     const created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
-    backendSyncService.syncMutation('REGISTER_ACCOUNT', cmd.payload).catch(err => {
-      logger.warn({ err: err.message }, '[Command] Async backend sync failed for REGISTER_ACCOUNT');
-    });
+    try {
+      const store = getSharedStateStore();
+      store.accounts.upsert(created);
+    } catch { /* ignore */ }
+    try {
+      await backendSyncService.syncMutation('REGISTER_ACCOUNT', cmd.payload);
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for REGISTER_ACCOUNT');
+    }
     return created;
   });
 
@@ -150,6 +201,12 @@ export function registerDefaultCommandHandlers() {
       } catch { /* ignore */ }
     }
 
+    try {
+      await backendSyncService.syncMutation('TOGGLE_BET_CYCLE', { accountId: cmd.target, enabled: cmd.payload?.enabled });
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for TOGGLE_BET_CYCLE');
+    }
+
     return { toggled: true, enabled: cmd.payload?.enabled, updated };
   });
 
@@ -176,12 +233,22 @@ export function registerDefaultCommandHandlers() {
       } catch { /* ignore */ }
     }
 
+    try {
+      await backendSyncService.syncMutation('UPDATE_ACCOUNT_CONFIG', { accountId: cmd.target, category: cmd.payload?.category, config: cmd.payload?.values });
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for UPDATE_ACCOUNT_CONFIG');
+    }
+
     return { updated: true, accountConfig: updated };
   });
 
   commandRouter.register('Persistence', 'UPDATE_GLOBAL_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, category: cmd.payload?.category }, '[Command] UPDATE_GLOBAL_CONFIG executing');
     const updated = await repositoryFactory.getConfigRepo().updateCategory(cmd.payload.category, cmd.payload.values);
+    try {
+      const store = getSharedStateStore();
+      store.config.updateCategory(cmd.payload.category, cmd.payload.values);
+    } catch { /* ignore */ }
     
     // Orchestration Dispatch: Broadcast full-document policy update to Execution Plane
     try {
@@ -195,9 +262,11 @@ export function registerDefaultCommandHandlers() {
       logger.warn({ err: err.message }, '[Command] Failed to dispatch UPDATE_GLOBAL_CONFIG to Execution Plane');
     }
 
-    backendSyncService.syncMutation('UPDATE_GLOBAL_CONFIG', cmd.payload).catch(err => {
-      logger.warn({ err: err.message }, '[Command] Async backend sync failed for UPDATE_GLOBAL_CONFIG');
-    });
+    try {
+      await backendSyncService.syncMutation('UPDATE_GLOBAL_CONFIG', cmd.payload);
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for UPDATE_GLOBAL_CONFIG');
+    }
     return updated;
   });
 
@@ -209,18 +278,20 @@ export function registerDefaultCommandHandlers() {
 }
 
 // Wire operation tracker events to WebSocket deltas
-operationTracker.on('operation:completed', ({ operationId, result }) => {
+operationTracker.on('operation:completed', ({ operationId, op, result }) => {
+  const traceId = op?.metadata?.traceId || operationTracker.getOperation(operationId)?.metadata?.traceId;
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: null }
-  });
+  }, { correlationId: operationId, traceId });
 });
 
-operationTracker.on('operation:failed', ({ operationId, errorReason }) => {
+operationTracker.on('operation:failed', ({ operationId, op, errorReason }) => {
+  const traceId = op?.metadata?.traceId || operationTracker.getOperation(operationId)?.metadata?.traceId;
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: null }
-  });
+  }, { correlationId: operationId, traceId });
 });
 
 // Synchronize runtime manager events with workspace snapshot
@@ -255,6 +326,16 @@ runtimeManager.on('runtimeExited', (pid) => {
 });
 
 // Wire Execution Boundary Manager events
+executionBoundaryManager.on('clientConnected', (connId) => {
+  runtimeManager.activeConnections.add(connId);
+  runtimeManager.emit('clientConnected', connId);
+});
+
+executionBoundaryManager.on('clientDisconnected', (connId) => {
+  runtimeManager.activeConnections.delete(connId);
+  runtimeManager.emit('clientDisconnected', connId);
+});
+
 executionBoundaryManager.on('quarantineRequired', (data) => {
   logger.warn({ data }, '[ExecutionBoundary] Quarantine required by watchdog. Quarantining runtime.');
   runtimeManager.quarantineExecution('WATCHDOG_HEARTBEAT_DEAD');
@@ -267,6 +348,26 @@ executionBoundaryManager.on('livenessDegraded', (data) => {
   workspaceAggregator.setLifecycle('DEGRADED', 'Execution process liveness degraded');
 });
 
+// Wire uncertain operations into ReconciliationCoordinator to preserve financial safety
+runtimeManager.on('uncertainOperations', (uncertainOps) => {
+  if (Array.isArray(uncertainOps)) {
+    for (const op of uncertainOps) {
+      const targetAccount = op.metadata?.accountId || op.metadata?.targetAccounts?.[0] || 'unknown';
+      try {
+        executionBoundaryManager.reconciliation.enqueueUncertainOperation({
+          operationId: op.operationId,
+          accountId: targetAccount,
+          idempotencyKey: op.metadata?.idempotencyKey || `idem_${op.operationId}`,
+          reason: op.uncertainReason || 'EXECUTION_QUARANTINED',
+          details: op
+        });
+      } catch (err) {
+        logger.warn({ err: err.message }, '[RuntimeManager] Failed to enqueue uncertain operation to reconciliation coordinator');
+      }
+    }
+  }
+});
+
 async function bootstrap() {
   try {
     logger.info('========================================================');
@@ -277,6 +378,9 @@ async function bootstrap() {
     await securityFacade.initialize();
     logger.info('[SecurityAuthority] Security engine and persistent store initialized');
 
+    // Wire dynamic execution check for Security Authority capability evaluation
+    securityFacade.setActiveExecutionChecker(() => runtimeManager.activeRuntimes.size > 0);
+
     // 2. Initialize Ingress Token for Local Dev & Console Interop
     const devToken = initDevToken();
     logger.info({ devToken }, '[SecurityAuthority] Ingress access token active');
@@ -284,15 +388,7 @@ async function bootstrap() {
     // 3. Register Commands
     registerDefaultCommandHandlers();
 
-    // 4. Start API & WebSocket Server on Loopback
-    const port = Number(process.env.PORT) || 8000;
-    const host = process.env.HOST || '127.0.0.1';
-    await apiServer.listen(port, host);
-
-    logger.info(`[ControlPlane] Ready for Next.js console connections at http://${host}:${port}`);
-    logger.info(`[ControlPlane] WebSocket stream active at ws://${host}:${port}/ws/v1/events`);
-
-    // 5. Initialize Backend Synchronization & Hydration Pipeline
+    // 4. Initialize Backend Synchronization & Hydration Pipeline (Blocking prerequisite)
     try {
       const syncResult = await backendSyncService.initialize();
       if (!syncResult.isConnected) {
@@ -309,6 +405,14 @@ async function bootstrap() {
       runtimeManager.quarantineExecution('BACKEND_SYNC_FAILURE');
       workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend sync failure: Execution Plane disabled');
     }
+
+    // 5. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready
+    const port = Number(process.env.PORT) || 8000;
+    const host = process.env.HOST || '127.0.0.1';
+    await apiServer.listen(port, host);
+
+    logger.info(`[ControlPlane] Ready for Next.js console connections at http://${host}:${port}`);
+    logger.info(`[ControlPlane] WebSocket stream active at ws://${host}:${port}/ws/v1/events`);
   } catch (err) {
     logger.fatal({ err: err.message, stack: err.stack }, '[ControlPlane] Fatal startup error');
     process.exit(1);

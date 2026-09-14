@@ -14,7 +14,16 @@ export const automationRouter = Router();
 // GET full workspace snapshot
 automationRouter.get('/snapshot', async (req, res) => {
   try {
-    const snapshot = await workspaceAggregator.getSnapshot();
+    const store = getSharedStateStore();
+    const runtimeState = {
+      lifecycle: workspaceAggregator.lifecycle,
+      lifecycleMessage: workspaceAggregator.lifecycleMessage,
+      activeAccountIds: workspaceAggregator.activeAccountIds,
+      activeBrowsers: workspaceAggregator.activeAccountIds.size,
+      globalActionPending: operationTracker.getCurrentPendingAction()
+    };
+    const snapshot = store.getWorkspaceSnapshot(runtimeState);
+    res.setHeader('X-Protocol-Version', '2.0');
     res.json(snapshot);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -73,45 +82,51 @@ automationRouter.post('/stop', async (req, res) => {
 
 // POST tactical place-bet
 automationRouter.post('/operations/place-bet', async (req, res) => {
-  const { marketId, odds, stake } = req.body || {};
-  const op = operationTracker.startOperation('PLACING_BET', { marketId, odds, stake });
+  const { marketId, odds, stake, idempotencyKey, accountId, targetAccounts, forceRetry } = req.body || {};
+  const op = operationTracker.startOperation('PLACING_BET', { marketId, odds, stake, idempotencyKey, accountId, traceId: req.traceId });
 
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: 'PLACING_BET' }
-  });
+  }, { correlationId: op.operationId, traceId: req.traceId });
 
   return executeCommand({
     req,
     res,
     category: 'Execution',
     type: 'PLACE_BET',
-    payload: { marketId, odds, stake, operationId: op.operationId },
-    onSuccess: () => {
+    payload: { marketId, odds, stake, idempotencyKey, accountId, targetAccounts, forceRetry, operationId: op.operationId, traceId: req.traceId },
+    onSuccess: (result) => {
+      if (result && result.duplicate) {
+        return res.status(200).json(result);
+      }
       // Return 202 Accepted / QUEUED status per contract
-      res.status(202).json({ operationId: op.operationId, status: 'QUEUED' });
+      res.status(202).json({ operationId: op.operationId, status: 'QUEUED', ...result });
     }
   });
 });
 
 // POST tactical cash-out
 automationRouter.post('/operations/cash-out', async (req, res) => {
-  const { betId, threshold } = req.body || {};
-  const op = operationTracker.startOperation('CASHING_OUT', { betId, threshold });
+  const { betId, threshold, idempotencyKey, accountId, targetAccount, forceRetry } = req.body || {};
+  const op = operationTracker.startOperation('CASHING_OUT', { betId, threshold, idempotencyKey, accountId, traceId: req.traceId });
 
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: 'CASHING_OUT' }
-  });
+  }, { correlationId: op.operationId, traceId: req.traceId });
 
   return executeCommand({
     req,
     res,
     category: 'Execution',
     type: 'CASH_OUT',
-    payload: { betId, threshold, operationId: op.operationId },
-    onSuccess: () => {
-      res.status(202).json({ operationId: op.operationId, status: 'QUEUED' });
+    payload: { betId, threshold, idempotencyKey, accountId, targetAccount, forceRetry, operationId: op.operationId, traceId: req.traceId },
+    onSuccess: (result) => {
+      if (result && result.duplicate) {
+        return res.status(200).json(result);
+      }
+      res.status(202).json({ operationId: op.operationId, status: 'QUEUED', ...result });
     }
   });
 });

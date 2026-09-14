@@ -7,12 +7,88 @@ import EventEmitter from 'node:events';
  * preventing double-betting while transactions are unresolved.
  */
 export class ReconciliationCoordinator extends EventEmitter {
-  constructor() {
+  /**
+   * @param {object} [options]
+   * @param {any} [options.engine=null] - Optional SQLite storage engine for crash survival
+   */
+  constructor(options = {}) {
     super();
+    this.engine = options.engine || null;
     /** @type {Map<string, { accountId: string, operationId: string, idempotencyKey: string, frozenAt: number, reason: string }>} */
     this.frozenAccounts = new Map();
     /** @type {Map<string, { operationId: string, accountId: string, idempotencyKey: string, status: string, enqueuedAt: number, attempts: number, details: any }>} */
     this.pendingReconciliations = new Map();
+
+    if (this.engine) {
+      this._initPersistence();
+      this._hydrateFromPersistence();
+    }
+  }
+
+  /**
+   * Initializes persistence schema.
+   * @private
+   */
+  _initPersistence() {
+    try {
+      this.engine.exec(`
+        CREATE TABLE IF NOT EXISTS reconciliation_queue (
+          operation_id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          idempotency_key TEXT,
+          status TEXT NOT NULL,
+          reason TEXT,
+          details_json TEXT,
+          enqueued_at INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          resolved_at INTEGER,
+          outcome TEXT
+        );
+        CREATE TABLE IF NOT EXISTS frozen_accounts (
+          account_id TEXT PRIMARY KEY,
+          operation_id TEXT NOT NULL,
+          idempotency_key TEXT,
+          frozen_at INTEGER NOT NULL,
+          reason TEXT
+        );
+      `);
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Hydrates frozen accounts and pending uncertain tasks from persistence.
+   * @private
+   */
+  _hydrateFromPersistence() {
+    try {
+      const frozenRows = this.engine.query(`SELECT account_id, operation_id, idempotency_key, frozen_at, reason FROM frozen_accounts`);
+      for (const row of frozenRows) {
+        this.frozenAccounts.set(row.account_id, {
+          accountId: row.account_id,
+          operationId: row.operation_id,
+          idempotencyKey: row.idempotency_key,
+          frozenAt: row.frozen_at,
+          reason: row.reason
+        });
+      }
+
+      const recRows = this.engine.query(`
+        SELECT operation_id, account_id, idempotency_key, status, reason, details_json, enqueued_at, attempts
+        FROM reconciliation_queue
+        WHERE status NOT IN ('COMPLETED', 'FAILED')
+      `);
+      for (const row of recRows) {
+        this.pendingReconciliations.set(row.operation_id, {
+          operationId: row.operation_id,
+          accountId: row.account_id,
+          idempotencyKey: row.idempotency_key,
+          status: row.status,
+          enqueuedAt: row.enqueued_at,
+          attempts: row.attempts,
+          details: row.details_json ? JSON.parse(row.details_json) : {}
+        });
+      }
+    } catch { /* ignore */ }
   }
 
   /**
@@ -34,6 +110,16 @@ export class ReconciliationCoordinator extends EventEmitter {
     };
 
     this.frozenAccounts.set(accountId, record);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          INSERT OR REPLACE INTO frozen_accounts (account_id, operation_id, idempotency_key, frozen_at, reason)
+          VALUES (?, ?, ?, ?, ?)
+        `, [accountId, operationId, idempotencyKey, record.frozenAt, reason]);
+      } catch { /* ignore */ }
+    }
+
     this.emit('accountFrozen', record);
     return record;
   }
@@ -47,6 +133,13 @@ export class ReconciliationCoordinator extends EventEmitter {
 
     const record = this.frozenAccounts.get(accountId);
     this.frozenAccounts.delete(accountId);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`DELETE FROM frozen_accounts WHERE account_id = ?`, [accountId]);
+      } catch { /* ignore */ }
+    }
+
     this.emit('accountUnfrozen', record);
     return true;
   }
@@ -89,6 +182,26 @@ export class ReconciliationCoordinator extends EventEmitter {
     };
 
     this.pendingReconciliations.set(operationId, task);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          INSERT OR REPLACE INTO reconciliation_queue
+          (operation_id, account_id, idempotency_key, status, reason, details_json, enqueued_at, attempts)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          operationId,
+          accountId,
+          idempotencyKey,
+          'QUEUED',
+          reason,
+          JSON.stringify(details || {}),
+          task.enqueuedAt,
+          0
+        ]);
+      } catch { /* ignore */ }
+    }
+
     this.emit('uncertainEnqueued', task);
     return task;
   }
@@ -104,6 +217,16 @@ export class ReconciliationCoordinator extends EventEmitter {
 
     task.status = 'IN_PROGRESS';
     task.attempts++;
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          UPDATE reconciliation_queue
+          SET status = ?, attempts = ?
+          WHERE operation_id = ?
+        `, ['IN_PROGRESS', task.attempts, operationId]);
+      } catch { /* ignore */ }
+    }
 
     return {
       operationId: task.operationId,
@@ -134,6 +257,16 @@ export class ReconciliationCoordinator extends EventEmitter {
       this.unfreezeAccount(task.accountId);
       this.pendingReconciliations.delete(operationId);
 
+      if (this.engine) {
+        try {
+          this.engine.run(`
+            UPDATE reconciliation_queue
+            SET status = ?, outcome = ?, resolved_at = ?
+            WHERE operation_id = ?
+          `, ['COMPLETED', 'COMPLETED', Date.now(), operationId]);
+        } catch { /* ignore */ }
+      }
+
       const result = { operationId, outcome: 'COMPLETED', platformOrder, task };
       this.emit('reconciliationResolved', result);
       return { handled: true, outcome: 'COMPLETED', result };
@@ -144,6 +277,16 @@ export class ReconciliationCoordinator extends EventEmitter {
       this.unfreezeAccount(task.accountId);
       this.pendingReconciliations.delete(operationId);
 
+      if (this.engine) {
+        try {
+          this.engine.run(`
+            UPDATE reconciliation_queue
+            SET status = ?, outcome = ?, resolved_at = ?
+            WHERE operation_id = ?
+          `, ['FAILED', 'FAILED', Date.now(), operationId]);
+        } catch { /* ignore */ }
+      }
+
       const result = { operationId, outcome: 'FAILED', platformOrder, task };
       this.emit('reconciliationResolved', result);
       return { handled: true, outcome: 'FAILED', result };
@@ -151,6 +294,17 @@ export class ReconciliationCoordinator extends EventEmitter {
 
     // Still pending, increment attempts and retain freeze
     task.status = 'PENDING_RETRY';
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          UPDATE reconciliation_queue
+          SET status = ?, attempts = ?
+          WHERE operation_id = ?
+        `, ['PENDING_RETRY', task.attempts, operationId]);
+      } catch { /* ignore */ }
+    }
+
     return { handled: true, outcome: 'PENDING_RETRY', task };
   }
 
@@ -176,6 +330,16 @@ export class ReconciliationCoordinator extends EventEmitter {
       operatorNote,
       resolvedAt: Date.now()
     };
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          UPDATE reconciliation_queue
+          SET status = ?, outcome = ?, resolved_at = ?
+          WHERE operation_id = ?
+        `, [forcedOutcome, forcedOutcome, result.resolvedAt, operationId]);
+      } catch { /* ignore */ }
+    }
 
     this.emit('reconciliationResolved', result);
     return result;

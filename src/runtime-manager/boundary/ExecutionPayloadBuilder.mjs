@@ -83,8 +83,14 @@ export class ExecutionPayloadBuilder {
    * @returns {object}
    */
   static buildInitializationPayload(store, traceId = undefined) {
-    const globalConfig = store.configContainer.getGlobalConfig();
-    const accounts = store.accountsContainer.getAll();
+    const globalConfig = typeof store.configContainer?.getGlobalConfig === 'function'
+      ? store.configContainer.getGlobalConfig()
+      : (typeof store.configContainer?.toSettingsIniObject === 'function'
+        ? store.configContainer.toSettingsIniObject()
+        : {});
+    const accounts = typeof store.accountsContainer?.getAll === 'function'
+      ? store.accountsContainer.getAll()
+      : [];
 
     // 1. Compile INI-compatible Settings for AutomationController
     const settings = {
@@ -106,7 +112,9 @@ export class ExecutionPayloadBuilder {
 
     // 2. Decrypt credentials on-demand right before IPC handoff
     const compiledAccounts = accounts.map((acc, index) => {
-      const decryptedPassword = vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword);
+      const decryptedPassword = acc.accountPassword && acc.accountPassword !== '[PROTECTED]'
+        ? acc.accountPassword
+        : (acc.rawPassword || vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword));
       return {
         id: acc.id,
         role: index === 0 ? 'master' : 'slave',
@@ -120,19 +128,38 @@ export class ExecutionPayloadBuilder {
     // 3. Compile full-document initial policies for all provisioned accounts
     const accountPolicies = {};
     for (const acc of accounts) {
-      const overrides = store.configContainer.getAccountOverride(acc.id);
+      const overrides = typeof store.configContainer?.getAccountOverride === 'function'
+        ? store.configContainer.getAccountOverride(acc.id)
+        : {};
       accountPolicies[acc.accountUsername] = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
     }
 
     const defaultPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig);
+    const config = typeof store.configContainer?.toSettingsIniObject === 'function'
+      ? store.configContainer.toSettingsIniObject()
+      : {};
 
     return {
+      protocolVersion: '3.0',
       settings,
       accounts: compiledAccounts,
       proxies: [],
       policy: {
         defaultPolicy,
         accountPolicies
+      },
+      fleet: {
+        accounts: compiledAccounts.map(a => ({
+          ...a,
+          accountId: a.id,
+          role: a.role,
+          username: a.username,
+          password: a.password
+        }))
+      },
+      configuration: {
+        pricing: config.Pricing || { mode: 'PROFIT_TARGET', baseStake: 100, targetProfit: 25 },
+        risk: config.Risk || { maxStake: 5000 }
       }
     };
   }

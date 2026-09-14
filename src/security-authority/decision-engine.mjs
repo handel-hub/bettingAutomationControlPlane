@@ -15,6 +15,16 @@ export class DecisionEngine {
   constructor() {
     /** @type {import('./state-machine/states.mjs').SecurityStateData | null} */
     this.inMemoryState = null;
+    /** @type {(() => boolean) | null} */
+    this.activeExecutionChecker = null;
+  }
+
+  /**
+   * Sets the dynamic execution status checker callback.
+   * @param {() => boolean} fn
+   */
+  setActiveExecutionChecker(fn) {
+    this.activeExecutionChecker = fn;
   }
 
   /**
@@ -71,7 +81,16 @@ export class DecisionEngine {
 
     // Pass dependency functions to evaluate invariants dynamically
     const getCapabilities = (stateData) => stateData?.authorization?.capability_set ?? [];
-    const hasActiveExecution = () => false; // to be hooked up to RuntimeManager
+    const hasActiveExecution = () => {
+      if (typeof this.activeExecutionChecker === 'function') {
+        try {
+          return Boolean(this.activeExecutionChecker());
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    };
 
     const result = await executeTransition(
       this.inMemoryState,
@@ -101,7 +120,15 @@ export class DecisionEngine {
     if (this.inMemoryState.authorization?.status !== 'VALID') {
       return [];
     }
-    return this.inMemoryState.authorization.capability_set;
+    const caps = this.inMemoryState.authorization.capability_set || [];
+    if (typeof this.activeExecutionChecker === 'function') {
+      try {
+        if (this.activeExecutionChecker()) {
+          return caps.filter(c => c !== 'CAP_AUTOMATION_START');
+        }
+      } catch { /* ignore */ }
+    }
+    return caps;
   }
 }
 

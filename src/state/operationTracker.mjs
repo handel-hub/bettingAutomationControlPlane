@@ -96,6 +96,45 @@ export class OperationTracker extends EventEmitter {
   }
 
   /**
+   * Marks an in-flight operation UNCERTAIN when outcome cannot be verified.
+   * @param {string} operationId
+   * @param {string} reason
+   * @param {any} [details]
+   */
+  markUncertain(operationId, reason, details = {}) {
+    const op = this.operations.get(operationId);
+    if (op) {
+      op.status = 'UNCERTAIN';
+      op.uncertainReason = reason;
+      op.uncertainDetails = details;
+      op.completedTime = Date.now();
+    }
+    this.currentPendingAction = null;
+    this.emit('operation:uncertain', { operationId, op, reason, details });
+  }
+
+  /**
+   * Safely quarantines all pending operations:
+   * In-flight/processing operations are transitioned to UNCERTAIN to preserve financial consistency.
+   * Queued operations that have not touched external services are cleanly marked FAILED.
+   * @param {string} [reason]
+   * @returns {Array<any>} List of uncertain operations requiring out-of-band reconciliation
+   */
+  quarantineAllPending(reason = 'SYSTEM_DEGRADED') {
+    const uncertainOps = [];
+    for (const [opId, op] of this.operations.entries()) {
+      if (op.status === 'IN_FLIGHT' || op.status === 'PROCESSING') {
+        this.markUncertain(opId, reason);
+        uncertainOps.push(op);
+      } else if (op.status === 'QUEUED') {
+        this.failOperation(opId, reason);
+      }
+    }
+    this.currentPendingAction = null;
+    return uncertainOps;
+  }
+
+  /**
    * Fails all queued or in-flight operations (e.g. upon entering degraded mode).
    * @param {string} [errorReason]
    */

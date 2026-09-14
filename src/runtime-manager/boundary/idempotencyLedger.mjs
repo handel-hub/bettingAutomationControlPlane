@@ -10,12 +10,69 @@ export class IdempotencyLedger {
    * @param {object} [options]
    * @param {number} [options.maxAgeMs=86400000] - 24 hours default TTL
    * @param {number} [options.maxEntries=10000] - Maximum ledger capacity
+   * @param {any} [options.engine=null] - Optional SQLite storage engine for durable crash resilience
    */
-  constructor({ maxAgeMs = 86_400_000, maxEntries = 10_000 } = {}) {
+  constructor({ maxAgeMs = 86_400_000, maxEntries = 10_000, engine = null } = {}) {
     this.maxAgeMs = maxAgeMs;
     this.maxEntries = maxEntries;
+    this.engine = engine;
     /** @type {Map<string, { idempotencyKey: string, operationId: string, status: 'IN_FLIGHT' | 'COMPLETED' | 'FAILED', createdAt: number, updatedAt: number, cachedResult: any, metadata: any }>} */
     this.records = new Map();
+
+    if (this.engine) {
+      this._initPersistence();
+      this._hydrateFromPersistence();
+    }
+  }
+
+  /**
+   * Initializes persistence schema.
+   * @private
+   */
+  _initPersistence() {
+    try {
+      this.engine.exec(`
+        CREATE TABLE IF NOT EXISTS idempotency_ledger (
+          idempotency_key TEXT PRIMARY KEY,
+          operation_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          cached_result_json TEXT,
+          metadata_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_idempotency_updated ON idempotency_ledger(updated_at);
+      `);
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Hydrates unexpired records from SQLite storage engine.
+   * @private
+   */
+  _hydrateFromPersistence() {
+    try {
+      const now = Date.now();
+      const minUpdated = now - this.maxAgeMs;
+      const rows = this.engine.query(`
+        SELECT idempotency_key, operation_id, status, created_at, updated_at, cached_result_json, metadata_json
+        FROM idempotency_ledger
+        WHERE updated_at >= ?
+        ORDER BY updated_at ASC
+      `, [minUpdated]);
+
+      for (const row of rows) {
+        this.records.set(row.idempotency_key, {
+          idempotencyKey: row.idempotency_key,
+          operationId: row.operation_id,
+          status: row.status,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          cachedResult: row.cached_result_json ? JSON.parse(row.cached_result_json) : null,
+          metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {}
+        });
+      }
+    } catch { /* ignore */ }
   }
 
   /**
@@ -79,6 +136,25 @@ export class IdempotencyLedger {
     };
 
     this.records.set(idempotencyKey, record);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          INSERT OR REPLACE INTO idempotency_ledger
+          (idempotency_key, operation_id, status, created_at, updated_at, cached_result_json, metadata_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          idempotencyKey,
+          operationId,
+          'IN_FLIGHT',
+          now,
+          now,
+          null,
+          JSON.stringify(metadata || {})
+        ]);
+      } catch { /* ignore */ }
+    }
+
     return record;
   }
 
@@ -99,6 +175,22 @@ export class IdempotencyLedger {
       // Refresh LRU position
       this.records.delete(idempotencyKey);
       this.records.set(idempotencyKey, existing);
+
+      if (this.engine) {
+        try {
+          this.engine.run(`
+            UPDATE idempotency_ledger
+            SET status = ?, cached_result_json = ?, updated_at = ?
+            WHERE idempotency_key = ?
+          `, [
+            status,
+            cachedResult ? JSON.stringify(cachedResult) : null,
+            now,
+            idempotencyKey
+          ]);
+        } catch { /* ignore */ }
+      }
+
       return existing;
     }
 
@@ -114,6 +206,25 @@ export class IdempotencyLedger {
     };
 
     this.records.set(idempotencyKey, record);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          INSERT OR REPLACE INTO idempotency_ledger
+          (idempotency_key, operation_id, status, created_at, updated_at, cached_result_json, metadata_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          idempotencyKey,
+          record.operationId,
+          status,
+          now,
+          now,
+          cachedResult ? JSON.stringify(cachedResult) : null,
+          '{}'
+        ]);
+      } catch { /* ignore */ }
+    }
+
     return record;
   }
 
@@ -130,6 +241,14 @@ export class IdempotencyLedger {
         pruned++;
       }
     }
+
+    if (this.engine && pruned > 0) {
+      try {
+        const threshold = now - this.maxAgeMs;
+        this.engine.run(`DELETE FROM idempotency_ledger WHERE updated_at < ?`, [threshold]);
+      } catch { /* ignore */ }
+    }
+
     return pruned;
   }
 
@@ -138,6 +257,11 @@ export class IdempotencyLedger {
    */
   clear() {
     this.records.clear();
+    if (this.engine) {
+      try {
+        this.engine.run(`DELETE FROM idempotency_ledger`);
+      } catch { /* ignore */ }
+    }
   }
 
   /**

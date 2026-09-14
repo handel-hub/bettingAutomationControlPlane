@@ -12,6 +12,7 @@ import {
 import { operationTracker } from '../state/operationTracker.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { executionBoundaryManager } from './boundary/index.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -265,8 +266,9 @@ export class RuntimeManager extends EventEmitter {
     }
     this.activeRuntimes.clear();
 
-    // 3. Fail all in-flight or queued operations in tracker
-    operationTracker.failAllPending(`Execution Quarantined: ${reason}`);
+    // 3. Preserve financial safety: transition in-flight operations to UNCERTAIN, and fail queued operations
+    const uncertainOps = operationTracker.quarantineAllPending(`Execution Quarantined: ${reason}`);
+    this.emit('uncertainOperations', uncertainOps);
 
     // 4. Notify frontend console of hard halt
     wsServer.broadcast('automation:delta', {
@@ -275,7 +277,7 @@ export class RuntimeManager extends EventEmitter {
       degraded: true,
       reason
     });
-    this.emit('executionQuarantined', { reason });
+    this.emit('executionQuarantined', { reason, uncertainOps });
   }
 
   /**
@@ -323,14 +325,23 @@ export class RuntimeManager extends EventEmitter {
       }
 
       // Clear timer on first successful client connection
-      const onConnected = () => {
+      const onConnected = (connId) => {
         if (handshakeTimer) {
           clearTimeout(handshakeTimer);
           handshakeTimer = null;
         }
+        if (typeof connId === 'number') {
+          this.activeConnections.add(connId);
+        }
         this.off('clientConnected', onConnected);
+        executionBoundaryManager.off('clientConnected', onConnected);
       };
       this.once('clientConnected', onConnected);
+      executionBoundaryManager.once('clientConnected', onConnected);
+
+      if (this.activeConnections.size > 0 || executionBoundaryManager.isConnected()) {
+        onConnected();
+      }
     }
     
     return pid;

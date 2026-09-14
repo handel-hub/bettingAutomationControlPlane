@@ -121,6 +121,23 @@ class WsStreamer {
             return;
           }
 
+          if (parsed && (parsed.topic === 'system:resync' || parsed.type === 'RESYNC')) {
+            const store = getSharedStateStore();
+            const automationSnapshot = await workspaceAggregator.getSnapshot();
+            const runtimeState = {
+              lifecycleState: 'Authorized',
+              automationLifecycle: workspaceAggregator.lifecycle,
+              automationMessage: workspaceAggregator.lifecycleMessage,
+              automationCapabilities: automationSnapshot.capabilities,
+              automationAccounts: automationSnapshot.accounts,
+              systemStatus: automationSnapshot.systemStatus,
+              globalActionPending: operationTracker.getCurrentPendingAction()
+            };
+            const preludePayload = store.getPreludeSnapshot(runtimeState);
+            this.send(ws, 'app:prelude', preludePayload.payload || preludePayload);
+            return;
+          }
+
           await commandRouter.route(raw);
         } catch (err) {
           logger.warn({ err: err.message }, '[WebSocket] Error handling inbound client message');
@@ -138,10 +155,21 @@ class WsStreamer {
    * Broadcasts a typed envelope to all connected clients.
    * @param {string} topic
    * @param {any} payload
-   * @param {string} [correlationId]
+   * @param {string | object} [correlationOrOpts]
+   * @param {string} [maybeTraceId]
    */
-  broadcast(topic, payload, correlationId) {
+  broadcast(topic, payload, correlationOrOpts, maybeTraceId) {
     if (!this.wss) return;
+
+    let correlationId = null;
+    let traceId = null;
+    if (typeof correlationOrOpts === 'object' && correlationOrOpts !== null) {
+      correlationId = correlationOrOpts.correlationId;
+      traceId = correlationOrOpts.traceId;
+    } else {
+      correlationId = correlationOrOpts;
+      traceId = maybeTraceId;
+    }
 
     // Determine domain for revision increment
     const domainPrefix = topic.split(':')[0] || 'system';
@@ -154,6 +182,7 @@ class WsStreamer {
       revision: currentRev,
       timestamp: new Date().toISOString(),
       ...(correlationId ? { correlationId } : {}),
+      ...(traceId ? { traceId } : {}),
       payload
     });
 
@@ -169,10 +198,21 @@ class WsStreamer {
    * @param {WebSocket} ws
    * @param {string} topic
    * @param {any} payload
-   * @param {string} [correlationId]
+   * @param {string | object} [correlationOrOpts]
+   * @param {string} [maybeTraceId]
    */
-  send(ws, topic, payload, correlationId) {
+  send(ws, topic, payload, correlationOrOpts, maybeTraceId) {
     if (ws.readyState === WebSocket.OPEN) {
+      let correlationId = null;
+      let traceId = null;
+      if (typeof correlationOrOpts === 'object' && correlationOrOpts !== null) {
+        correlationId = correlationOrOpts.correlationId;
+        traceId = correlationOrOpts.traceId;
+      } else {
+        correlationId = correlationOrOpts;
+        traceId = maybeTraceId;
+      }
+
       const domainPrefix = topic.split(':')[0] || 'system';
       const currentRev = this.revisions.get(domainPrefix) || 1;
 
@@ -182,6 +222,7 @@ class WsStreamer {
         revision: currentRev,
         timestamp: new Date().toISOString(),
         ...(correlationId ? { correlationId } : {}),
+        ...(traceId ? { traceId } : {}),
         payload
       }));
     }

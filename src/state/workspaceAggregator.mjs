@@ -2,6 +2,7 @@
 import { repositoryFactory } from '../repositories/repositoryFactory.mjs';
 import { CapabilityResolver } from './capabilityResolver.mjs';
 import { operationTracker } from './operationTracker.mjs';
+import { getSharedStateStore } from '../state-store/sharedStateStore.mjs';
 
 /**
  * Aggregates live system state, account statuses, configuration,
@@ -19,6 +20,12 @@ export class WorkspaceAggregator {
   setLifecycle(lifecycle, message = undefined) {
     this.lifecycle = lifecycle;
     this.lifecycleMessage = message;
+    try {
+      const store = getSharedStateStore();
+      if (store && store.lifecycle) {
+        store.lifecycle.setObservedState(lifecycle, message || 'WORKSPACE_AGGREGATOR_UPDATE');
+      }
+    } catch { /* ignore */ }
   }
 
   activateAccount(accountId) {

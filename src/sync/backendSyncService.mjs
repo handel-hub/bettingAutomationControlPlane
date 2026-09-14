@@ -48,12 +48,103 @@ export class BackendSyncService {
     /** @type {boolean} */
     this.isStopping = false;
 
+    /** @type {any} */
+    this.engine = options.engine || null;
+    /** @type {Array<{ id: string, mutationType: string, payload: any, attempts: number, status: string, createdAt: number, nextRetryAt: number, lastError: string | null }>} */
+    this.outbox = [];
+
     const baseDir = process.env.APPDATA || process.cwd();
     const secDir = path.join(baseDir, '.security_authority');
     if (!fs.existsSync(secDir)) {
       try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
     }
     this.cacheFilePath = options.cachePath || path.join(secDir, 'acp_cache.enc');
+
+    if (this.engine) {
+      this._initOutboxPersistence();
+      this._hydrateOutboxFromPersistence();
+    }
+  }
+
+  /**
+   * Initializes SQLite outbox persistence schema.
+   * @private
+   */
+  _initOutboxPersistence() {
+    try {
+      this.engine.exec(`
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+          id TEXT PRIMARY KEY,
+          mutation_type TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'PENDING',
+          last_error TEXT,
+          created_at INTEGER NOT NULL,
+          next_retry_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbox_retry ON sync_outbox(status, next_retry_at);
+      `);
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Hydrates pending outbox entries from persistence.
+   * @private
+   */
+  _hydrateOutboxFromPersistence() {
+    try {
+      const rows = this.engine.query(`
+        SELECT id, mutation_type, payload_json, attempts, status, last_error, created_at, next_retry_at
+        FROM sync_outbox
+        WHERE status = 'PENDING'
+        ORDER BY created_at ASC
+      `);
+      for (const row of rows) {
+        this.outbox.push({
+          id: row.id,
+          mutationType: row.mutation_type,
+          payload: JSON.parse(row.payload_json),
+          attempts: row.attempts,
+          status: row.status,
+          createdAt: row.created_at,
+          nextRetryAt: row.next_retry_at,
+          lastError: row.last_error
+        });
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Enqueues a mutation intent into the persistent retry outbox.
+   * @param {string} type
+   * @param {any} payload
+   */
+  enqueueOutbox(type, payload) {
+    const id = `out_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const item = {
+      id,
+      mutationType: type,
+      payload,
+      attempts: 0,
+      status: 'PENDING',
+      createdAt: Date.now(),
+      nextRetryAt: Date.now(),
+      lastError: null
+    };
+
+    this.outbox.push(item);
+
+    if (this.engine) {
+      try {
+        this.engine.run(`
+          INSERT INTO sync_outbox (id, mutation_type, payload_json, attempts, status, last_error, created_at, next_retry_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [item.id, item.mutationType, JSON.stringify(item.payload), item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
+      } catch { /* ignore */ }
+    }
+
+    return item;
   }
 
   /**
@@ -429,67 +520,128 @@ export class BackendSyncService {
   }
 
   /**
+   * Executes the physical network call to the backend client for a mutation.
+   * @param {string} type
+   * @param {any} payload
+   */
+  async _dispatchMutation(type, payload) {
+    let result;
+    switch (type) {
+      case 'REGISTER_ACCOUNT':
+        // NOTE: Do NOT scrub accountPassword! Backend database encrypts it with AES-256-GCM AEAD.
+        result = await this.client.createBettingAccount(payload);
+        break;
+
+      case 'UPDATE_GLOBAL_CONFIG':
+        result = await this.client.updateGlobalConfig(payload.category, payload.values);
+        break;
+
+      case 'UPDATE_ACCOUNT_CONFIG':
+        result = await this.client.updateAccountConfigOverride(payload.accountId, payload.config);
+        break;
+
+      case 'TOGGLE_BET_CYCLE':
+        result = await this.client.toggleBetCycle(payload.accountId, payload.action || (payload.enabled ? 'ACTIVATE' : 'DEACTIVATE'));
+        break;
+
+      case 'ACCOUNT_ACTION':
+        result = await this.client.executeAccountAction(payload.accountId, payload.action, payload.parameters);
+        break;
+
+      case 'CANCEL_SUBSCRIPTION':
+        result = await this.client.cancelSubscription();
+        break;
+
+      case 'RESUME_SUBSCRIPTION':
+        result = await this.client.resumeSubscription();
+        break;
+
+      case 'SUBMIT_SETTINGS':
+        result = await this.client.submitSettingsIntent(payload);
+        break;
+
+      default:
+        logger.warn({ type }, '[BackendSyncService] Unknown mutation type for backend sync');
+        break;
+    }
+    return result;
+  }
+
+  /**
+   * Flushes pending mutations in the outbox to the Cloud Backend.
+   * Applies exponential backoff on retries.
+   * @returns {Promise<{ flushed: number, remaining: number }>}
+   */
+  async flushOutbox() {
+    if (!this.isConnected) {
+      return { flushed: 0, remaining: this.outbox.length };
+    }
+
+    const now = Date.now();
+    let flushed = 0;
+
+    for (let i = 0; i < this.outbox.length; i++) {
+      const item = this.outbox[i];
+      if (item.status !== 'PENDING' || item.nextRetryAt > now) {
+        continue;
+      }
+
+      try {
+        await this._dispatchMutation(item.mutationType, item.payload);
+        flushed++;
+        if (this.engine) {
+          try {
+            this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]);
+          } catch { /* ignore */ }
+        }
+        this.outbox.splice(i, 1);
+        i--;
+      } catch (err) {
+        item.attempts = (item.attempts || 0) + 1;
+        const delayMs = Math.min(300_000, 1000 * Math.pow(2, item.attempts));
+        item.nextRetryAt = Date.now() + delayMs;
+        item.lastError = err.message;
+
+        if (this.engine) {
+          try {
+            this.engine.run(`
+              UPDATE sync_outbox
+              SET attempts = ?, next_retry_at = ?, last_error = ?
+              WHERE id = ?
+            `, [item.attempts, item.nextRetryAt, item.lastError, item.id]);
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
+    return { flushed, remaining: this.outbox.length };
+  }
+
+  /**
    * Synchronizes an ingress mutation with the Cloud Backend.
    * Preserves full account payload including accountPassword per boundary contract.
+   * If offline or communication fails, enqueues into persistent retry outbox.
    * @param {'REGISTER_ACCOUNT' | 'UPDATE_GLOBAL_CONFIG' | 'UPDATE_ACCOUNT_CONFIG' | 'TOGGLE_BET_CYCLE' | 'ACCOUNT_ACTION' | 'CANCEL_SUBSCRIPTION' | 'RESUME_SUBSCRIPTION' | 'SUBMIT_SETTINGS'} type 
    * @param {any} payload 
    * @returns {Promise<any>}
    */
   async syncMutation(type, payload) {
     if (!this.isConnected) {
-      logger.info({ type }, '[BackendSyncService] Backend offline; mutation queued/stored locally only');
+      logger.info({ type }, '[BackendSyncService] Backend offline; mutation enqueued in retry outbox');
+      const item = this.enqueueOutbox(type, payload);
       this.saveLocalCache();
-      return { localOnly: true };
+      return { localOnly: true, queuedForRetry: true, outboxId: item.id };
     }
 
     try {
-      let result;
-      switch (type) {
-        case 'REGISTER_ACCOUNT':
-          // NOTE: Do NOT scrub accountPassword! Backend database encrypts it with AES-256-GCM AEAD.
-          result = await this.client.createBettingAccount(payload);
-          break;
-
-        case 'UPDATE_GLOBAL_CONFIG':
-          result = await this.client.updateGlobalConfig(payload.category, payload.values);
-          break;
-
-        case 'UPDATE_ACCOUNT_CONFIG':
-          result = await this.client.updateAccountConfigOverride(payload.accountId, payload.config);
-          break;
-
-        case 'TOGGLE_BET_CYCLE':
-          result = await this.client.toggleBetCycle(payload.accountId, payload.action || (payload.enabled ? 'ACTIVATE' : 'DEACTIVATE'));
-          break;
-
-        case 'ACCOUNT_ACTION':
-          result = await this.client.executeAccountAction(payload.accountId, payload.action, payload.parameters);
-          break;
-
-        case 'CANCEL_SUBSCRIPTION':
-          result = await this.client.cancelSubscription();
-          break;
-
-        case 'RESUME_SUBSCRIPTION':
-          result = await this.client.resumeSubscription();
-          break;
-
-        case 'SUBMIT_SETTINGS':
-          result = await this.client.submitSettingsIntent(payload);
-          break;
-
-        default:
-          logger.warn({ type }, '[BackendSyncService] Unknown mutation type for backend sync');
-          break;
-      }
-
+      const result = await this._dispatchMutation(type, payload);
       this.saveLocalCache();
       return result;
     } catch (err) {
-      logger.error({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation to Backend');
-      // Save locally to cache so intent is not lost
+      logger.warn({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation directly to Backend; enqueuing in retry outbox');
+      const item = this.enqueueOutbox(type, payload);
       this.saveLocalCache();
-      return { localOnly: true, error: err.message };
+      return { localOnly: true, queuedForRetry: true, outboxId: item.id, error: err.message };
     }
   }
 
