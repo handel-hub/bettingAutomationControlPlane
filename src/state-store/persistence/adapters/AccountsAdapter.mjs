@@ -1,5 +1,6 @@
 // @ts-check
 import { SanitizerGate } from '../../validation/SanitizerGate.mjs';
+import { vaultCredentialPipeline } from '../../../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 
 /**
  * Persistence adapter for accounts_metadata_cache.
@@ -24,6 +25,8 @@ export class AccountsAdapter {
              currency_symbol AS currencySymbol, backend_state AS backendState,
              presentation_category AS presentationCategory, status_description AS statusDescription,
              tags_json AS tagsJson, effective_config_json AS effectiveConfigJson,
+             desired_state AS desiredState, observed_state AS observedState,
+             execution_status_reason AS executionStatusReason,
              last_updated AS lastUpdated, last_synchronization AS lastSynchronization
       FROM accounts_metadata_cache
       WHERE user_id = ?
@@ -41,6 +44,9 @@ export class AccountsAdapter {
       lastKnownBalance: r.lastKnownBalance,
       currencySymbol: r.currencySymbol,
       backendState: r.backendState,
+      desiredState: r.desiredState || 'STOPPED',
+      observedState: r.observedState || 'STOPPED',
+      executionStatusReason: r.executionStatusReason || null,
       presentationCategory: r.presentationCategory,
       statusDescription: r.statusDescription,
       isSelectable: true,
@@ -59,6 +65,10 @@ export class AccountsAdapter {
    * @param {any} account
    */
   upsert(userId, account) {
+    if (account.accountPassword && account.accountPassword !== '[PROTECTED]' && account.id) {
+      vaultCredentialPipeline.storeCredential(account.id, account.accountPassword);
+    }
+
     SanitizerGate.assertZeroSecrets(account);
 
     const now = new Date().toISOString();
@@ -70,8 +80,10 @@ export class AccountsAdapter {
       INSERT INTO accounts_metadata_cache (
         account_id, user_id, name, platform_id, account_username,
         last_known_balance, currency_symbol, backend_state, presentation_category,
-        status_description, tags_json, effective_config_json, last_updated, last_synchronization
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status_description, tags_json, effective_config_json,
+        desired_state, observed_state, execution_status_reason,
+        last_updated, last_synchronization
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         name = excluded.name,
         platform_id = excluded.platform_id,
@@ -83,6 +95,9 @@ export class AccountsAdapter {
         status_description = excluded.status_description,
         tags_json = excluded.tags_json,
         effective_config_json = excluded.effective_config_json,
+        desired_state = COALESCE(excluded.desired_state, accounts_metadata_cache.desired_state),
+        observed_state = COALESCE(excluded.observed_state, accounts_metadata_cache.observed_state),
+        execution_status_reason = excluded.execution_status_reason,
         last_updated = excluded.last_updated,
         last_synchronization = excluded.last_synchronization
     `).run(
@@ -98,9 +113,36 @@ export class AccountsAdapter {
       account.statusDescription || 'Active & Synchronized',
       tagsJson,
       effectiveConfigJson,
+      account.desiredState || 'STOPPED',
+      account.observedState || 'STOPPED',
+      account.executionStatusReason || null,
       account.lastUpdated || now,
       account.lastSynchronization || now
     );
+  }
+
+  /**
+   * Force resets observed state to STOPPED for all accounts upon boot or process exit.
+   * Satisfies KILL_ON_JOB_CLOSE guarantee.
+   * @param {string} userId
+   * @param {string} [reason='SYSTEM_BOOT_RECOVERY']
+   */
+  resetObservedStatesOnBoot(userId, reason = 'SYSTEM_BOOT_RECOVERY') {
+    this.engine.prepare(`
+      UPDATE accounts_metadata_cache
+      SET observed_state = 'STOPPED',
+          execution_status_reason = ?
+      WHERE user_id = ?
+    `).run(reason, userId);
+  }
+
+  /**
+   * Resets observed state to STOPPED for all accounts of a user.
+   * @param {string} userId
+   * @param {string} [reason='PROCESS_EXIT']
+   */
+  resetObservedStates(userId, reason = 'PROCESS_EXIT') {
+    this.resetObservedStatesOnBoot(userId, reason);
   }
 
   /**

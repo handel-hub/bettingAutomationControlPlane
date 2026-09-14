@@ -11,30 +11,58 @@ import { runtimeManager } from './runtime-manager/runtime-manager.mjs';
 import { executionBoundaryManager } from './runtime-manager/boundary/index.mjs';
 import { workspaceAggregator } from './state/workspaceAggregator.mjs';
 import { initDevToken } from './api-server/middleware/auth.mjs';
+import { ExecutionPayloadBuilder } from './runtime-manager/boundary/ExecutionPayloadBuilder.mjs';
+import { getSharedStateStore } from './state-store/sharedStateStore.mjs';
 
 /**
  * Registers default Ingress Command Handlers into CommandRouter.
  * Execution commands are strictly gated by Security Authority and Degraded Mode.
  */
-function registerDefaultCommandHandlers() {
+export function registerDefaultCommandHandlers() {
   // Execution category - Guarded strictly: Execution Plane is disabled in degraded mode
   commandRouter.register('Execution', 'START_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] START_AUTOMATION executing');
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
-    executionBoundaryManager.startServer();
-    const pid = runtimeManager.spawnRuntime();
-    executionBoundaryManager.startCluster({ traceId: cmd.traceId });
-    workspaceAggregator.setLifecycle('STARTING');
-    return { started: true, pid };
+
+    return executionBoundaryManager.lifecycleMutex.runExclusive(async () => {
+      // 1. Record Desired State = RUNNING
+      const store = getSharedStateStore();
+      store.lifecycle.setDesiredState('RUNNING', 'USER_COMMAND_START');
+
+      // 2. Start IPC server & spawn worker
+      executionBoundaryManager.startServer();
+      const pid = runtimeManager.spawnRuntime();
+
+      // 3. Mark observed state = STARTING_HANDSHAKE
+      store.lifecycle.setObservedState('STARTING_HANDSHAKE', `PID_${pid}_SPAWNED`);
+      workspaceAggregator.setLifecycle('STARTING');
+
+      // 4. Send startCluster instruction over pipe
+      await executionBoundaryManager.startCluster({ traceId: cmd.traceId });
+
+      return { started: true, pid };
+    });
   });
 
   commandRouter.register('Execution', 'STOP_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId }, '[Command] STOP_AUTOMATION executing');
-    executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
-    workspaceAggregator.setLifecycle('STOPPED');
-    return { stopped: true };
+    return executionBoundaryManager.lifecycleMutex.runExclusive(async () => {
+      // 1. Record Desired State = STOPPED
+      const store = getSharedStateStore();
+      store.lifecycle.setDesiredState('STOPPED', 'USER_COMMAND_STOP');
+      store.lifecycle.setObservedState('STOPPING', 'USER_COMMAND_STOP');
+
+      // 2. Dispatch graceful stop to Execution Plane
+      await executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
+
+      // 3. Update Observed State = STOPPED
+      store.lifecycle.setObservedState('STOPPED', 'STOP_COMPLETED');
+      workspaceAggregator.setLifecycle('STOPPED');
+
+      return { stopped: true };
+    });
   });
 
   commandRouter.register('Execution', 'PLACE_BET', async (cmd) => {
@@ -105,18 +133,68 @@ function registerDefaultCommandHandlers() {
   commandRouter.register('Persistence', 'TOGGLE_BET_CYCLE', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target, enabled: cmd.payload?.enabled }, '[Command] TOGGLE_BET_CYCLE executed');
     const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { betCycleEnabled: cmd.payload?.enabled });
+    
+    // Orchestration Dispatch: Send SET_BET_CYCLE and full policy update to Execution Plane
+    try {
+      if (executionBoundaryManager.isConnected()) {
+        executionBoundaryManager.setBetCycle(cmd.target, Boolean(cmd.payload?.enabled), { traceId: cmd.traceId });
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Failed to dispatch SET_BET_CYCLE to Execution Plane');
+      try {
+        const store = getSharedStateStore();
+        store.accounts.updateExecutionState(cmd.target, {
+          observedState: 'OUT_OF_SYNC',
+          executionStatusReason: `DISPATCH_FAILED: ${err.message}`
+        });
+      } catch { /* ignore */ }
+    }
+
     return { toggled: true, enabled: cmd.payload?.enabled, updated };
   });
 
   commandRouter.register('Persistence', 'UPDATE_ACCOUNT_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target, category: cmd.payload?.category }, '[Command] UPDATE_ACCOUNT_CONFIG executed');
     const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { [cmd.payload?.category]: cmd.payload?.values });
+
+    // Orchestration Dispatch: Build full account policy and dispatch UPDATE_POLICY
+    try {
+      if (executionBoundaryManager.isConnected()) {
+        const store = getSharedStateStore();
+        const globalConfig = store.configContainer.getGlobalConfig();
+        const fullPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, updated);
+        executionBoundaryManager.updatePolicy(cmd.payload?.category || 'Staking', fullPolicy, { traceId: cmd.traceId, accountId: cmd.target });
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Failed to dispatch UPDATE_ACCOUNT_CONFIG to Execution Plane');
+      try {
+        const store = getSharedStateStore();
+        store.accounts.updateExecutionState(cmd.target, {
+          observedState: 'OUT_OF_SYNC',
+          executionStatusReason: `DISPATCH_FAILED: ${err.message}`
+        });
+      } catch { /* ignore */ }
+    }
+
     return { updated: true, accountConfig: updated };
   });
 
   commandRouter.register('Persistence', 'UPDATE_GLOBAL_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, category: cmd.payload?.category }, '[Command] UPDATE_GLOBAL_CONFIG executing');
     const updated = await repositoryFactory.getConfigRepo().updateCategory(cmd.payload.category, cmd.payload.values);
+    
+    // Orchestration Dispatch: Broadcast full-document policy update to Execution Plane
+    try {
+      if (executionBoundaryManager.isConnected()) {
+        const store = getSharedStateStore();
+        const globalConfig = store.configContainer.getGlobalConfig();
+        const fullPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig);
+        executionBoundaryManager.updatePolicy(cmd.payload?.category, fullPolicy, { traceId: cmd.traceId });
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Failed to dispatch UPDATE_GLOBAL_CONFIG to Execution Plane');
+    }
+
     backendSyncService.syncMutation('UPDATE_GLOBAL_CONFIG', cmd.payload).catch(err => {
       logger.warn({ err: err.message }, '[Command] Async backend sync failed for UPDATE_GLOBAL_CONFIG');
     });
@@ -152,7 +230,28 @@ runtimeManager.on('stateChanged', ({ state, message }) => {
 
 runtimeManager.on('runtimeExited', (pid) => {
   logger.warn({ pid }, '[RuntimeManager] Runtime worker process exited');
-  workspaceAggregator.setLifecycle('STOPPED');
+  try {
+    const store = getSharedStateStore();
+    const currentState = store.lifecycle.getState();
+    const exitReason = `PROCESS_EXIT_PID_${pid}`;
+    const targetObserved = currentState.desiredState === 'RUNNING' ? 'ABORTED' : 'STOPPED';
+
+    store.lifecycle.setObservedState(targetObserved, exitReason);
+    store.accounts.resetObservedStates(exitReason);
+    workspaceAggregator.setLifecycle('STOPPED', exitReason);
+
+    // Broadcast deltas to connected clients
+    wsServer.broadcast('automation:delta', {
+      type: 'LIFECYCLE_CHANGED',
+      lifecycle: targetObserved,
+      desiredState: currentState.desiredState,
+      observedState: targetObserved,
+      reason: exitReason
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, '[RuntimeManager] Error updating observed states on runtime exit');
+    workspaceAggregator.setLifecycle('STOPPED');
+  }
 });
 
 // Wire Execution Boundary Manager events
@@ -231,8 +330,9 @@ const shutdown = async (signal) => {
   }
 };
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+import { fileURLToPath } from 'node:url';
 
-bootstrap();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  bootstrap();
+}
 

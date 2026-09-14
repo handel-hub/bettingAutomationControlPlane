@@ -10,6 +10,7 @@ import { BillingAdapter } from './persistence/adapters/BillingAdapter.mjs';
 import { CatalogsAdapter } from './persistence/adapters/CatalogsAdapter.mjs';
 import { SettingsAdapter } from './persistence/adapters/SettingsAdapter.mjs';
 import { NotificationsAdapter } from './persistence/adapters/NotificationsAdapter.mjs';
+import { LifecycleStateAdapter, DesiredLifecycleState, ObservedLifecycleState } from './persistence/adapters/LifecycleStateAdapter.mjs';
 import { ConsistencyGroupManager } from './persistence/ConsistencyGroupManager.mjs';
 import { AccountsContainer } from './memory/AccountsContainer.mjs';
 import { AutomationConfigContainer } from './memory/AutomationConfigContainer.mjs';
@@ -46,6 +47,7 @@ export class StateStore {
     this.catalogsAdapter = new CatalogsAdapter(this.engine);
     this.settingsAdapter = new SettingsAdapter(this.engine);
     this.notificationsAdapter = new NotificationsAdapter(this.engine);
+    this.lifecycleAdapter = new LifecycleStateAdapter(this.engine);
     this.consistencyGroups = new ConsistencyGroupManager(this.engine, this.metadataAdapter);
 
     // 2. Memory Layer
@@ -110,8 +112,13 @@ export class StateStore {
     // Run schema migrations
     this.migrator.migrate();
 
+    // Reset observed states on boot to enforce KILL_ON_JOB_CLOSE guarantees
+    this.lifecycleAdapter.resetObservedStateOnBoot('SYSTEM_BOOT_RECOVERY');
+    this.accountsAdapter.resetObservedStatesOnBoot(this.userId);
+
     // Execute hydration pipeline
     const stats = this.hydrate(this.userId);
+    this.accountsContainer.resetObservedStatesOnBoot();
 
     return stats;
   }
@@ -344,7 +351,7 @@ export class StateStore {
       updateBalance: (id, bal, sym) => this.accountsContainer.updateBalance(id, bal, sym),
       upsert: (account, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
-          const res = this.accountsContainer.upsert(account, expectedRevision);
+          const res = this.accountsContainer.upsert(account);
           this.accountsAdapter.upsert(this.userId, res.account);
           this.preludeProjection.invalidate();
           return res.account;
@@ -353,9 +360,20 @@ export class StateStore {
       delete: (id, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
           this.accountsAdapter.delete(this.userId, id);
-          const deleted = this.accountsContainer.delete(id, expectedRevision);
+          const deleted = this.accountsContainer.delete(id);
           this.preludeProjection.invalidate();
           return deleted;
+        }).result;
+      },
+      updateExecutionState: (id, stateUpdate, expectedRevision) => {
+        return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
+          const res = this.accountsContainer.updateExecutionState(id, stateUpdate);
+          if (res) {
+            this.accountsAdapter.upsert(this.userId, res.account);
+            this.preludeProjection.invalidate();
+            return res.account;
+          }
+          return null;
         }).result;
       },
       replaceAll: (accountsList) => {
@@ -365,6 +383,29 @@ export class StateStore {
           this.preludeProjection.invalidate();
           return accountsList;
         }).result;
+      },
+      resetObservedStates: (reason = 'PROCESS_EXIT') => {
+        return this.consistencyGroups.executeGroupTransaction('accounts', null, (nextRev) => {
+          this.accountsAdapter.resetObservedStates(this.userId, reason);
+          this.accountsContainer.resetObservedStates(reason);
+          this.preludeProjection.invalidate();
+          return true;
+        }).result;
+      }
+    };
+
+    // System Lifecycle & Desired vs Observed State Domain
+    this.lifecycle = {
+      getState: () => this.lifecycleAdapter.get(),
+      setDesiredState: (desiredState, reason) => {
+        const state = this.lifecycleAdapter.setDesiredState(desiredState, reason);
+        this.preludeProjection.invalidate();
+        return state;
+      },
+      setObservedState: (observedState, reason) => {
+        const state = this.lifecycleAdapter.setObservedState(observedState, reason);
+        this.preludeProjection.invalidate();
+        return state;
       }
     };
 
@@ -374,7 +415,7 @@ export class StateStore {
       getCategory: (cat) => this.configContainer.getCategory(cat),
       updateCategory: (category, values, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('global_config', expectedRevision, (nextRev) => {
-          const res = this.configContainer.updateCategory(category, values, expectedRevision);
+          const res = this.configContainer.updateCategory(category, values);
           this.configAdapter.save(this.userId, this.configContainer._globalConfig);
           this.preludeProjection.invalidate();
           return res.updatedValues;

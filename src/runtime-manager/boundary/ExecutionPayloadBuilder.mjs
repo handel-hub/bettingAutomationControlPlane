@@ -1,0 +1,158 @@
+// @ts-check
+import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
+
+/**
+ * ExecutionPayloadBuilder
+ * 
+ * Compiles full-document PascalCase configuration schemas and initialization payloads
+ * conforming to the Execution Plane's AutomationController and MemoryPolicyProvider expectations.
+ */
+export class ExecutionPayloadBuilder {
+  /**
+   * Compiles the PascalCase Policy object for an account from ACP config.
+   * @param {object} globalConfig
+   * @param {object} [accountOverrides]
+   * @returns {object}
+   */
+  static buildPolicyDocument(globalConfig, accountOverrides = {}) {
+    const pricing = globalConfig?.pricing || {};
+    const risk = globalConfig?.risk || {};
+    const rebet = globalConfig?.rebet || {};
+    const execution = globalConfig?.execution || {};
+
+    const customPricing = accountOverrides?.customPricing || {};
+    const customRisk = accountOverrides?.customRisk || {};
+    const customRebet = accountOverrides?.customRebet || {};
+
+    return {
+      BetCycle: {
+        Execution: {
+          Enabled: accountOverrides.betCycleEnabled !== false,
+          Description: "Gate flag dictating whether this account is authorized to execute physical bet submission cycles"
+        }
+      },
+      Pricing: {
+        Strategy: {
+          Mode: customPricing.mode || pricing.mode || 'PROFIT_TARGET',
+          BaseStake: Number(customPricing.baseStake ?? pricing.baseStake ?? 100),
+          TargetProfit: Number(customPricing.targetProfit ?? pricing.targetProfit ?? 30),
+          MinimumAcceptableProfit: Number(customPricing.minimumAcceptableProfit ?? pricing.minimumAcceptableProfit ?? 0),
+          ResolutionStrategy: customPricing.resolutionStrategy || pricing.resolutionStrategy || 'CLAMP_THEN_REDUCE_PROFIT'
+        },
+        Behavior: {
+          PlatformIncrement: Number(pricing.platformIncrement ?? 1),
+          SelectionPreference: pricing.selectionPreference || 'ROUND_NUMBERS',
+          RestorePolicyOnRebet: pricing.restorePolicyOnRebet !== false
+        }
+      },
+      Rebet: {
+        Strategy: {
+          MaxRebetAttempts: Number(customRebet.maxRebetAttempts ?? rebet.maxRebetAttempts ?? 1),
+          RebetStakeIncrement: Number(customRebet.rebetStakeIncrement ?? rebet.rebetStakeIncrement ?? 10)
+        }
+      },
+      Execution: {
+        Timeouts: {
+          ResultTimeoutMs: Number(execution.orderTimeoutMs || 30000),
+          NavigationTimeoutMs: Number(execution.navigationTimeoutMs || 10000),
+          LoginTimeoutMs: Number(execution.loginTimeoutMs || 15000),
+          DecisionFreshnessTTLMs: Number(execution.decisionFreshnessTTLMs || 3000),
+          ReconciliationTimeoutMs: Number(execution.reconciliationTimeoutMs || 120000)
+        },
+        Pacing: {
+          KeyboardTypingDelayMs: Number(execution.interPlatformDelayMs || 250),
+          PacingStrategy: execution.pacingStrategy || 'AGGRESSIVE'
+        }
+      },
+      RiskManagement: {
+        Limits: {
+          MaxStake: Number(customRisk.maxStake ?? risk.maxStake ?? risk.stopLossThreshold ?? 10000),
+          MinimumStake: Number(customRisk.minimumStake ?? risk.minimumStake ?? 10),
+          AutoAcceptOddsChanges: Boolean(risk.autoAcceptOddsChanges)
+        }
+      }
+    };
+  }
+
+  /**
+   * Compiles the complete LIFECYCLE:INITIALIZE payload conforming to Execution Plane's AutomationController constructor.
+   * Merges decrypted credentials from VaultCredentialPipeline into temporary in-memory objects.
+   * 
+   * @param {object} store - StateStore instance
+   * @param {string} [traceId]
+   * @returns {object}
+   */
+  static buildInitializationPayload(store, traceId = undefined) {
+    const globalConfig = store.configContainer.getGlobalConfig();
+    const accounts = store.accountsContainer.getAll();
+
+    // 1. Compile INI-compatible Settings for AutomationController
+    const settings = {
+      Spawning: {
+        max_accounts_to_spawn: String(globalConfig.browserSpawning?.maxAccountsToSpawn || 2),
+        slave_mode: globalConfig.browserSpawning?.slaveMode || 'headful',
+        spawn_stagger_interval_ms: String(globalConfig.browserSpawning?.spawnStaggerIntervalMs || 1200)
+      },
+      Proxy: {
+        proxy_allocation_mode: globalConfig.proxy?.proxyAllocationMode || 'round_robin',
+        proxy_failure_mode: globalConfig.proxy?.proxyFailureMode || 'loose',
+        max_accounts_per_proxy: String(globalConfig.proxy?.maxAccountsPerProxy || 3)
+      },
+      Stealth: {
+        browser_binary: globalConfig.advancedRuntime?.browserBinary || 'chrome',
+        use_stealth_plugin: Boolean(globalConfig.advancedRuntime?.useStealthPlugin)
+      }
+    };
+
+    // 2. Decrypt credentials on-demand right before IPC handoff
+    const compiledAccounts = accounts.map((acc, index) => {
+      const decryptedPassword = vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword);
+      return {
+        id: acc.id,
+        role: index === 0 ? 'master' : 'slave',
+        platformId: (acc.platformId || acc.platformDisplayName || 'sportybet').toLowerCase(),
+        username: acc.accountUsername,
+        password: decryptedPassword,
+        proxyUrl: acc.proxyUrl || null
+      };
+    });
+
+    // 3. Compile full-document initial policies for all provisioned accounts
+    const accountPolicies = {};
+    for (const acc of accounts) {
+      const overrides = store.configContainer.getAccountOverride(acc.id);
+      accountPolicies[acc.accountUsername] = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
+    }
+
+    const defaultPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig);
+
+    return {
+      settings,
+      accounts: compiledAccounts,
+      proxies: [],
+      policy: {
+        defaultPolicy,
+        accountPolicies
+      }
+    };
+  }
+
+  /**
+   * Compiles the payload for ACTIVATE_ACCOUNT command with decrypted credentials.
+   * @param {object} account
+   * @returns {object}
+   */
+  static buildActivateAccountPayload(account) {
+    const decryptedPassword = vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword);
+    return {
+      accountId: account.id,
+      account: {
+        id: account.id,
+        username: account.accountUsername,
+        password: decryptedPassword,
+        platformId: (account.platformId || account.platformDisplayName || 'sportybet').toLowerCase()
+      },
+      proxyUrl: account.proxyUrl || null
+    };
+  }
+}

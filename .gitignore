@@ -71,3 +71,6 @@ coverage/
 
 # security-authority
 src/security-authority/test/databases
+
+# Ingress Dev Token
+.acp-dev-token

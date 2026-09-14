@@ -13,6 +13,9 @@ import {
 } from '../executionProtocol.mjs';
 import { securityFacade } from '../../security-authority/facade.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
+import { AsyncMutex } from '../../shared/AsyncMutex.mjs';
+import { ExecutionPayloadBuilder } from './ExecutionPayloadBuilder.mjs';
+import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
 
 /**
  * ExecutionBoundaryManager
@@ -53,6 +56,8 @@ export class ExecutionBoundaryManager extends EventEmitter {
     this.stateStore = stateStore || null;
     this.security = securityAuthority || securityFacade;
     this.defaultCommandTimeoutMs = defaultCommandTimeoutMs;
+    this.lifecycleMutex = new AsyncMutex();
+    this.vault = vaultCredentialPipeline;
 
     this.engineStatus = 'OFFLINE';
     this.activeBrowserCount = 0;
@@ -204,38 +209,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
    */
   compileInitializationPayload(traceId) {
     const store = this.stateStore || getSharedStateStore();
-    const config = store.configContainer.toSettingsIniObject?.() || {};
-    const accounts = store.accountsContainer.getAll?.() || [];
-
-    // Decrypt credentials strictly in-memory for initialization
-    const provisionedAccounts = accounts.map((acc, index) => ({
-      accountId: acc.id,
-      role: index === 0 ? 'master' : 'slave',
-      platformId: acc.platformId || 'sportybet',
-      username: acc.accountUsername,
-      password: acc.accountPassword === '[PROTECTED]' ? (acc.rawPassword || 'Password123!') : acc.accountPassword,
-      proxy: acc.proxy || null
-    }));
-
-    return {
-      protocolVersion: '3.0',
-      environment: process.env.NODE_ENV || 'production',
-      fleet: {
-        masterUseProxy: false,
-        slaveMode: 'headful',
-        maxAccountsToSpawn: provisionedAccounts.length,
-        debugSlowMo: 0,
-        accounts: provisionedAccounts
-      },
-      configuration: {
-        pricing: config.Pricing || { mode: 'PROFIT_TARGET', baseStake: 100, targetProfit: 30 },
-        risk: config.Risk || { maxStake: 10000, minimumStake: 10, autoAcceptOddsChanges: false },
-        rebet: config.Rebet || { maxRebetAttempts: 1, rebetStakeIncrement: 10 },
-        timeouts: config.Timeouts || { resultTimeoutMs: 30000, navigationTimeoutMs: 10000 },
-        retries: config.Retries || { maxExecutionRetries: 3, maxRecoveryAttempts: 3 },
-        antiDetection: config.AntiDetection || { useStealthPlugin: false, browserBinary: 'chrome' }
-      }
-    };
+    return ExecutionPayloadBuilder.buildInitializationPayload(store, traceId);
   }
 
   /**
@@ -261,23 +235,28 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   /**
    * Transitions cluster automation to RUNNING.
-   * Gated by SecurityAuthority.
+   * Gated by SecurityAuthority and serialized via lifecycleMutex.
    * @param {object} [options]
    */
-  startCluster(options = {}) {
-    if (this.security.isDegraded()) {
-      throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
-    }
-    return this.dispatchEnvelope(ExecutionMessageType.START_CLUSTER, options.payload || {}, options);
+  async startCluster(options = {}) {
+    return this.lifecycleMutex.runExclusive(async () => {
+      if (this.security.isDegraded()) {
+        throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
+      }
+      return this.dispatchEnvelope(ExecutionMessageType.START_CLUSTER, options.payload || {}, options);
+    });
   }
 
   /**
    * Stops cluster execution gracefully.
+   * Serialized via lifecycleMutex to prevent Start/Stop collision.
    * @param {number} [timeoutMs=5000]
    * @param {object} [options]
    */
-  stopCluster(timeoutMs = 5000, options = {}) {
-    return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, options);
+  async stopCluster(timeoutMs = 5000, options = {}) {
+    return this.lifecycleMutex.runExclusive(async () => {
+      return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, options);
+    });
   }
 
   /**
@@ -376,6 +355,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   /**
    * Activates an account browser in the running cluster.
+   * Compiles decrypted credentials in temporary memory for IPC transmission.
    * @param {object} accountPayload
    * @param {object} [options]
    */
@@ -383,7 +363,19 @@ export class ExecutionBoundaryManager extends EventEmitter {
     if (this.security.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
     }
-    return this.dispatchEnvelope(ExecutionMessageType.ACTIVATE_ACCOUNT, accountPayload, options);
+
+    let payload = accountPayload;
+    if (accountPayload?.accountUsername) {
+      payload = ExecutionPayloadBuilder.buildActivateAccountPayload(accountPayload);
+    } else if (accountPayload?.accountId) {
+      const store = this.stateStore || getSharedStateStore();
+      const account = store.accountsContainer.getById(accountPayload.accountId);
+      if (account) {
+        payload = ExecutionPayloadBuilder.buildActivateAccountPayload(account);
+      }
+    }
+
+    return this.dispatchEnvelope(ExecutionMessageType.ACTIVATE_ACCOUNT, payload, options);
   }
 
   /**
@@ -486,6 +478,28 @@ export class ExecutionBoundaryManager extends EventEmitter {
     if (!this.transport.isConnected()) {
       this.engineStatus = 'STOPPED';
       this.activeBrowserCount = 0;
+
+      // Fail any remaining in-flight correlations since pipe connection dropped
+      for (const [msgId, pending] of this.pendingCorrelations.entries()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(`Execution Plane disconnected while waiting for correlation: ${pending.type}`));
+        this.pendingCorrelations.delete(msgId);
+      }
+
+      // Reconcile observed states in StateStore if present
+      try {
+        const store = this.stateStore || getSharedStateStore();
+        if (store && store.lifecycle) {
+          const current = store.lifecycle.getState();
+          const target = current.desiredState === 'RUNNING' ? 'ABORTED' : 'STOPPED';
+          store.lifecycle.setObservedState(target, `PIPE_DISCONNECTED_CONN_${connId}`);
+          if (store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+            store.accounts.resetObservedStates(`PIPE_DISCONNECTED_CONN_${connId}`);
+          }
+        }
+      } catch {
+        // State store might not be initialized yet in isolation
+      }
     }
   }
 

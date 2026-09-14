@@ -1,5 +1,6 @@
 // @ts-check
 import { migration001 } from './migrations/001_initial_schema.mjs';
+import { migration002 } from './migrations/002_desired_vs_observed_state.mjs';
 
 /**
  * Migration manager for ACP State Store SQLite schema.
@@ -10,7 +11,7 @@ export class SchemaMigrator {
    * @param {import('../persistence/SqliteStorageEngine.mjs').SqliteStorageEngine} engine
    * @param {Array<any>} [migrations]
    */
-  constructor(engine, migrations = [migration001]) {
+  constructor(engine, migrations = [migration001, migration002]) {
     this.engine = engine;
     this.migrations = migrations.sort((a, b) => a.version - b.version);
   }

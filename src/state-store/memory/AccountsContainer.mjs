@@ -142,6 +142,9 @@ export class AccountsContainer {
       accountUsername: sanitized.accountUsername,
       accountPassword: '[PROTECTED]',
       backendState: sanitized.backendState || 'READY',
+      desiredState: sanitized.desiredState || 'STOPPED',
+      observedState: sanitized.observedState || 'STOPPED',
+      executionStatusReason: sanitized.executionStatusReason || null,
       presentationCategory: sanitized.presentationCategory || 'Healthy',
       statusDescription: sanitized.statusDescription || 'Active & Synchronized',
       isSelectable: sanitized.isSelectable !== false,
@@ -157,6 +160,62 @@ export class AccountsContainer {
     this._lastUpdated = now;
 
     return { account: record, revision: this._revision };
+  }
+
+  /**
+   * Updates state attributes (desiredState, observedState) for an account.
+   * @param {string} id
+   * @param {{ desiredState?: string, observedState?: string, executionStatusReason?: string }} stateUpdate
+   * @param {number} [expectedRevision]
+   */
+  updateExecutionState(id, stateUpdate, expectedRevision) {
+    if (expectedRevision !== undefined && expectedRevision !== this._revision) {
+      throw new RevisionConflictError('accounts', expectedRevision, this._revision);
+    }
+
+    const current = this._accounts.get(id);
+    if (!current) return null;
+
+    const now = new Date().toISOString();
+    const updated = {
+      ...current,
+      desiredState: stateUpdate.desiredState !== undefined ? stateUpdate.desiredState : current.desiredState,
+      observedState: stateUpdate.observedState !== undefined ? stateUpdate.observedState : current.observedState,
+      executionStatusReason: stateUpdate.executionStatusReason !== undefined ? stateUpdate.executionStatusReason : current.executionStatusReason,
+      lastUpdated: now
+    };
+
+    this._accounts.set(id, Object.freeze(updated));
+    this._revision += 1;
+    this._lastUpdated = now;
+
+    return { account: updated, revision: this._revision };
+  }
+
+  /**
+   * Force resets observed state to STOPPED for all in-memory accounts.
+   * @param {string} [reason='SYSTEM_BOOT_RECOVERY']
+   */
+  resetObservedStatesOnBoot(reason = 'SYSTEM_BOOT_RECOVERY') {
+    const now = new Date().toISOString();
+    for (const [id, acc] of this._accounts.entries()) {
+      this._accounts.set(id, Object.freeze({
+        ...acc,
+        observedState: 'STOPPED',
+        executionStatusReason: reason,
+        lastUpdated: now
+      }));
+    }
+    this._revision += 1;
+    this._lastUpdated = now;
+  }
+
+  /**
+   * Alias for resetObservedStatesOnBoot.
+   * @param {string} [reason='PROCESS_EXIT']
+   */
+  resetObservedStates(reason = 'PROCESS_EXIT') {
+    this.resetObservedStatesOnBoot(reason);
   }
 
   /**

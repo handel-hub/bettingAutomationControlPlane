@@ -280,17 +280,24 @@ export class RuntimeManager extends EventEmitter {
 
   /**
    * Attempts to spawn a new runtime instance, gated by Security Authority.
+   * Enforces handshake timeout: if child does not connect within handshakeTimeoutMs, process is killed.
    * @param {string} [scriptPath]
    * @param {string} [expectedSha256]
+   * @param {object} [options]
+   * @param {number} [options.handshakeTimeoutMs=10000]
    */
-  spawnRuntime(scriptPath, expectedSha256) {
+  spawnRuntime(scriptPath, expectedSha256, options = {}) {
     if (securityFacade.isDegraded() || !executionAuthorization.canStartAutomation()) {
       throw new Error("Security Authority denied automation start: System is in DEGRADED mode (Backend Offline)");
     }
 
     this.ensureServerStarted();
 
+    const handshakeTimeoutMs = options.handshakeTimeoutMs || 10_000;
+    let handshakeTimer = null;
+
     const pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
+      if (handshakeTimer) clearTimeout(handshakeTimer);
       this.activeRuntimes.delete(exitedPid);
       this.engineStatus = 'STOPPED';
       this.emit('runtimeExited', exitedPid);
@@ -299,6 +306,32 @@ export class RuntimeManager extends EventEmitter {
     this.activeRuntimes.add(pid);
     runtimeHeartbeat.recordHeartbeat(pid);
     this.engineStatus = 'STARTING';
+
+    // Start handshake watchdog timer for this child process
+    if (handshakeTimeoutMs > 0) {
+      handshakeTimer = setTimeout(() => {
+        if (this.activeConnections.size === 0 && this.activeRuntimes.has(pid)) {
+          console.warn(`[RuntimeManager] Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}. Aborting process.`);
+          this.terminateRuntime(pid);
+          this.engineStatus = 'ABORTED';
+          this.emit('handshakeTimeout', { pid, handshakeTimeoutMs });
+        }
+      }, handshakeTimeoutMs);
+
+      if (handshakeTimer.unref) {
+        handshakeTimer.unref();
+      }
+
+      // Clear timer on first successful client connection
+      const onConnected = () => {
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
+        this.off('clientConnected', onConnected);
+      };
+      this.once('clientConnected', onConnected);
+    }
     
     return pid;
   }
