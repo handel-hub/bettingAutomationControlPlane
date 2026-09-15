@@ -40,6 +40,43 @@ class StateStoreAccountsAdapter {
     return store.accounts.delete(id);
   }
 
+  async bulkAction(type, ids) {
+    const store = getSharedStateStore();
+    let successful = 0;
+    let failed = 0;
+    const errors = [];
+    const accountIds = Array.isArray(ids) ? ids : [];
+
+    for (const id of accountIds) {
+      const acc = store.accounts.getById(id);
+      if (!acc) {
+        failed++;
+        errors.push({ id, reason: 'Account not found' });
+        continue;
+      }
+      if (type === 'BULK_DELETE') {
+        store.accounts.delete(id);
+        successful++;
+      } else if (type === 'BULK_ACTIVATE') {
+        store.accounts.upsert({
+          ...acc,
+          backendState: 'ACTIVE',
+          presentationCategory: 'Healthy'
+        });
+        successful++;
+      } else if (type === 'BULK_DEACTIVATE') {
+        store.accounts.upsert({
+          ...acc,
+          backendState: 'SUSPENDED',
+          presentationCategory: 'Neutral'
+        });
+        successful++;
+      }
+    }
+
+    return { operation: type, successful, failed, errors };
+  }
+
   hydrate(accountsList) {
     if (!Array.isArray(accountsList)) return;
     const store = getSharedStateStore();

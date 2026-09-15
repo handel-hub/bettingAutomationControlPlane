@@ -125,6 +125,42 @@ accountsRouter.post('/bulk-action', async (req, res) => {
     payload: { type, accountIds },
     onSuccess: async () => {
       const result = await repositoryFactory.getAccountsRepo().bulkAction(type, accountIds);
+      
+      // Broadcast atomic deltas per affected account
+      if (Array.isArray(accountIds)) {
+        if (type === 'BULK_DELETE') {
+          for (const id of accountIds) {
+            wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_DELETED', accountId: id });
+          }
+        } else if (type === 'BULK_ACTIVATE') {
+          for (const id of accountIds) {
+            const acc = await repositoryFactory.getAccountsRepo().findById(id);
+            if (acc) {
+              wsServer.broadcast('accounts:delta', {
+                type: 'ACCOUNT_STATUS_CHANGED',
+                accountId: id,
+                backendState: 'ACTIVE',
+                presentationCategory: 'Healthy',
+                partialSnapshot: acc
+              });
+            }
+          }
+        } else if (type === 'BULK_DEACTIVATE') {
+          for (const id of accountIds) {
+            const acc = await repositoryFactory.getAccountsRepo().findById(id);
+            if (acc) {
+              wsServer.broadcast('accounts:delta', {
+                type: 'ACCOUNT_STATUS_CHANGED',
+                accountId: id,
+                backendState: 'SUSPENDED',
+                presentationCategory: 'Neutral',
+                partialSnapshot: acc
+              });
+            }
+          }
+        }
+      }
+
       wsServer.broadcast('accounts:delta', { type: 'BULK_OPERATION_RESULT', result });
       res.json(result);
     }

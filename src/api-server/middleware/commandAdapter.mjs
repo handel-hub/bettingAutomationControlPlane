@@ -52,7 +52,7 @@ export async function executeCommand({ req, res, category, type, target = null, 
     }
 
     if (onSuccess) {
-      return onSuccess(routeResult.results[0] || null);
+      return await onSuccess(routeResult.results[0] || null);
     }
 
     return res.status(200).json({
