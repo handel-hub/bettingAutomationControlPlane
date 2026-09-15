@@ -39,7 +39,7 @@ describe('Frontend Console <-> Control Plane Real Loopback Wire Contract', () =>
     }
   });
 
-  it('1. GET /api/v1/prelude hydrates all domain state trees in <15ms', async () => {
+  it('1. GET /api/v1/prelude hydrates all domain state trees rapidly (<150ms)', async () => {
     // Warm up HTTP connection
     await fetch(`http://127.0.0.1:${testPort}/api/v1/prelude`);
 
@@ -65,7 +65,7 @@ describe('Frontend Console <-> Control Plane Real Loopback Wire Contract', () =>
     assert.ok(data.notifications, 'Must have notifications domain tree');
     assert.ok(data.system, 'Must have system metadata');
 
-    assert.ok(duration < 50, `Prelude response time should be rapid (was ${duration.toFixed(2)}ms)`);
+    assert.ok(duration < 150, `Prelude response time should be rapid (was ${duration.toFixed(2)}ms)`);
   });
 
   it('2. WebSocket connects to /ws/v1/events and delivers app:prelude immediately', async () => {

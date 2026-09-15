@@ -40,8 +40,10 @@ export class WorkspaceAggregator {
     const configRepo = repositoryFactory.getConfigRepo();
     const accountsRepo = repositoryFactory.getAccountsRepo();
 
-    const globalConfig = await configRepo.getGlobalConfig();
-    const { viewportAccounts: accounts } = await accountsRepo.list();
+    const [globalConfig, { viewportAccounts: accounts }] = await Promise.all([
+      configRepo.getGlobalConfig(),
+      accountsRepo.list()
+    ]);
 
     const activeBrowsers = this.activeAccountIds.size;
     const maxCapacity = globalConfig.browserSpawning.maxAccountsToSpawn || 2;
