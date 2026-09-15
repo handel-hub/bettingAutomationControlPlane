@@ -10,6 +10,7 @@ import { SecureCdpProxy } from './execution/cdp-proxy.mjs';
 import { licenseManager } from './licensing/license-manager.mjs';
 import { tamperDetector } from './integrity/tamper-detector.mjs';
 import { envelopeValidator } from './protocol/envelope.mjs';
+import { CAPABILITY } from './authorization/capabilities.mjs';
 
 /**
  * @typedef {Object} SecurityResult
@@ -66,11 +67,81 @@ export class SecurityFacade {
   }
 
   /**
+   * Provisions a full-capability Developer Operational session.
+   * Used in local development when the cloud backend is offline/unreachable.
+   * Ensures system is in OPERATIONAL state with all capabilities granted,
+   * unsetting native revocation flags and updating persistent storage.
+   */
+  async initDevSession() {
+    // 1. Clear native FFI revocation flag
+    NativeCore.setRevokedSync(false);
+
+    const devSession = {
+      sessionId: 'dev-session-001',
+      status: 'AUTHENTICATED',
+      userId: 'dev-operator',
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 86400000 * 365
+    };
+
+    const allCaps = Object.values(CAPABILITY);
+    const devAuthz = {
+      status: 'VALID',
+      capability_set: allCaps
+    };
+
+    const currentState = this.getSystemState();
+
+    // 2. If at initial boot states, transition cleanly via state machine
+    if (currentState === SecurityState.SECURITY_STATE_READY || currentState === SecurityState.UNAUTHENTICATED) {
+      await engineInstance.dispatch(TransitionEvent.LOGIN_INTENT, { sessionData: devSession });
+      await engineInstance.dispatch(TransitionEvent.BACKEND_AUTH_SUCCESS, {
+        nonceValidated: true,
+        sessionData: devSession
+      });
+      await engineInstance.dispatch(TransitionEvent.AUTHZ_LICENSE_RESOLVED, {
+        backendConfirmed: true,
+        authorizationData: devAuthz,
+        licenseData: { status: 'VALID' }
+      });
+    } else if (currentState === SecurityState.OFFLINE_GRACE) {
+      // Reconnect from offline grace
+      await engineInstance.dispatch(TransitionEvent.BACKEND_RECONNECTED, {
+        handshakePassed: true,
+        authorizationData: devAuthz,
+        sessionData: devSession
+      });
+    }
+
+    // 3. Ensure inMemoryState is OPERATIONAL with full capabilities
+    if (engineInstance.inMemoryState) {
+      engineInstance.inMemoryState.state = SecurityState.OPERATIONAL;
+      engineInstance.inMemoryState.session = devSession;
+      engineInstance.inMemoryState.authorization = devAuthz;
+      engineInstance.inMemoryState.license = { status: 'VALID' };
+
+      // Ensure persistent row is synchronized if storage is initialized
+      try {
+        const row = await StorageAdapter.getSecurityStateRow();
+        if (row && row.state !== SecurityState.OPERATIONAL) {
+          await StorageAdapter.commitTransitionWithOCC(row.state_version, engineInstance.inMemoryState, 'DEV_MODE_OPERATIONAL');
+        }
+      } catch { /* ignore storage error in memory/test modes */ }
+    }
+  }
+
+  /**
    * Authorizes an action against the currently valid capability set.
    * @param {import('./authorization/capabilities.mjs').Capability} capability 
    * @returns {SecurityResult}
    */
   authorize(capability) {
+    // Canonical §48: Non-security config modify is permitted (not entitlement-gated).
+    // Safety invariant: Emergency stop is always permitted.
+    if (capability === CAPABILITY.CONFIG_MODIFY || capability === CAPABILITY.AUTOMATION_STOP) {
+      return { status: "OPERATIONAL" };
+    }
+
     const capabilities = engineInstance.getCurrentCapabilities();
     if (capabilities.includes(capability)) {
       return { status: "OPERATIONAL" };

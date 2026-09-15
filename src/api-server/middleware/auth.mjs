@@ -20,14 +20,26 @@ export function initDevToken() {
     return authConfig.activeToken;
   }
 
-  const generated = process.env.ACP_AUTH_TOKEN || `dev_${crypto.randomBytes(16).toString('hex')}`;
+  // Load stable token from disk if exists, otherwise generate
+  const tokenPath = path.join(process.cwd(), '.acp-dev-token');
+  let savedToken = null;
+  if (!process.env.ACP_AUTH_TOKEN && fs.existsSync(tokenPath)) {
+    try {
+      savedToken = fs.readFileSync(tokenPath, 'utf8').trim();
+    } catch {}
+  }
+
+  const generated = process.env.ACP_AUTH_TOKEN || savedToken || `dev_${crypto.randomBytes(16).toString('hex')}`;
   authConfig.activeToken = generated;
-  authConfig.requireAuth = true;
+  authConfig.requireAuth = process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true';
 
   try {
-    const tokenPath = path.join(process.cwd(), '.acp-dev-token');
-    fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
-    logger.info({ tokenFile: '.acp-dev-token' }, '[Auth] Ephemeral dev token provisioned');
+    if (!savedToken) {
+      fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Ephemeral dev token provisioned');
+    } else {
+      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Persisted dev token loaded');
+    }
   } catch (err) {
     logger.warn({ err: err.message }, '[Auth] Could not write .acp-dev-token file');
   }

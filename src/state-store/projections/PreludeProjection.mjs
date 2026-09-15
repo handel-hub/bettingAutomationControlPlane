@@ -107,8 +107,13 @@ export class PreludeProjection {
             canRunWhileAutomationActive: false
           },
           searchMetadata: {
+            totalCount: viewportAccounts.length,
             totalMatches: viewportAccounts.length,
             returnedOffset: 0,
+            currentFilters: [],
+            appliedTags: [],
+            savedSearches: [],
+            recentSearches: [],
             activeFilterSummary: 'All Accounts'
           }
         }
@@ -149,6 +154,9 @@ export class PreludeProjection {
             exposure: 0,
             successRatePercent: 100.0,
             effectiveConfig: { baseStake: globalConfig.pricing.baseStake, source: 'GLOBAL' },
+            pricingSource: 'GLOBAL',
+            riskSource: 'GLOBAL',
+            rebetSource: 'GLOBAL',
             pendingOperation: null,
             canActivate: true,
             canDeactivate: false,

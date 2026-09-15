@@ -15,10 +15,13 @@ async function main() {
   const client = new SecureIpcClient(pipePath);
   await client.connect(sessionKey);
 
+  let currentStatus = 'READY';
+  let browserCount = 0;
+
   // 3. Start telemetry heartbeat
   client.startHeartbeat(1000, () => ({
-    activeBrowsers: 1,
-    engineStatus: 'READY'
+    activeBrowsers: browserCount,
+    engineStatus: currentStatus
   }));
 
   // 4. Ingress command handling
@@ -27,6 +30,7 @@ async function main() {
 
     switch (type) {
       case ExecutionMessageType.INITIALIZE: {
+        currentStatus = 'READY';
         client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
           state: 'READY',
           message: 'Automation controller initialized'
@@ -35,6 +39,8 @@ async function main() {
       }
 
       case ExecutionMessageType.START_CLUSTER: {
+        currentStatus = 'RUNNING';
+        browserCount = 1;
         client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
           state: 'RUNNING',
           message: 'Automation cluster started'
@@ -43,7 +49,7 @@ async function main() {
       }
 
       case ExecutionMessageType.PLACE_BET: {
-        const { operationId } = payload;
+        const { operationId } = payload || {};
         client.sendEnvelope(ExecutionMessageType.OPERATION_ACK, {
           operationId,
           status: 'IN_FLIGHT'
@@ -61,7 +67,7 @@ async function main() {
       }
 
       case ExecutionMessageType.CASH_OUT: {
-        const { operationId } = payload;
+        const { operationId } = payload || {};
         client.sendEnvelope(ExecutionMessageType.OPERATION_ACK, {
           operationId,
           status: 'IN_FLIGHT'
@@ -77,7 +83,51 @@ async function main() {
         break;
       }
 
+      case ExecutionMessageType.SET_BET_CYCLE: {
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: currentStatus,
+          message: `Bet cycle updated for ${payload?.targetBrowserId}: ${payload?.isEnabled}`
+        }, traceId);
+        break;
+      }
+
+      case ExecutionMessageType.UPDATE_POLICY: {
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: currentStatus,
+          message: `Policy category ${payload?.category} reloaded`
+        }, traceId);
+        break;
+      }
+
+      case ExecutionMessageType.VALIDATE: {
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: currentStatus,
+          message: 'Tactical validation complete'
+        }, traceId);
+        break;
+      }
+
+      case ExecutionMessageType.ACTIVATE_ACCOUNT: {
+        browserCount = Math.min(browserCount + 1, 10);
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: currentStatus,
+          message: `Account activated: ${payload?.accountId}`
+        }, traceId);
+        break;
+      }
+
+      case ExecutionMessageType.DEACTIVATE_ACCOUNT: {
+        browserCount = Math.max(browserCount - 1, 0);
+        client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
+          state: currentStatus,
+          message: `Account deactivated: ${payload?.accountId}`
+        }, traceId);
+        break;
+      }
+
       case ExecutionMessageType.STOP_CLUSTER: {
+        currentStatus = 'STOPPED';
+        browserCount = 0;
         client.sendEnvelope(ExecutionMessageType.STATE_CHANGED, {
           state: 'STOPPED',
           message: 'Shutdown clean'

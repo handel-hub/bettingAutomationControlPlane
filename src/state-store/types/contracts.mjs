@@ -22,6 +22,9 @@ export function createDefaultGlobalConfig() {
     },
     risk: {
       autoAcceptOddsChanges: true,
+      maxStake: 10000,
+      minimumStake: 10,
+      abortOnMarketSuspend: true,
       maxAllowedOddsDriftPercent: 5,
       stopLossThreshold: 25000,
       maxOpenOrdersTotal: 10,
@@ -29,6 +32,7 @@ export function createDefaultGlobalConfig() {
     },
     rebet: {
       maxRebetAttempts: 3,
+      restorePolicyOnRebet: true,
       rebetDelayMs: 1500,
       exponentialBackoff: true,
       backoffMultiplier: 1.5,
@@ -38,11 +42,26 @@ export function createDefaultGlobalConfig() {
       proxyAllocationMode: 'round_robin',
       proxyFailureMode: 'strict',
       maxAccountsPerProxy: 3,
+      masterUseProxy: false,
       connectionTimeoutMs: 5000,
       rotateOnRateLimit: true,
       customDnsServers: ['1.1.1.1', '8.8.8.8']
     },
     execution: {
+      timeouts: {
+        resultTimeoutMs: 30000,
+        navigationTimeoutMs: 10000,
+        loginTimeoutMs: 15000,
+        decisionFreshnessTTLMs: 5000,
+        reconciliationTimeoutMs: 12000
+      },
+      retries: {
+        maxExecutionRetries: 2,
+        maxRecoveryAttempts: 3,
+        recoveryBaseDelayMs: 1000
+      },
+      keyboardTypingDelayMs: 40,
+      maxRecordedActions: 50,
       orderTimeoutMs: 8000,
       retryCount: 2,
       enforceOrderSequencing: true,
@@ -52,6 +71,8 @@ export function createDefaultGlobalConfig() {
     browserSpawning: {
       slaveMode: 'headful',
       maxAccountsToSpawn: 4,
+      masterUseProxy: false,
+      debugSlowMo: 0,
       spawnStaggerIntervalMs: 1200,
       headlessMemorySaver: false,
       enableGpuAcceleration: true
@@ -59,6 +80,10 @@ export function createDefaultGlobalConfig() {
     advancedRuntime: {
       browserBinary: 'chrome',
       useStealthPlugin: true,
+      randomizeUserAgent: true,
+      blockWebRTC: true,
+      matchProxyTimezone: true,
+      canvasSpoofing: true,
       disableWebRtc: true,
       spoofAudioContext: true,
       isolateCookiesPerSession: true,

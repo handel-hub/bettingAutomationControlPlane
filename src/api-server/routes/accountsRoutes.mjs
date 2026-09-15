@@ -77,13 +77,37 @@ accountsRouter.post('/:id/action', async (req, res) => {
     onSuccess: async () => {
       if (type === 'DELETE_ACCOUNT') {
         await repositoryFactory.getAccountsRepo().delete(accountId);
-        wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_DELETED', accountId });
+        wsServer.broadcast('accounts:delta', { 
+          type: 'ACCOUNT_DELETED', 
+          accountId,
+          partialSnapshot: null
+        });
       } else if (type === 'ACTIVATE_ACCOUNT') {
         await repositoryFactory.getAccountsRepo().update(accountId, { backendState: 'ACTIVE', presentationCategory: 'Healthy' });
-        wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_STATUS_CHANGED', accountId, backendState: 'ACTIVE', presentationCategory: 'Healthy' });
+        wsServer.broadcast('accounts:delta', { 
+          type: 'ACCOUNT_STATUS_CHANGED', 
+          accountId, 
+          backendState: 'ACTIVE', 
+          presentationCategory: 'Healthy',
+          partialSnapshot: {
+            backendState: 'ACTIVE',
+            presentationCategory: 'Healthy',
+            statusDescription: 'Account is healthy and ready for automation'
+          }
+        });
       } else if (type === 'DEACTIVATE_ACCOUNT') {
         await repositoryFactory.getAccountsRepo().update(accountId, { backendState: 'SUSPENDED', presentationCategory: 'Neutral' });
-        wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_STATUS_CHANGED', accountId, backendState: 'SUSPENDED', presentationCategory: 'Neutral' });
+        wsServer.broadcast('accounts:delta', { 
+          type: 'ACCOUNT_STATUS_CHANGED', 
+          accountId, 
+          backendState: 'SUSPENDED', 
+          presentationCategory: 'Neutral',
+          partialSnapshot: {
+            backendState: 'SUSPENDED',
+            presentationCategory: 'Neutral',
+            statusDescription: 'Account is suspended'
+          }
+        });
       }
       res.json({ success: true, accountId });
     }

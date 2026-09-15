@@ -16,6 +16,8 @@ import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { AsyncMutex } from '../../shared/AsyncMutex.mjs';
 import { ExecutionPayloadBuilder } from './ExecutionPayloadBuilder.mjs';
 import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
+import { logger } from '../../shared/logging.mjs';
+import { SanitizerGate } from '../../state-store/validation/SanitizerGate.mjs';
 
 /**
  * ExecutionBoundaryManager
@@ -163,6 +165,13 @@ export class ExecutionBoundaryManager extends EventEmitter {
     const traceId = opts.traceId;
     const envelope = createExecutionEnvelope(type, payload, traceId, 'CONTROL_PLANE');
     const jsonString = JSON.stringify(envelope);
+
+    logger.info({
+      traceId: envelope.traceId,
+      msgId: envelope.msgId,
+      type,
+      payload: SanitizerGate.sanitize(payload)
+    }, `[ExecutionBoundary] Dispatched [${type}] to Execution Plane (traceId: ${envelope.traceId})`);
 
     if (!opts.waitForAck) {
       const sent = this.transport.broadcast(jsonString);

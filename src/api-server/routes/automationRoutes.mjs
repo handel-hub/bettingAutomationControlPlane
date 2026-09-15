@@ -247,6 +247,11 @@ automationRouter.put('/accounts/:id/config', async (req, res) => {
       await repositoryFactory.getConfigRepo().updateAccountConfig(accountId, updates);
       const snapshot = await workspaceAggregator.getSnapshot();
       const account = snapshot.accounts.find(a => a.id === accountId);
+      wsServer.broadcast('automation:delta', {
+        type: 'ACCOUNT_UPDATED',
+        accountId,
+        partialSnapshot: account || { id: accountId, ...updates }
+      });
       res.json({ success: true, account });
     }
   });
@@ -266,6 +271,11 @@ automationRouter.put('/config/:category', async (req, res) => {
     capability: CAPABILITY.CONFIG_MODIFY,
     onSuccess: async () => {
       const updatedGlobalConfig = await repositoryFactory.getConfigRepo().updateCategory(category, values);
+      wsServer.broadcast('automation:delta', {
+        type: 'GLOBAL_CONFIG_UPDATED',
+        category,
+        values
+      });
       res.json({ success: true, globalConfig: updatedGlobalConfig });
     }
   });

@@ -15,6 +15,7 @@ import { platformsRouter } from './routes/platformsRoutes.mjs';
 import { preludeRouter } from './routes/preludeRoute.mjs';
 import { wsServer } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
+import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
@@ -51,6 +52,21 @@ export class ApiServer {
 
     // Ingress Authentication Middleware
     this.app.use(ingressAuthMiddleware);
+
+    // Ingress HTTP Request & Payload Logger
+    this.app.use((req, res, next) => {
+      if (req.method !== 'OPTIONS') {
+        const hasBody = req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0;
+        const payload = hasBody ? SanitizerGate.sanitize(req.body) : undefined;
+        logger.info({
+          traceId: req.traceId,
+          method: req.method,
+          url: req.originalUrl || req.url,
+          payload
+        }, `[HTTP Ingress] ${req.method} ${req.originalUrl || req.url}`);
+      }
+      next();
+    });
 
     // Mount 7 Domain Routers
     this.app.use('/api/v1/automation', automationRouter);

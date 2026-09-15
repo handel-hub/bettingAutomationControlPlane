@@ -41,6 +41,10 @@ export class WorkspaceSnapshotProjection {
         pricingSource: overrides.pricingSource || 'GLOBAL',
         riskSource: overrides.riskSource || 'GLOBAL',
         rebetSource: overrides.rebetSource || 'GLOBAL',
+        effectiveConfig: { 
+          baseStake: overrides.baseStake ?? globalConfig.pricing.baseStake, 
+          source: overrides.pricingSource || 'GLOBAL' 
+        },
         currentBalance: bal.balance,
         currencySymbol: bal.currencySymbol,
         activeBetsCount: 0,

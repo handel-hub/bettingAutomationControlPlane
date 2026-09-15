@@ -1,6 +1,11 @@
 // @ts-check
 import EventEmitter from 'node:events';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { executionAuthorization } from './execution-authorization.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { runtimeHeartbeat } from './heartbeat.mjs';
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { CommandRouter } from '../command/commandRouter.mjs';
@@ -295,6 +300,14 @@ export class RuntimeManager extends EventEmitter {
 
     this.ensureServerStarted();
 
+    let targetScript = scriptPath || process.env.RUNTIME_ENTRY_SCRIPT;
+    if (!targetScript && options.useDevWorkerFallback !== false) {
+      const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true';
+      if (isDev) {
+        targetScript = path.resolve(__dirname, '../../test/fixtures/mock-orchestrated-worker.mjs');
+      }
+    }
+
     const handshakeTimeoutMs = options.handshakeTimeoutMs || 10_000;
     let handshakeTimer = null;
 
@@ -303,7 +316,7 @@ export class RuntimeManager extends EventEmitter {
       this.activeRuntimes.delete(exitedPid);
       this.engineStatus = 'STOPPED';
       this.emit('runtimeExited', exitedPid);
-    }, scriptPath, expectedSha256);
+    }, targetScript, expectedSha256);
     
     this.activeRuntimes.add(pid);
     runtimeHeartbeat.recordHeartbeat(pid);

@@ -333,8 +333,13 @@ export class StateStore {
         canRunWhileAutomationActive: false
       },
       searchMetadata: {
+        totalCount: totalMatches,
         totalMatches,
         returnedOffset: offset,
+        currentFilters: [],
+        appliedTags: [],
+        savedSearches: [],
+        recentSearches: [],
         activeFilterSummary: filterQuery ? `Filter: "${filterQuery}"` : 'All Accounts'
       }
     };

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { CommandPayloadSchema, ContractViolationError } from './commandSchema.mjs';
 import { CAPABILITY } from '../security-authority/authorization/capabilities.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 
 export const COMMAND_CAPABILITY_MAP = Object.freeze({
     'START_AUTOMATION': CAPABILITY.AUTOMATION_START,
@@ -196,6 +197,8 @@ export class CommandRouter extends EventEmitter {
             commandId: command.id || command.commandId,
             category,
             type: command.type,
+            target: command.target || undefined,
+            payload: command.payload ? SanitizerGate.sanitize(command.payload) : undefined,
             protocolVersion
         }, `[CommandRouter] Routing [${category}:${command.type}] (${command.id || command.commandId}) [Protocol v${protocolVersion}]`);
         

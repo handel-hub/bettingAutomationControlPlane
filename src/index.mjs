@@ -13,6 +13,7 @@ import { workspaceAggregator } from './state/workspaceAggregator.mjs';
 import { initDevToken } from './api-server/middleware/auth.mjs';
 import { ExecutionPayloadBuilder } from './runtime-manager/boundary/ExecutionPayloadBuilder.mjs';
 import { getSharedStateStore } from './state-store/sharedStateStore.mjs';
+import { SanitizerGate } from './state-store/validation/SanitizerGate.mjs';
 
 /**
  * Registers default Ingress Command Handlers into CommandRouter.
@@ -21,7 +22,7 @@ import { getSharedStateStore } from './state-store/sharedStateStore.mjs';
 export function registerDefaultCommandHandlers() {
   // Execution category - Guarded strictly: Execution Plane is disabled in degraded mode
   commandRouter.register('Execution', 'START_AUTOMATION', async (cmd) => {
-    logger.info({ traceId: cmd.traceId }, '[Command] START_AUTOMATION executing');
+    logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] START_AUTOMATION executing');
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
@@ -76,7 +77,7 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Execution', 'STOP_AUTOMATION', async (cmd) => {
-    logger.info({ traceId: cmd.traceId }, '[Command] STOP_AUTOMATION executing');
+    logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] STOP_AUTOMATION executing');
     return executionBoundaryManager.lifecycleMutex.runExclusive(async () => {
       // 1. Record Desired State = STOPPED
       const store = getSharedStateStore();
@@ -138,7 +139,7 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Execution', 'ACTIVATE_ACCOUNT', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, target: cmd.target }, '[Command] ACTIVATE_ACCOUNT executing');
+    logger.info({ traceId: cmd.traceId, target: cmd.target, payload: cmd.payload }, '[Command] ACTIVATE_ACCOUNT executing');
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
@@ -147,7 +148,7 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Execution', 'DEACTIVATE_ACCOUNT', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, target: cmd.target }, '[Command] DEACTIVATE_ACCOUNT executing');
+    logger.info({ traceId: cmd.traceId, target: cmd.target, payload: cmd.payload }, '[Command] DEACTIVATE_ACCOUNT executing');
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
@@ -157,7 +158,7 @@ export function registerDefaultCommandHandlers() {
 
   // Persistence category
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName }, '[Command] REGISTER_ACCOUNT executing');
+    logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName, payload: SanitizerGate.sanitize(cmd.payload) }, '[Command] REGISTER_ACCOUNT executing');
     const created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
     try {
       const store = getSharedStateStore();
@@ -172,17 +173,17 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Persistence', 'ACCOUNT_ACTION', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, action: cmd.payload?.actionType, target: cmd.target }, '[Command] ACCOUNT_ACTION executed');
+    logger.info({ traceId: cmd.traceId, action: cmd.payload?.actionType, target: cmd.target, payload: cmd.payload }, '[Command] ACCOUNT_ACTION executed');
     return { executed: true };
   });
 
   commandRouter.register('Persistence', 'BULK_ACTION', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, type: cmd.payload?.type, count: cmd.payload?.accountIds?.length }, '[Command] BULK_ACTION executed');
+    logger.info({ traceId: cmd.traceId, type: cmd.payload?.type, count: cmd.payload?.accountIds?.length, payload: cmd.payload }, '[Command] BULK_ACTION executed');
     return { bulkExecuted: true };
   });
 
   commandRouter.register('Persistence', 'TOGGLE_BET_CYCLE', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, target: cmd.target, enabled: cmd.payload?.enabled }, '[Command] TOGGLE_BET_CYCLE executed');
+    logger.info({ traceId: cmd.traceId, target: cmd.target, enabled: cmd.payload?.enabled, payload: cmd.payload }, '[Command] TOGGLE_BET_CYCLE executed');
     const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { betCycleEnabled: cmd.payload?.enabled });
     
     // Orchestration Dispatch: Send SET_BET_CYCLE and full policy update to Execution Plane
@@ -211,7 +212,7 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Persistence', 'UPDATE_ACCOUNT_CONFIG', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, target: cmd.target, category: cmd.payload?.category }, '[Command] UPDATE_ACCOUNT_CONFIG executed');
+    logger.info({ traceId: cmd.traceId, target: cmd.target, category: cmd.payload?.category, payload: cmd.payload }, '[Command] UPDATE_ACCOUNT_CONFIG executed');
     const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { [cmd.payload?.category]: cmd.payload?.values });
 
     // Orchestration Dispatch: Build full account policy and dispatch UPDATE_POLICY
@@ -243,7 +244,7 @@ export function registerDefaultCommandHandlers() {
   });
 
   commandRouter.register('Persistence', 'UPDATE_GLOBAL_CONFIG', async (cmd) => {
-    logger.info({ traceId: cmd.traceId, category: cmd.payload?.category }, '[Command] UPDATE_GLOBAL_CONFIG executing');
+    logger.info({ traceId: cmd.traceId, category: cmd.payload?.category, payload: cmd.payload }, '[Command] UPDATE_GLOBAL_CONFIG executing');
     const updated = await repositoryFactory.getConfigRepo().updateCategory(cmd.payload.category, cmd.payload.values);
     try {
       const store = getSharedStateStore();
@@ -389,21 +390,42 @@ async function bootstrap() {
     registerDefaultCommandHandlers();
 
     // 4. Initialize Backend Synchronization & Hydration Pipeline (Blocking prerequisite)
+    const isDev = process.env.NODE_ENV !== 'production' && process.env.ACP_FORCE_DEGRADED !== 'true';
+
     try {
       const syncResult = await backendSyncService.initialize();
       if (!syncResult.isConnected) {
-        logger.warn('[ControlPlane] Backend/Internet offline. Entering DEGRADED mode (Execution Plane strictly quarantined)');
-        await securityFacade.transitionToDegraded('BACKEND_OFFLINE_AT_BOOT');
-        runtimeManager.quarantineExecution('BACKEND_OFFLINE_AT_BOOT');
-        workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend offline: Execution Plane disabled');
+        if (isDev) {
+          logger.info('[ControlPlane] Cloud Backend offline in development mode.');
+          logger.info('[ControlPlane] Activating Local Developer Operational Mode (Full Capabilities & Standby Lifecycle).');
+          await securityFacade.initDevSession();
+          const store = getSharedStateStore();
+          store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
+          store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
+          workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
+        } else {
+          logger.warn('[ControlPlane] Backend/Internet offline. Entering DEGRADED mode (Execution Plane strictly quarantined)');
+          await securityFacade.transitionToDegraded('BACKEND_OFFLINE_AT_BOOT');
+          runtimeManager.quarantineExecution('BACKEND_OFFLINE_AT_BOOT');
+          workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend offline: Execution Plane disabled');
+        }
       } else {
         logger.info('[ControlPlane] Backend synchronization pipeline connected & operational');
       }
     } catch (syncErr) {
-      logger.warn({ error: syncErr.message }, '[ControlPlane] Backend sync error. Entering DEGRADED mode');
-      await securityFacade.transitionToDegraded('BACKEND_SYNC_FAILURE');
-      runtimeManager.quarantineExecution('BACKEND_SYNC_FAILURE');
-      workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend sync failure: Execution Plane disabled');
+      if (isDev) {
+        logger.info({ err: syncErr.message }, '[ControlPlane] Backend sync unavailable in development mode. Activating Local Developer Operational Mode.');
+        await securityFacade.initDevSession();
+        const store = getSharedStateStore();
+        store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
+        store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
+        workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
+      } else {
+        logger.warn({ error: syncErr.message }, '[ControlPlane] Backend sync error. Entering DEGRADED mode');
+        await securityFacade.transitionToDegraded('BACKEND_SYNC_FAILURE');
+        runtimeManager.quarantineExecution('BACKEND_SYNC_FAILURE');
+        workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend sync failure: Execution Plane disabled');
+      }
     }
 
     // 5. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready

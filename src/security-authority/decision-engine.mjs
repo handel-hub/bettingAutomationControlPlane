@@ -5,6 +5,7 @@ import { StorageAdapter } from './persistence/storage-adapter.mjs';
 import { TransitionEvent } from './state-machine/transitions.mjs';
 import { SecurityState } from './state-machine/states.mjs';
 import { NativeCore } from './native/security-core.mjs';
+import { CAPABILITY } from './authorization/capabilities.mjs';
 
 /**
  * The Decision Engine is the central brain of the Security Authority.
@@ -114,13 +115,18 @@ export class DecisionEngine {
    * @returns {import('./authorization/capabilities.mjs').Capability[]}
    */
   getCurrentCapabilities() {
+    // Per Canonical Specification §48, non-security configuration modifications
+    // (pricing, risk, rebet, proxy, timeouts) are non-entitlement-gated and permitted.
+    // Emergency stop is also a non-entitlement-gated safety invariant.
+    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP];
+
     if (this.inMemoryState?.state !== SecurityState.OPERATIONAL) {
-      return [];
+      return baseCaps;
     }
     if (this.inMemoryState.authorization?.status !== 'VALID') {
-      return [];
+      return baseCaps;
     }
-    const caps = this.inMemoryState.authorization.capability_set || [];
+    const caps = Array.from(new Set([...baseCaps, ...(this.inMemoryState.authorization.capability_set || [])]));
     if (typeof this.activeExecutionChecker === 'function') {
       try {
         if (this.activeExecutionChecker()) {
