@@ -4,6 +4,7 @@ import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
 import { backendSyncService } from '../../sync/backendSyncService.mjs';
+import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 
 export const accountsRouter = Router();
 
@@ -51,6 +52,10 @@ accountsRouter.post('/', async (req, res) => {
         partialSnapshot: sanitized
       });
       backendSyncService.saveLocalCache();
+
+      const automationSnapshot = await workspaceAggregator.getSnapshot();
+      wsServer.broadcast('automation:snapshot', automationSnapshot);
+
       res.setHeader('X-Protocol-Version', '2.0');
       res.status(201).json(sanitized);
     }
@@ -78,6 +83,7 @@ accountsRouter.post('/:id/action', async (req, res) => {
     payload: { actionType: type },
     onSuccess: async () => {
       if (type === 'DELETE_ACCOUNT') {
+        workspaceAggregator.deactivateAccount(accountId);
         await repositoryFactory.getAccountsRepo().delete(accountId);
         wsServer.broadcast('accounts:delta', { 
           type: 'ACCOUNT_DELETED', 
@@ -112,6 +118,8 @@ accountsRouter.post('/:id/action', async (req, res) => {
         });
       }
       backendSyncService.saveLocalCache();
+      const automationSnapshot = await workspaceAggregator.getSnapshot();
+      wsServer.broadcast('automation:snapshot', automationSnapshot);
       res.json({ success: true, accountId });
     }
   });
@@ -133,6 +141,7 @@ accountsRouter.post('/bulk-action', async (req, res) => {
       if (Array.isArray(accountIds)) {
         if (type === 'BULK_DELETE') {
           for (const id of accountIds) {
+            workspaceAggregator.deactivateAccount(id);
             wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_DELETED', accountId: id });
           }
         } else if (type === 'BULK_ACTIVATE') {
@@ -166,6 +175,8 @@ accountsRouter.post('/bulk-action', async (req, res) => {
 
       wsServer.broadcast('accounts:delta', { type: 'BULK_OPERATION_RESULT', result });
       backendSyncService.saveLocalCache();
+      const automationSnapshot = await workspaceAggregator.getSnapshot();
+      wsServer.broadcast('automation:snapshot', automationSnapshot);
       res.json(result);
     }
   });

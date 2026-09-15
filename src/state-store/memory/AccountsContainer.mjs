@@ -141,7 +141,7 @@ export class AccountsContainer {
       platformDisplayName: sanitized.platformDisplayName || platform,
       accountUsername: sanitized.accountUsername,
       accountPassword: '[PROTECTED]',
-      backendState: sanitized.backendState || 'READY',
+      backendState: sanitized.backendState || 'ACTIVE',
       desiredState: sanitized.desiredState || 'STOPPED',
       observedState: sanitized.observedState || 'STOPPED',
       executionStatusReason: sanitized.executionStatusReason || null,
