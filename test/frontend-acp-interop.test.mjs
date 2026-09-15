@@ -27,11 +27,22 @@ test('Frontend <-> Control Plane End-to-End Interoperability Test', async (t) =>
     return repositoryFactory.getAccountsRepo().bulkAction(cmd.payload?.type, cmd.payload?.accountIds);
   });
 
+  let createdAccountId = null;
+
   const server = new ApiServer();
   const port = 8095;
   await server.listen(port);
 
   t.after(async () => {
+    if (createdAccountId) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/v1/accounts/${createdAccountId}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'DELETE_ACCOUNT' })
+        });
+      } catch {}
+    }
     await server.close();
   });
 
@@ -119,6 +130,7 @@ test('Frontend <-> Control Plane End-to-End Interoperability Test', async (t) =>
     });
     assert.equal(accRes.status, 201);
     const createdAccount = await accRes.json();
+    createdAccountId = createdAccount.id;
     assert.equal(createdAccount.accountUsername, uniqueUsername);
 
     // C. Toggle Bet Cycle

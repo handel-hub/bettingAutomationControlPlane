@@ -11,12 +11,24 @@ test('Boundary Contract: Zero-Secret Masking Boundary', async (t) => {
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
     return repositoryFactory.getAccountsRepo().create(cmd.payload);
   });
+  commandRouter.register('Persistence', 'ACCOUNT_ACTION', async () => ({ executed: true }));
+
+  let createdAccountId = null;
 
   const server = new ApiServer();
   const port = 8094;
   await server.listen(port, '127.0.0.1');
 
   t.after(async () => {
+    if (createdAccountId) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/v1/accounts/${createdAccountId}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'DELETE_ACCOUNT' })
+        });
+      } catch {}
+    }
     await server.close();
   });
 
@@ -53,6 +65,7 @@ test('Boundary Contract: Zero-Secret Masking Boundary', async (t) => {
 
     assert.equal(res.status, 201);
     const created = await res.json();
+    createdAccountId = created.id;
 
     // Invariant: HTTP response MUST NOT return plaintext password
     assert.notEqual(created.accountPassword, plaintextPassword);

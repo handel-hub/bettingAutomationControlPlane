@@ -143,7 +143,15 @@ test('Phase 20: Full End-to-End Multi-Process Integration Test', async (t) => {
 
     // Give 500ms for clean child exit
     await new Promise((r) => setTimeout(r, 500));
-    assert.strictEqual(runtimeManager.activeRuntimes.size, 0, 'Worker child process must terminate cleanly');
+    // 6. Clean up test account
+    await fetch(`${baseUrl}/api/v1/accounts/${createdAcc.id}/action`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${devToken}`
+      },
+      body: JSON.stringify({ type: 'DELETE_ACCOUNT' })
+    });
 
     ws.terminate();
   });

@@ -1,6 +1,7 @@
 // @ts-check
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { WebSocket } from 'ws';
 import { backendClient } from '../security-authority/protocol/backend-client.mjs';
 import { repositoryFactory } from '../repositories/repositoryFactory.mjs';
@@ -58,7 +59,11 @@ export class BackendSyncService {
     if (!fs.existsSync(secDir)) {
       try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
     }
-    this.cacheFilePath = options.cachePath || path.join(secDir, 'acp_cache.enc');
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const defaultCachePath = isTest
+      ? path.join(os.tmpdir(), `acp_test_cache_${process.pid}.enc`)
+      : path.join(secDir, 'acp_cache.enc');
+    this.cacheFilePath = options.cachePath || process.env.ACP_CACHE_PATH || defaultCachePath;
 
     if (this.engine) {
       this._initOutboxPersistence();

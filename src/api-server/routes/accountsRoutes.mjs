@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
+import { backendSyncService } from '../../sync/backendSyncService.mjs';
 
 export const accountsRouter = Router();
 
@@ -49,6 +50,7 @@ accountsRouter.post('/', async (req, res) => {
         type: 'ACCOUNT_CREATED',
         partialSnapshot: sanitized
       });
+      backendSyncService.saveLocalCache();
       res.setHeader('X-Protocol-Version', '2.0');
       res.status(201).json(sanitized);
     }
@@ -109,6 +111,7 @@ accountsRouter.post('/:id/action', async (req, res) => {
           }
         });
       }
+      backendSyncService.saveLocalCache();
       res.json({ success: true, accountId });
     }
   });
@@ -162,6 +165,7 @@ accountsRouter.post('/bulk-action', async (req, res) => {
       }
 
       wsServer.broadcast('accounts:delta', { type: 'BULK_OPERATION_RESULT', result });
+      backendSyncService.saveLocalCache();
       res.json(result);
     }
   });
