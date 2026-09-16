@@ -92,4 +92,41 @@ describe('StateStore Snapshot Projections & Prelude Parity', () => {
 
     store.close();
   });
+
+  it('excludes SUSPENDED accounts from automation workspace snapshots and respects staging', () => {
+    const store = createStateStore({ dbPath: ':memory:', userId: 'usr_auto_filter' });
+    store.initialize();
+
+    store.accounts.upsert({ id: 'acc-active-1', name: 'Active Account', platformDisplayName: 'SportyBet', accountUsername: 'active_01', backendState: 'ACTIVE' });
+    store.accounts.upsert({ id: 'acc-suspended-1', name: 'Suspended Account', platformDisplayName: 'Bet9ja', accountUsername: 'dead_01', backendState: 'SUSPENDED' });
+
+    // Snapshot without staging filter: SUSPENDED account must be excluded!
+    const snapshotAll = store.getWorkspaceSnapshot();
+    assert.ok(snapshotAll.accounts.some(a => a.id === 'acc-active-1'));
+    assert.ok(!snapshotAll.accounts.some(a => a.id === 'acc-suspended-1'), 'SUSPENDED accounts must NEVER appear in automation snapshot');
+
+    // Snapshot with staging filter: only staged and non-suspended accounts should appear!
+    const snapshotStaged = store.getWorkspaceSnapshot({ stagedAccountIds: new Set(['acc-active-1']) });
+    assert.equal(snapshotStaged.accounts.length, 1);
+    assert.equal(snapshotStaged.accounts[0].id, 'acc-active-1');
+
+    // Attempting to stage a suspended account must NOT include it in automation
+    const snapshotStagedSuspended = store.getWorkspaceSnapshot({ stagedAccountIds: new Set(['acc-suspended-1']) });
+    assert.equal(snapshotStagedSuspended.accounts.length, 0, 'Suspended accounts cannot be in automation even if in stagedAccountIds');
+
+    // Prelude projection: SUSPENDED accounts must not be in automation.snapshot.accounts
+    const prelude = store.getPreludeSnapshot();
+    assert.ok(!prelude.payload.automation.snapshot.accounts.some(a => a.id === 'acc-suspended-1'), 'Must not be in automation snapshot');
+
+    // CRITICAL: Suspended account MUST be present in Accounts view so user can re-enable it later!
+    assert.ok(prelude.payload.accounts.initialView.viewportAccounts.some(a => a.id === 'acc-suspended-1'), 'Suspended account MUST remain in Accounts initialView');
+    const suspendedInPrelude = prelude.payload.accounts.initialView.viewportAccounts.find(a => a.id === 'acc-suspended-1');
+    assert.equal(suspendedInPrelude.backendState, 'SUSPENDED');
+
+    // getAccountsView() must ALSO return suspended accounts for the Accounts table
+    const accountsView = store.getAccountsView();
+    assert.ok(accountsView.viewportAccounts.some(a => a.id === 'acc-suspended-1'), 'getAccountsView MUST return suspended accounts');
+
+    store.close();
+  });
 });

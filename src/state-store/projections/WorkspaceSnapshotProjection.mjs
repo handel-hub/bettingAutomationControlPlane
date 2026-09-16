@@ -20,7 +20,17 @@ export class WorkspaceSnapshotProjection {
     const maxCapacity = globalConfig.browserSpawning.maxAccountsToSpawn || 4;
     const lifecycle = runtimeState.lifecycle || 'STOPPED';
 
-    const accountSnapshots = accounts.map(acc => {
+    const stagedAccountIds = (runtimeState.stagedAccountIds instanceof Set)
+      ? runtimeState.stagedAccountIds
+      : null;
+
+    const eligibleAccounts = accounts.filter(acc => {
+      if (acc.backendState === 'SUSPENDED') return false;
+      if (stagedAccountIds) return stagedAccountIds.has(acc.id);
+      return true;
+    });
+
+    const accountSnapshots = eligibleAccounts.map(acc => {
       const overrides = configContainer.getAccountOverride(acc.id);
       const isBrowserActive = (runtimeState.activeAccountIds instanceof Set)
         ? runtimeState.activeAccountIds.has(acc.id)
@@ -52,7 +62,7 @@ export class WorkspaceSnapshotProjection {
         successRatePercent: 100.0,
         pendingOperation: acc.pendingOperation || null,
         canActivate: !isBrowserActive && activeBrowsers < maxCapacity,
-        canDeactivate: isBrowserActive,
+        canDeactivate: true,
         canToggleBetCycle: true
       };
     });
@@ -67,12 +77,13 @@ export class WorkspaceSnapshotProjection {
       lifecycle,
       lifecycleMessage: runtimeState.lifecycleMessage,
       capabilities: runtimeState.capabilities || {
-        canStartAutomation: lifecycle === 'STOPPED' && accounts.length > 0,
+        canStartAutomation: lifecycle === 'STOPPED' && eligibleAccounts.length > 0,
         canStopAutomation: lifecycle === 'RUNNING',
         canPlaceBet: lifecycle === 'RUNNING' && activeBrowsers > 0,
         canCashOut: lifecycle === 'RUNNING' && activeBrowsers > 0,
         canValidate: lifecycle === 'RUNNING',
-        canActivateAccount: activeBrowsers < maxCapacity,
+        canActivateAccount: lifecycle === 'STOPPED' && activeBrowsers < maxCapacity,
+        activateAccountDisabledReason: lifecycle !== 'STOPPED' ? 'Cannot add accounts while automation is running' : undefined,
         canDeactivateAccount: activeBrowsers > 0,
         canIncreaseBrowserCount: activeBrowsers < maxCapacity,
         canDecreaseBrowserCount: activeBrowsers > 1,

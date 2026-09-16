@@ -15,6 +15,8 @@ export class WorkspaceAggregator {
     this.lifecycleMessage = undefined;
     /** @type {Set<string>} active account IDs with live browser processes */
     this.activeAccountIds = new Set();
+    /** @type {Set<string>} staged account IDs ready in automation */
+    this.stagedAccountIds = new Set(['acc-1', 'acc-2']);
   }
 
   setLifecycle(lifecycle, message = undefined) {
@@ -28,11 +30,38 @@ export class WorkspaceAggregator {
     } catch { /* ignore */ }
   }
 
+  startAutomation() {
+    this.setLifecycle('RUNNING', 'Execution engine active and processing');
+    // Start browsers for all currently staged accounts
+    for (const id of this.stagedAccountIds) {
+      this.activeAccountIds.add(id);
+    }
+  }
+
+  stopAutomation() {
+    this.setLifecycle('STOPPED', 'Execution engine standby');
+    // Stop all active browser processes
+    this.activeAccountIds.clear();
+  }
+
   activateAccount(accountId) {
-    this.activeAccountIds.add(accountId);
+    this.stagedAccountIds.add(accountId);
+    if (this.lifecycle === 'RUNNING') {
+      this.activeAccountIds.add(accountId);
+    }
   }
 
   deactivateAccount(accountId) {
+    this.stagedAccountIds.delete(accountId);
+    this.activeAccountIds.delete(accountId);
+  }
+
+  stageAccount(accountId) {
+    this.stagedAccountIds.add(accountId);
+  }
+
+  unstageAccount(accountId) {
+    this.stagedAccountIds.delete(accountId);
     this.activeAccountIds.delete(accountId);
   }
 
@@ -45,12 +74,17 @@ export class WorkspaceAggregator {
       accountsRepo.list()
     ]);
 
+    // Only accounts that are NOT SUSPENDED and are staged in automation
+    const stagedAccounts = accounts.filter(acc => 
+      acc.backendState !== 'SUSPENDED' && this.stagedAccountIds.has(acc.id)
+    );
+
     const activeBrowsers = this.activeAccountIds.size;
     const maxCapacity = globalConfig.browserSpawning.maxAccountsToSpawn || 2;
     const globalActionPending = operationTracker.getCurrentPendingAction();
 
     // Map DB accounts into AccountAutomationSnapshot
-    const accountSnapshots = await Promise.all(accounts.map(async (acc) => {
+    const accountSnapshots = await Promise.all(stagedAccounts.map(async (acc) => {
       const overrides = await configRepo.getAccountConfig(acc.id);
       const isBrowserActive = this.activeAccountIds.has(acc.id);
 
@@ -73,7 +107,7 @@ export class WorkspaceAggregator {
         customRebet: overrides.customRebet,
         pendingOperation: null,
         canActivate: !isBrowserActive && activeBrowsers < maxCapacity,
-        canDeactivate: isBrowserActive,
+        canDeactivate: true,
         canToggleBetCycle: true
       };
     }));
@@ -84,7 +118,7 @@ export class WorkspaceAggregator {
       activeBrowsers,
       maxCapacity,
       globalActionPending,
-      totalConfiguredAccounts: accounts.length
+      totalConfiguredAccounts: stagedAccounts.length
     });
 
     const engineStatus = this.lifecycle === 'RUNNING' 

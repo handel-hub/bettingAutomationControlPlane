@@ -104,6 +104,7 @@ accountsRouter.post('/:id/action', async (req, res) => {
           }
         });
       } else if (type === 'DEACTIVATE_ACCOUNT') {
+        workspaceAggregator.deactivateAccount(accountId);
         await repositoryFactory.getAccountsRepo().update(accountId, { backendState: 'SUSPENDED', presentationCategory: 'Neutral' });
         wsServer.broadcast('accounts:delta', { 
           type: 'ACCOUNT_STATUS_CHANGED', 
@@ -115,6 +116,10 @@ accountsRouter.post('/:id/action', async (req, res) => {
             presentationCategory: 'Neutral',
             statusDescription: 'Account is suspended'
           }
+        });
+        wsServer.broadcast('automation:delta', {
+          type: 'ACCOUNT_DEACTIVATED',
+          accountId
         });
       }
       backendSyncService.saveLocalCache();
@@ -143,6 +148,7 @@ accountsRouter.post('/bulk-action', async (req, res) => {
           for (const id of accountIds) {
             workspaceAggregator.deactivateAccount(id);
             wsServer.broadcast('accounts:delta', { type: 'ACCOUNT_DELETED', accountId: id });
+            wsServer.broadcast('automation:delta', { type: 'ACCOUNT_DEACTIVATED', accountId: id });
           }
         } else if (type === 'BULK_ACTIVATE') {
           for (const id of accountIds) {
@@ -159,6 +165,7 @@ accountsRouter.post('/bulk-action', async (req, res) => {
           }
         } else if (type === 'BULK_DEACTIVATE') {
           for (const id of accountIds) {
+            workspaceAggregator.deactivateAccount(id);
             const acc = await repositoryFactory.getAccountsRepo().findById(id);
             if (acc) {
               wsServer.broadcast('accounts:delta', {
@@ -167,6 +174,10 @@ accountsRouter.post('/bulk-action', async (req, res) => {
                 backendState: 'SUSPENDED',
                 presentationCategory: 'Neutral',
                 partialSnapshot: acc
+              });
+              wsServer.broadcast('automation:delta', {
+                type: 'ACCOUNT_DEACTIVATED',
+                accountId: id
               });
             }
           }

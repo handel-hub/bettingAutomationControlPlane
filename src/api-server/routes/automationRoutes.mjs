@@ -19,6 +19,7 @@ automationRouter.get('/snapshot', async (req, res) => {
       lifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: workspaceAggregator.lifecycleMessage,
       activeAccountIds: workspaceAggregator.activeAccountIds,
+      stagedAccountIds: workspaceAggregator.stagedAccountIds,
       activeBrowsers: workspaceAggregator.activeAccountIds.size,
       globalActionPending: operationTracker.getCurrentPendingAction()
     };
@@ -50,13 +51,20 @@ automationRouter.post('/start', async (req, res) => {
     category: 'Execution',
     type: 'START_AUTOMATION',
     capability: CAPABILITY.AUTOMATION_START,
-    onSuccess: () => {
-      workspaceAggregator.setLifecycle('RUNNING');
+    onSuccess: async () => {
+      workspaceAggregator.startAutomation();
+      const snapshot = await workspaceAggregator.getSnapshot();
       wsServer.broadcast('automation:delta', {
         type: 'LIFECYCLE_CHANGED',
-        lifecycle: 'RUNNING'
+        lifecycle: 'RUNNING',
+        message: 'Automation engine operational and active'
       });
-      res.json({ success: true, lifecycle: 'STARTING' });
+      wsServer.broadcast('automation:delta', {
+        type: 'CAPABILITIES_CHANGED',
+        capabilities: snapshot.capabilities
+      });
+      wsServer.broadcast('automation:snapshot', snapshot);
+      res.json({ success: true, lifecycle: 'RUNNING', snapshot });
     }
   });
 });
@@ -69,13 +77,20 @@ automationRouter.post('/stop', async (req, res) => {
     category: 'Execution',
     type: 'STOP_AUTOMATION',
     capability: CAPABILITY.AUTOMATION_STOP,
-    onSuccess: () => {
-      workspaceAggregator.setLifecycle('STOPPED');
+    onSuccess: async () => {
+      workspaceAggregator.stopAutomation();
+      const snapshot = await workspaceAggregator.getSnapshot();
       wsServer.broadcast('automation:delta', {
         type: 'LIFECYCLE_CHANGED',
-        lifecycle: 'STOPPED'
+        lifecycle: 'STOPPED',
+        message: 'Automation engine standby'
       });
-      res.json({ success: true, lifecycle: 'STOPPING' });
+      wsServer.broadcast('automation:delta', {
+        type: 'CAPABILITIES_CHANGED',
+        capabilities: snapshot.capabilities
+      });
+      wsServer.broadcast('automation:snapshot', snapshot);
+      res.json({ success: true, lifecycle: 'STOPPED', snapshot });
     }
   });
 });

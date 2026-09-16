@@ -51,7 +51,10 @@ export class CapabilityResolver {
       : undefined;
 
     // Browser capacity operations
-    const canActivateAccount = activeBrowsers < maxCapacity && !hasPendingAction;
+    const canActivateAccount = isStopped && activeBrowsers < maxCapacity && !hasPendingAction;
+    const activateAccountDisabledReason = !canActivateAccount
+      ? (isRunning ? 'Cannot add accounts while automation is running' : activeBrowsers >= maxCapacity ? 'Browser capacity limit reached' : hasPendingAction ? 'Operation in progress' : undefined)
+      : undefined;
     const canDeactivateAccount = activeBrowsers > 0 && !hasPendingAction;
     const canIncreaseBrowserCount = isStopped || (activeBrowsers < maxCapacity);
     const canDecreaseBrowserCount = activeBrowsers > 1;
@@ -75,6 +78,7 @@ export class CapabilityResolver {
       canValidate,
       validateDisabledReason,
       canActivateAccount,
+      activateAccountDisabledReason,
       canDeactivateAccount,
       canIncreaseBrowserCount,
       canDecreaseBrowserCount,
