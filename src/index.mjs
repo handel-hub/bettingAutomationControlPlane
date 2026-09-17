@@ -213,7 +213,25 @@ export function registerDefaultCommandHandlers() {
 
   commandRouter.register('Persistence', 'UPDATE_ACCOUNT_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, target: cmd.target, category: cmd.payload?.category, payload: cmd.payload }, '[Command] UPDATE_ACCOUNT_CONFIG executed');
-    const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, { [cmd.payload?.category]: cmd.payload?.values });
+    const updates = {};
+    const cat = cmd.payload?.category;
+    const isCustom = String(cmd.payload?.source || 'custom').toLowerCase() === 'custom';
+    const sourceVal = isCustom ? 'custom' : 'global';
+    const valuesVal = isCustom ? (cmd.payload?.values ?? null) : null;
+
+    if (cat === 'pricing' || cat === 'Pricing') {
+      updates.pricingSource = sourceVal;
+      updates.customPricing = valuesVal;
+    } else if (cat === 'risk' || cat === 'Risk') {
+      updates.riskSource = sourceVal;
+      updates.customRisk = valuesVal;
+    } else if (cat === 'rebet' || cat === 'Rebet') {
+      updates.rebetSource = sourceVal;
+      updates.customRebet = valuesVal;
+    } else if (cat) {
+      updates[cat] = valuesVal;
+    }
+    const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, updates);
 
     // Orchestration Dispatch: Build full account policy and dispatch UPDATE_POLICY
     try {
@@ -221,7 +239,21 @@ export function registerDefaultCommandHandlers() {
         const store = getSharedStateStore();
         const globalConfig = store.configContainer.getGlobalConfig();
         const fullPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, updated);
+        const account = store.accountsContainer?.getById?.(cmd.target);
+        const targetUsername = account?.accountUsername;
+
+        if (!isCustom) {
+          // Reverting to global for this category -> reset the specific category in Execution Plane
+          executionBoundaryManager.resetPolicy(cmd.target, { traceId: cmd.traceId, accountId: cmd.target, category: cat });
+          if (targetUsername && targetUsername !== cmd.target) {
+            executionBoundaryManager.resetPolicy(targetUsername, { traceId: cmd.traceId, accountId: targetUsername, category: cat });
+          }
+        }
+
         executionBoundaryManager.updatePolicy(cmd.payload?.category || 'Staking', fullPolicy, { traceId: cmd.traceId, accountId: cmd.target });
+        if (targetUsername && targetUsername !== cmd.target) {
+          executionBoundaryManager.updatePolicy(cmd.payload?.category || 'Staking', fullPolicy, { traceId: cmd.traceId, accountId: targetUsername });
+        }
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[Command] Failed to dispatch UPDATE_ACCOUNT_CONFIG to Execution Plane');
@@ -243,6 +275,39 @@ export function registerDefaultCommandHandlers() {
     return { updated: true, accountConfig: updated };
   });
 
+  commandRouter.register('Persistence', 'RESET_ACCOUNT_CONFIG', async (cmd) => {
+    logger.info({ traceId: cmd.traceId, target: cmd.target, payload: cmd.payload }, '[Command] RESET_ACCOUNT_CONFIG executed');
+    const updates = {
+      pricingSource: 'global',
+      customPricing: null,
+      riskSource: 'global',
+      customRisk: null,
+      rebetSource: 'global',
+      customRebet: null
+    };
+    const updated = await repositoryFactory.getConfigRepo().updateAccountConfig(cmd.target, updates);
+    try {
+      if (executionBoundaryManager.isConnected()) {
+        executionBoundaryManager.resetPolicy(cmd.target, { traceId: cmd.traceId, accountId: cmd.target });
+        const store = getSharedStateStore();
+        const account = store.accountsContainer?.getById?.(cmd.target);
+        if (account?.accountUsername && account.accountUsername !== cmd.target) {
+          executionBoundaryManager.resetPolicy(account.accountUsername, { traceId: cmd.traceId, accountId: account.accountUsername });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Failed to dispatch RESET_POLICY to Execution Plane');
+    }
+
+    try {
+      await backendSyncService.syncMutation('RESET_ACCOUNT_CONFIG', { accountId: cmd.target });
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for RESET_ACCOUNT_CONFIG');
+    }
+
+    return { reset: true, accountConfig: updated };
+  });
+
   commandRouter.register('Persistence', 'UPDATE_GLOBAL_CONFIG', async (cmd) => {
     logger.info({ traceId: cmd.traceId, category: cmd.payload?.category, payload: cmd.payload }, '[Command] UPDATE_GLOBAL_CONFIG executing');
     const updated = await repositoryFactory.getConfigRepo().updateCategory(cmd.payload.category, cmd.payload.values);
@@ -258,6 +323,31 @@ export function registerDefaultCommandHandlers() {
         const globalConfig = store.configContainer.getGlobalConfig();
         const fullPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig);
         executionBoundaryManager.updatePolicy(cmd.payload?.category, fullPolicy, { traceId: cmd.traceId });
+
+        // Dual-plane defense: Re-assert tailored policies for accounts with custom overrides
+        const accounts = typeof store.accountsContainer?.getAll === 'function' ? store.accountsContainer.getAll() : [];
+        const isCustomSource = (s) => String(s || '').toLowerCase() === 'custom';
+
+        for (const acc of accounts) {
+          const overrides = typeof store.configContainer?.getAccountOverride === 'function'
+            ? store.configContainer.getAccountOverride(acc.id)
+            : {};
+          const hasCustomOverrides = isCustomSource(overrides?.pricingSource) || isCustomSource(overrides?.riskSource) || isCustomSource(overrides?.rebetSource);
+          if (hasCustomOverrides) {
+            const accPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
+            const targetAccount = acc.accountUsername || acc.id;
+            executionBoundaryManager.updatePolicy(null, accPolicy, {
+              traceId: cmd.traceId,
+              accountId: targetAccount
+            });
+            if (acc.id && acc.accountUsername && acc.id !== acc.accountUsername) {
+              executionBoundaryManager.updatePolicy(null, accPolicy, {
+                traceId: cmd.traceId,
+                accountId: acc.id
+              });
+            }
+          }
+        }
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[Command] Failed to dispatch UPDATE_GLOBAL_CONFIG to Execution Plane');

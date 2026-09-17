@@ -14,7 +14,7 @@ export class PipeTransport extends EventEmitter {
    * @param {object} [options.customAdapter] - Pluggable mock transport for unit testing
    */
   constructor({
-    pipeName = '\\\\.\\pipe\\control_plane_secure_ipc',
+    pipeName = process.env.CONTROL_PLANE_PIPE || `\\\\.\\pipe\\control_plane_secure_ipc_${process.pid}`,
     nativeCore = NativeCore,
     customAdapter = null
   } = {}) {

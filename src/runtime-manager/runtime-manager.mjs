@@ -30,11 +30,17 @@ export class RuntimeManager extends EventEmitter {
     this.activeRuntimes = new Set();
     /** @type {Set<number>} */
     this.activeConnections = new Set();
-    this.pipeName = '\\\\.\\pipe\\control_plane_secure_ipc';
+    this.pipeName = process.env.CONTROL_PLANE_PIPE || `\\\\.\\pipe\\control_plane_secure_ipc_${process.pid}`;
     this.serverStarted = false;
     this.router = new CommandRouter();
     this.engineStatus = 'OFFLINE';
     this.activeBrowserCount = 0;
+  }
+
+  stopServer() {
+    NativeCore.stopSecurePipeServer();
+    this.serverStarted = false;
+    this.activeConnections.clear();
   }
 
   ensureServerStarted() {
@@ -379,6 +385,7 @@ export class RuntimeManager extends EventEmitter {
       this.terminateRuntime(pid);
     }
     this.engineStatus = 'OFFLINE';
+    this.stopServer();
   }
 
   getActiveBrowserCount() {

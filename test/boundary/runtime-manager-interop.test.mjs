@@ -82,7 +82,10 @@ test('ExecutionBoundaryManager - RuntimeManager API Parity & Interoperability', 
     lastSent = mockTransport.getLastSentPayload();
     assert.strictEqual(lastSent.parsed.traceId, 'trace-policy-legacy');
     assert.strictEqual(lastSent.parsed.type, ExecutionMessageType.UPDATE_POLICY);
-    assert.deepStrictEqual(lastSent.parsed.payload, { category: 'Staking', values: { maxStake: 500 } });
+    assert.strictEqual(lastSent.parsed.payload.category, 'Staking');
+    assert.strictEqual(lastSent.parsed.payload.target, 'ALL');
+    assert.deepStrictEqual(lastSent.parsed.payload.values, { maxStake: 500 });
+    assert.ok(lastSent.parsed.payload.operationId);
 
     // 5. stopCluster(timeoutMs, traceIdString)
     mockTransport.clearSent();

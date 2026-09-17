@@ -372,13 +372,13 @@ export class ExecutionBoundaryManager extends EventEmitter {
     }
 
     let payload = accountPayload;
+    const store = this.stateStore || (typeof getSharedStateStore === 'function' ? getSharedStateStore() : null);
     if (accountPayload?.accountUsername) {
-      payload = ExecutionPayloadBuilder.buildActivateAccountPayload(accountPayload);
+      payload = ExecutionPayloadBuilder.buildActivateAccountPayload(accountPayload, store);
     } else if (accountPayload?.accountId) {
-      const store = this.stateStore || getSharedStateStore();
-      const account = store.accountsContainer.getById(accountPayload.accountId);
+      const account = store?.accountsContainer?.getById(accountPayload.accountId);
       if (account) {
-        payload = ExecutionPayloadBuilder.buildActivateAccountPayload(account);
+        payload = ExecutionPayloadBuilder.buildActivateAccountPayload(account, store);
       }
     }
 
@@ -420,7 +420,30 @@ export class ExecutionBoundaryManager extends EventEmitter {
     if (this.security.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
     }
-    return this.dispatchEnvelope(ExecutionMessageType.UPDATE_POLICY, { category, values }, options);
+    const target = options.accountId || options.target || options.browserId || 'ALL';
+    const payload = {
+      target,
+      category,
+      values,
+      operationId: options.operationId || `op_pol_${Date.now()}`
+    };
+    return this.dispatchEnvelope(ExecutionMessageType.UPDATE_POLICY, payload, options);
+  }
+
+  /**
+   * Resets an account's policy back to global default inheritance.
+   * @param {string} target - Specific accountId or username
+   * @param {object} [options]
+   */
+  resetPolicy(target, options = {}) {
+    if (this.security.isDegraded()) {
+      throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
+    }
+    const payload = {
+      target: target || options.accountId || options.target,
+      operationId: options.operationId || `op_rst_${Date.now()}`
+    };
+    return this.dispatchEnvelope(ExecutionMessageType.RESET_POLICY, payload, options);
   }
 
   /**

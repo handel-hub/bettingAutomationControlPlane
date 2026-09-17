@@ -65,6 +65,11 @@ export class ExecutionPayloadBuilder {
         }
       },
       RiskManagement: {
+        Policy: {
+          MaxStake: Number(customRisk.maxStake ?? risk.maxStake ?? risk.stopLossThreshold ?? 10000),
+          MinimumStake: Number(customRisk.minimumStake ?? risk.minimumStake ?? 10),
+          AutoAcceptOddsChanges: Boolean(risk.autoAcceptOddsChanges)
+        },
         Limits: {
           MaxStake: Number(customRisk.maxStake ?? risk.maxStake ?? risk.stopLossThreshold ?? 10000),
           MinimumStake: Number(customRisk.minimumStake ?? risk.minimumStake ?? 10),
@@ -131,7 +136,11 @@ export class ExecutionPayloadBuilder {
       const overrides = typeof store.configContainer?.getAccountOverride === 'function'
         ? store.configContainer.getAccountOverride(acc.id)
         : {};
-      accountPolicies[acc.accountUsername] = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
+      const policyDoc = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
+      accountPolicies[acc.accountUsername] = policyDoc;
+      if (acc.id) {
+        accountPolicies[acc.id] = policyDoc;
+      }
     }
 
     const defaultPolicy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig);
@@ -165,21 +174,41 @@ export class ExecutionPayloadBuilder {
   }
 
   /**
-   * Compiles the payload for ACTIVATE_ACCOUNT command with decrypted credentials.
+   * Compiles the payload for ACTIVATE_ACCOUNT command with decrypted credentials and active policy.
    * @param {object} account
+   * @param {object} [store]
    * @returns {object}
    */
-  static buildActivateAccountPayload(account) {
-    const decryptedPassword = vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword);
-    return {
+  static buildActivateAccountPayload(account, store = null) {
+    const decryptedPassword = account.accountPassword && account.accountPassword !== '[PROTECTED]'
+      ? account.accountPassword
+      : (account.rawPassword || vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword || account.accountPassword));
+
+    let policy = null;
+    if (store && typeof store.configContainer?.getGlobalConfig === 'function') {
+      const globalConfig = store.configContainer.getGlobalConfig();
+      const overrides = typeof store.configContainer?.getAccountOverride === 'function'
+        ? store.configContainer.getAccountOverride(account.id)
+        : {};
+      policy = ExecutionPayloadBuilder.buildPolicyDocument(globalConfig, overrides);
+    }
+
+    const payload = {
       accountId: account.id,
       account: {
         id: account.id,
-        username: account.accountUsername,
+        username: account.accountUsername || account.username,
         password: decryptedPassword,
         platformId: (account.platformId || account.platformDisplayName || 'sportybet').toLowerCase()
       },
       proxyUrl: account.proxyUrl || null
     };
+
+    if (policy) {
+      payload.policy = policy;
+      payload.account.policy = policy;
+    }
+
+    return payload;
   }
 }
