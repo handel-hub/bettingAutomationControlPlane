@@ -102,6 +102,8 @@ export class ExecutionPayloadBuilder {
       Spawning: {
         max_accounts_to_spawn: String(globalConfig.browserSpawning?.maxAccountsToSpawn || 2),
         slave_mode: globalConfig.browserSpawning?.slaveMode || 'headful',
+        master_use_proxy: String(globalConfig.browserSpawning?.masterUseProxy ?? false),
+        debug_slow_mo: String(globalConfig.browserSpawning?.debugSlowMo ?? 0),
         spawn_stagger_interval_ms: String(globalConfig.browserSpawning?.spawnStaggerIntervalMs || 1200)
       },
       Proxy: {
@@ -109,28 +111,55 @@ export class ExecutionPayloadBuilder {
         proxy_failure_mode: globalConfig.proxy?.proxyFailureMode || 'loose',
         max_accounts_per_proxy: String(globalConfig.proxy?.maxAccountsPerProxy || 3)
       },
+      AntiDetection: {
+        use_stealth_plugin: String(globalConfig.advancedRuntime?.useStealthPlugin ?? false),
+        browser_binary: globalConfig.advancedRuntime?.browserBinary || 'chrome',
+        randomize_user_agent: String(globalConfig.advancedRuntime?.randomizeUserAgent ?? false),
+        block_webrtc: String(globalConfig.advancedRuntime?.blockWebRTC ?? false),
+        match_proxy_timezone: String(globalConfig.advancedRuntime?.matchProxyTimezone ?? true),
+        canvas_spoofing: String(globalConfig.advancedRuntime?.canvasSpoofing ?? false)
+      },
       Stealth: {
         browser_binary: globalConfig.advancedRuntime?.browserBinary || 'chrome',
         use_stealth_plugin: Boolean(globalConfig.advancedRuntime?.useStealthPlugin)
+      },
+      Memory: {
+        record_action_sequence: String(globalConfig.advancedRuntime?.recordActionSequence ?? false),
+        replay_action_sequence: String(globalConfig.advancedRuntime?.replayActionSequence ?? false),
+        hotkey_placebet: 'b'
       }
     };
 
-    // 2. Decrypt credentials on-demand right before IPC handoff
+    // 2. Resolve credentials for physical browser execution
     const compiledAccounts = accounts.map((acc, index) => {
-      const decryptedPassword = acc.accountPassword && acc.accountPassword !== '[PROTECTED]'
+      const password = acc.accountPassword && acc.accountPassword !== '[PROTECTED]'
         ? acc.accountPassword
-        : (acc.rawPassword || vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword));
+        : (vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword) || acc.rawPassword || '');
       return {
         id: acc.id,
         role: index === 0 ? 'master' : 'slave',
         platformId: (acc.platformId || acc.platformDisplayName || 'sportybet').toLowerCase(),
         username: acc.accountUsername,
-        password: decryptedPassword,
+        password: password,
         proxyUrl: acc.proxyUrl || null
       };
     });
 
-    // 3. Compile full-document initial policies for all provisioned accounts
+    // 3. Collect unique proxies from accounts and global proxy pool
+    const proxyList = [];
+    if (Array.isArray(globalConfig.proxy?.proxyPool)) {
+      proxyList.push(...globalConfig.proxy.proxyPool);
+    } else if (Array.isArray(globalConfig.proxy?.proxies)) {
+      proxyList.push(...globalConfig.proxy.proxies);
+    }
+    for (const acc of accounts) {
+      if (acc.proxyUrl) {
+        proxyList.push(acc.proxyUrl);
+      }
+    }
+    const uniqueProxies = Array.from(new Set(proxyList.filter(Boolean).map(p => typeof p === 'string' ? p.trim() : (p.url || '')).filter(Boolean)));
+
+    // 4. Compile full-document initial policies for all provisioned accounts
     const accountPolicies = {};
     for (const acc of accounts) {
       const overrides = typeof store.configContainer?.getAccountOverride === 'function'
@@ -152,7 +181,7 @@ export class ExecutionPayloadBuilder {
       protocolVersion: '3.0',
       settings,
       accounts: compiledAccounts,
-      proxies: [],
+      proxies: uniqueProxies,
       policy: {
         defaultPolicy,
         accountPolicies
@@ -180,9 +209,9 @@ export class ExecutionPayloadBuilder {
    * @returns {object}
    */
   static buildActivateAccountPayload(account, store = null) {
-    const decryptedPassword = account.accountPassword && account.accountPassword !== '[PROTECTED]'
+    const password = account.accountPassword && account.accountPassword !== '[PROTECTED]'
       ? account.accountPassword
-      : (account.rawPassword || vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword || account.accountPassword));
+      : (vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword || account.accountPassword) || account.rawPassword || '');
 
     let policy = null;
     if (store && typeof store.configContainer?.getGlobalConfig === 'function') {
@@ -198,7 +227,7 @@ export class ExecutionPayloadBuilder {
       account: {
         id: account.id,
         username: account.accountUsername || account.username,
-        password: decryptedPassword,
+        password: password,
         platformId: (account.platformId || account.platformDisplayName || 'sportybet').toLowerCase()
       },
       proxyUrl: account.proxyUrl || null

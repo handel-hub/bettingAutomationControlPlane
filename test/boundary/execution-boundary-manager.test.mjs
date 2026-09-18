@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { ExecutionBoundaryManager } from '../../src/runtime-manager/boundary/executionBoundaryManager.mjs';
 import { PipeTransport } from '../../src/runtime-manager/boundary/pipeTransport.mjs';
 import { MockTransport } from './mock-transport.mjs';
-import { ExecutionMessageType, ExecutionErrorCode } from '../../src/runtime-manager/executionProtocol.mjs';
+import { ExecutionMessageType, ExecutionErrorCode, createExecutionEnvelope } from '../../src/runtime-manager/executionProtocol.mjs';
 
 test('ExecutionBoundaryManager - Protocol Facade, Encapsulation & Correlation', async (t) => {
   function createTestFixture() {
@@ -165,6 +165,42 @@ test('ExecutionBoundaryManager - Protocol Facade, Encapsulation & Correlation', 
     assert.strictEqual(lastSent.parsed.type, ExecutionMessageType.UPDATE_POLICY);
     assert.strictEqual(lastSent.parsed.payload.category, 'Pricing');
     assert.strictEqual(lastSent.parsed.payload.values.targetProfit, 50);
+
+    manager.stopServer();
+  });
+
+  await t.test('demultiplexes BROWSER_STATUS envelope and emits browserStatus event', async () => {
+    const { manager, mockTransport } = createTestFixture();
+    manager.startServer();
+    mockTransport.simulateClientConnect(1);
+
+    const receivedEvents = [];
+    manager.on('browserStatus', (payload) => {
+      receivedEvents.push(payload);
+    });
+
+    const envelope = createExecutionEnvelope(
+      ExecutionMessageType.BROWSER_STATUS,
+      {
+        browserId: 'slave_0',
+        accountId: 'acc_slave',
+        accountUsername: 'user2',
+        role: 'slave',
+        browserStatus: 'ACTIVE',
+        accountStatus: 'IN_USE',
+        observedState: 'RUNNING',
+        activeBrowsers: 2
+      },
+      'trace-status-1',
+      'EXECUTION_PLANE'
+    );
+
+    mockTransport.simulateIncomingData(1, JSON.stringify(envelope));
+
+    assert.strictEqual(receivedEvents.length, 1);
+    assert.strictEqual(receivedEvents[0].browserId, 'slave_0');
+    assert.strictEqual(receivedEvents[0].browserStatus, 'ACTIVE');
+    assert.strictEqual(receivedEvents[0].activeBrowsers, 2);
 
     manager.stopServer();
   });

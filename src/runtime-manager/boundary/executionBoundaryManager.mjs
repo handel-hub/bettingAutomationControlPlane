@@ -125,6 +125,32 @@ export class ExecutionBoundaryManager extends EventEmitter {
     return this.transport.isConnected();
   }
 
+  /**
+   * Awaits client named pipe connection and mutual HMAC handshake.
+   * @param {number} [timeoutMs=15000]
+   * @returns {Promise<boolean>}
+   */
+  waitForConnection(timeoutMs = 15000) {
+    if (this.isConnected()) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.off('clientConnected', onConnect);
+        reject(new Error(`Timed out waiting for Execution Plane client connection after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      if (timer.unref) timer.unref();
+
+      const onConnect = (connId) => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+
+      this.once('clientConnected', onConnect);
+    });
+  }
+
   getActiveConnections() {
     return this.transport.getActiveConnections();
   }
@@ -152,7 +178,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   /**
    * Dispatches a typed ExecutionEnvelope across the boundary.
-   * If waitForAck is true, returns a promise correlated to the msgId.
+   * If waitForAck is true, returns a promise correlated to the msgId or traceId.
    * @param {string} type
    * @param {any} payload
    * @param {object | string} [options] - Options object or string traceId
@@ -191,13 +217,16 @@ export class ExecutionBoundaryManager extends EventEmitter {
         timer.unref();
       }
 
-      this.pendingCorrelations.set(envelope.msgId, {
+      const pending = {
         resolve,
         reject,
         timer,
         type,
+        msgId: envelope.msgId,
         traceId: envelope.traceId
-      });
+      };
+
+      this.pendingCorrelations.set(envelope.msgId, pending);
 
       const sent = this.transport.broadcast(jsonString);
       if (sent === 0) {
@@ -230,7 +259,11 @@ export class ExecutionBoundaryManager extends EventEmitter {
     const opts = typeof options === 'string' ? { traceId: options } : (options || {});
     const payload = initPayload || this.compileInitializationPayload(opts.traceId);
     this.engineStatus = 'INITIALIZING';
-    return this.dispatchEnvelope(ExecutionMessageType.INITIALIZE, payload, opts);
+    const mergedOpts = {
+      timeoutMs: 60000,
+      ...opts
+    };
+    return this.dispatchEnvelope(ExecutionMessageType.INITIALIZE, payload, mergedOpts);
   }
 
   /**
@@ -244,15 +277,24 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   /**
    * Transitions cluster automation to RUNNING.
+   * Awaits client pipe connection, then dispatches authoritative INITIALIZE payload.
    * Gated by SecurityAuthority and serialized via lifecycleMutex.
    * @param {object} [options]
    */
-  startCluster(options = {}) {
+  async startCluster(options = {}) {
     const opts = typeof options === 'string' ? { traceId: options } : (options || {});
     if (this.security.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: System is in DEGRADED mode (Backend Offline)');
     }
-    return this.dispatchEnvelope(ExecutionMessageType.START_CLUSTER, opts.payload || {}, opts);
+    // Await client pipe connection handshake
+    await this.waitForConnection(opts.handshakeTimeoutMs || 15000);
+
+    // Initialize worker with full state store configuration & credentials
+    return this.initialize(opts.initPayload || null, {
+      waitForAck: opts.waitForAck ?? true,
+      timeoutMs: opts.timeoutMs ?? 60000,
+      traceId: opts.traceId
+    });
   }
 
   /**
@@ -510,11 +552,12 @@ export class ExecutionBoundaryManager extends EventEmitter {
       this.activeBrowserCount = 0;
 
       // Fail any remaining in-flight correlations since pipe connection dropped
-      for (const [msgId, pending] of this.pendingCorrelations.entries()) {
+      const pendingSet = new Set(this.pendingCorrelations.values());
+      for (const pending of pendingSet) {
         clearTimeout(pending.timer);
         pending.reject(new Error(`Execution Plane disconnected while waiting for correlation: ${pending.type}`));
-        this.pendingCorrelations.delete(msgId);
       }
+      this.pendingCorrelations.clear();
 
       // Reconcile observed states in StateStore if present
       try {
@@ -556,10 +599,30 @@ export class ExecutionBoundaryManager extends EventEmitter {
       this.emit('envelope', envelope);
 
       // Check if any correlated pending promise matches this msgId / traceId
+      let pending = null;
       if (this.pendingCorrelations.has(envelope.msgId)) {
-        const pending = this.pendingCorrelations.get(envelope.msgId);
+        pending = this.pendingCorrelations.get(envelope.msgId);
+      } else {
+        const candidateKeys = [
+          envelope.traceId,
+          envelope.payload?.correlationId,
+          envelope.payload?.traceId,
+          envelope.payload?.msgId
+        ].filter(Boolean);
+
+        if (candidateKeys.length > 0) {
+          for (const p of this.pendingCorrelations.values()) {
+            if (candidateKeys.includes(p.traceId) || candidateKeys.includes(p.msgId)) {
+              pending = p;
+              break;
+            }
+          }
+        }
+      }
+
+      if (pending) {
         clearTimeout(pending.timer);
-        this.pendingCorrelations.delete(envelope.msgId);
+        this.pendingCorrelations.delete(pending.msgId);
         pending.resolve(envelope.payload);
       }
 

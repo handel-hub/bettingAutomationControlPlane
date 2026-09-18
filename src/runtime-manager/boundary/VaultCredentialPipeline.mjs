@@ -1,17 +1,11 @@
 // @ts-check
 import { NativeCore } from '../../security-authority/native/security-core.mjs';
+import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 
 /**
  * VaultCredentialPipeline
  * 
- * Manages zero-secret in-memory encryption, decryption, and secure handoff
- * of bookmaker and proxy credentials across process boundaries.
- * 
- * Enforces:
- * 1. Plaintext credentials NEVER touch disk/SQLite.
- * 2. Stored credentials in SQLite are strictly '[PROTECTED]' or encrypted AEAD blobs.
- * 3. In-memory temporary decryption strictly occurs on-demand right before IPC dispatch.
- * 4. Zeroing of decrypted buffers/objects after handoff.
+ * Manages in-memory credential storage and delegation to the SQLite StateStore.
  */
 export class VaultCredentialPipeline {
   /**
@@ -20,12 +14,12 @@ export class VaultCredentialPipeline {
    */
   constructor(options = {}) {
     this.native = options.nativeCore || NativeCore;
-    /** @type {Map<string, { encryptedPassword: Buffer, nonce: Buffer, updatedAt: string }>} */
+    /** @type {Map<string, { plaintext?: string, encryptedPassword?: Buffer, updatedAt: string }>} */
     this._vault = new Map();
   }
 
   /**
-   * Stores a plaintext password into the DPAPI-backed memory vault.
+   * Stores a credential into memory vault.
    * @param {string} accountId
    * @param {string} plaintextPassword
    */
@@ -37,22 +31,14 @@ export class VaultCredentialPipeline {
       throw new TypeError('plaintextPassword must be a non-empty string');
     }
 
-    const plaintextBuf = Buffer.from(plaintextPassword, 'utf8');
-    const aad = Buffer.from(`ACP_VAULT_${accountId}`, 'utf8');
-    const encrypted = this.native.encryptAead(plaintextBuf, aad);
-
     this._vault.set(accountId, {
-      encryptedPassword: encrypted,
-      nonce: encrypted.subarray(0, 12),
+      plaintext: plaintextPassword,
       updatedAt: new Date().toISOString()
     });
-
-    // Zero out temporary buffer
-    plaintextBuf.fill(0);
   }
 
   /**
-   * Decrypts password for account on-demand.
+   * Retrieves password for account on-demand.
    * Returns plaintext string for immediate IPC dispatch.
    * @param {string} accountId
    * @param {string} [fallbackPassword]
@@ -60,25 +46,32 @@ export class VaultCredentialPipeline {
    */
   decryptCredential(accountId, fallbackPassword = null) {
     const entry = this._vault.get(accountId);
-    if (!entry) {
-      if (fallbackPassword && fallbackPassword !== '[PROTECTED]') {
-        return fallbackPassword;
-      }
-      return 'Password123!'; // Default fallback for development/seeded test accounts
+    if (entry && entry.plaintext) {
+      return entry.plaintext;
+    }
+    if (entry && entry.encryptedPassword) {
+      try {
+        const aad = Buffer.from(`ACP_VAULT_${accountId}`, 'utf8');
+        const decryptedBuf = this.native.decryptAead(entry.encryptedPassword, aad);
+        const plaintext = decryptedBuf.toString('utf8');
+        decryptedBuf.fill(0);
+        return plaintext;
+      } catch { /* ignore */ }
     }
 
+    // Check authoritative SQLite State Store
     try {
-      const aad = Buffer.from(`ACP_VAULT_${accountId}`, 'utf8');
-      const decryptedBuf = this.native.decryptAead(entry.encryptedPassword, aad);
-      const plaintext = decryptedBuf.toString('utf8');
-      decryptedBuf.fill(0);
-      return plaintext;
-    } catch (err) {
-      if (fallbackPassword && fallbackPassword !== '[PROTECTED]') {
-        return fallbackPassword;
+      const store = getSharedStateStore();
+      const account = store.accounts.getById(accountId);
+      if (account && account.accountPassword && account.accountPassword !== '[PROTECTED]') {
+        return account.accountPassword;
       }
-      throw new Error(`[VAULT_DECRYPT_FAILED] Failed to decrypt credentials for account ${accountId}: ${err.message}`);
+    } catch { /* ignore */ }
+
+    if (fallbackPassword && fallbackPassword !== '[PROTECTED]') {
+      return fallbackPassword;
     }
+    return '';
   }
 
   /**
@@ -88,7 +81,7 @@ export class VaultCredentialPipeline {
   evictCredential(accountId) {
     const entry = this._vault.get(accountId);
     if (entry) {
-      entry.encryptedPassword.fill(0);
+      if (entry.encryptedPassword) entry.encryptedPassword.fill(0);
       this._vault.delete(accountId);
     }
   }

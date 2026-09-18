@@ -46,9 +46,15 @@ export class AccountsContainer {
     this._accounts.clear();
     if (Array.isArray(accountsList)) {
       for (const raw of accountsList) {
+        const rawPassword = (raw.accountPassword && raw.accountPassword !== '[PROTECTED]') 
+          ? raw.accountPassword 
+          : (raw.account_password && raw.account_password !== '[PROTECTED]')
+            ? raw.account_password
+            : (raw.accountPassword || raw.account_password || '[PROTECTED]');
+
         const sanitized = {
           ...SanitizerGate.sanitize(raw),
-          accountPassword: '[PROTECTED]'
+          accountPassword: rawPassword
         };
         this._accounts.set(sanitized.id, Object.freeze(sanitized));
         if (sanitized.lastKnownBalance !== undefined) {
@@ -134,13 +140,17 @@ export class AccountsContainer {
     const now = new Date().toISOString();
     const sanitized = SanitizerGate.sanitize(accountData);
 
+    const rawPassword = accountData.accountPassword && accountData.accountPassword !== '[PROTECTED]'
+      ? accountData.accountPassword
+      : (existing?.accountPassword || accountData.accountPassword || '[PROTECTED]');
+
     const record = {
       id: sanitized.id || ('acc_' + ulid()),
       name: sanitized.name || sanitized.accountUsername,
       platformId: sanitized.platformId || platform.toLowerCase(),
       platformDisplayName: sanitized.platformDisplayName || platform,
       accountUsername: sanitized.accountUsername,
-      accountPassword: '[PROTECTED]',
+      accountPassword: rawPassword,
       backendState: sanitized.backendState || 'ACTIVE',
       desiredState: sanitized.desiredState || 'STOPPED',
       observedState: sanitized.observedState || 'STOPPED',

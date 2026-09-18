@@ -16,7 +16,7 @@ export class WorkspaceAggregator {
     /** @type {Set<string>} active account IDs with live browser processes */
     this.activeAccountIds = new Set();
     /** @type {Set<string>} staged account IDs ready in automation */
-    this.stagedAccountIds = new Set(['acc-1', 'acc-2']);
+    this.stagedAccountIds = new Set();
   }
 
   setLifecycle(lifecycle, message = undefined) {
@@ -46,9 +46,7 @@ export class WorkspaceAggregator {
 
   activateAccount(accountId) {
     this.stagedAccountIds.add(accountId);
-    if (this.lifecycle === 'RUNNING') {
-      this.activeAccountIds.add(accountId);
-    }
+    this.activeAccountIds.add(accountId);
   }
 
   deactivateAccount(accountId) {
@@ -69,10 +67,21 @@ export class WorkspaceAggregator {
     const configRepo = repositoryFactory.getConfigRepo();
     const accountsRepo = repositoryFactory.getAccountsRepo();
 
-    const [globalConfig, { viewportAccounts: accounts }] = await Promise.all([
+    const [globalConfig, accountsRes] = await Promise.all([
       configRepo.getGlobalConfig(),
       accountsRepo.list()
     ]);
+    const accounts = accountsRes?.viewportAccounts || [];
+    const maxCapacity = globalConfig?.browserSpawning?.maxAccountsToSpawn || 2;
+
+    // Auto-stage non-suspended accounts if stagedAccountIds is empty or has no match
+    const nonSuspendedAccounts = accounts.filter(acc => acc.backendState !== 'SUSPENDED');
+    const hasAnyStaged = nonSuspendedAccounts.some(acc => this.stagedAccountIds.has(acc.id));
+    if (!hasAnyStaged && nonSuspendedAccounts.length > 0) {
+      for (const acc of nonSuspendedAccounts.slice(0, maxCapacity)) {
+        this.stagedAccountIds.add(acc.id);
+      }
+    }
 
     // Only accounts that are NOT SUSPENDED and are staged in automation
     const stagedAccounts = accounts.filter(acc => 
@@ -80,7 +89,6 @@ export class WorkspaceAggregator {
     );
 
     const activeBrowsers = this.activeAccountIds.size;
-    const maxCapacity = globalConfig.browserSpawning.maxAccountsToSpawn || 2;
     const globalActionPending = operationTracker.getCurrentPendingAction();
 
     // Map DB accounts into AccountAutomationSnapshot

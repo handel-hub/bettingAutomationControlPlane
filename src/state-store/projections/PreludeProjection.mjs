@@ -121,9 +121,9 @@ export class PreludeProjection {
       automation: {
         strategyCatalog: strategyCatalog,
         snapshot: {
-          lifecycle: runtimeState.lifecycle || 'READY',
-          lifecycleMessage: runtimeState.lifecycleMessage || 'Execution engine standby',
-          capabilities: runtimeState.capabilities || {
+          lifecycle: runtimeState.lifecycle || runtimeState.automationLifecycle || 'STOPPED',
+          lifecycleMessage: runtimeState.lifecycleMessage || runtimeState.automationMessage || 'Execution engine standby',
+          capabilities: runtimeState.capabilities || runtimeState.automationCapabilities || {
             canStartAutomation: true,
             canStopAutomation: false,
             canPlaceBet: false,
@@ -141,13 +141,13 @@ export class PreludeProjection {
             canEditExecution: true
           },
           globalConfig: globalConfig,
-          accounts: Array.isArray(runtimeState.automationAccounts) 
+          accounts: (Array.isArray(runtimeState.automationAccounts) && runtimeState.automationAccounts.length > 0)
             ? runtimeState.automationAccounts.filter(acc => acc.backendState !== 'SUSPENDED' && acc.status !== 'SUSPENDED') 
             : viewportAccounts
                 .filter(acc => acc.backendState === 'ACTIVE' && (
-                  runtimeState.stagedAccountIds instanceof Set 
+                  runtimeState.stagedAccountIds instanceof Set && runtimeState.stagedAccountIds.size > 0
                     ? runtimeState.stagedAccountIds.has(acc.id) 
-                    : (acc.id === 'acc-1' || acc.id === 'acc-2')
+                    : true
                 ))
                 .map(acc => ({
                   id: acc.id,

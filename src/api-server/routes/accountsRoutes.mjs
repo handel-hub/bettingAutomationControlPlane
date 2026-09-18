@@ -66,7 +66,28 @@ accountsRouter.post('/', async (req, res) => {
 accountsRouter.get('/:id', async (req, res) => {
   const account = await repositoryFactory.getAccountsRepo().findById(req.params.id);
   if (!account) return res.status(404).json({ error: 'Account not found' });
-  res.json({ ...account, history: [], diagnostics: { uptime: '100%', networkLatencyMs: 45 } });
+  res.json({ ...account, accountPassword: '[PROTECTED]', history: [], diagnostics: { uptime: '100%', networkLatencyMs: 45 } });
+});
+
+// PATCH update account details / password
+accountsRouter.patch('/:id', async (req, res) => {
+  const accountId = req.params.id;
+  const updates = req.body || {};
+  const existing = await repositoryFactory.getAccountsRepo().findById(accountId);
+  if (!existing) return res.status(404).json({ error: 'Account not found' });
+
+  const updated = await repositoryFactory.getAccountsRepo().update(accountId, updates);
+  backendSyncService.saveLocalCache();
+  const sanitized = {
+    ...updated,
+    accountPassword: '[PROTECTED]'
+  };
+  wsServer.broadcast('accounts:delta', {
+    type: 'ACCOUNT_UPDATED',
+    accountId,
+    partialSnapshot: sanitized
+  });
+  res.json(sanitized);
 });
 
 // POST single account action

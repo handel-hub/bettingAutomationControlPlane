@@ -1,5 +1,6 @@
 // @ts-check
 import EventEmitter from 'node:events';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { executionAuthorization } from './execution-authorization.mjs';
@@ -111,10 +112,28 @@ export class RuntimeManager extends EventEmitter {
 
         case ExecutionMessageType.BROWSER_STATUS: {
           this.emit('browserStatus', envelope.payload);
-          wsServer.broadcast('accounts:delta', {
-            type: 'ACCOUNT_UPDATED',
-            account: envelope.payload
-          });
+          const payload = envelope.payload || {};
+          const accountId = payload.accountId || payload.id;
+          if (accountId) {
+            wsServer.broadcast('automation:delta', {
+              type: 'ACCOUNT_UPDATED',
+              accountId,
+              partialSnapshot: {
+                browserStatus: payload.browserStatus || 'STOPPED',
+                accountStatus: payload.accountStatus || 'IDLE',
+                observedState: payload.observedState || (payload.browserStatus === 'ACTIVE' ? 'RUNNING' : 'STOPPED'),
+                executionStatusReason: payload.executionStatusReason || null
+              }
+            });
+            wsServer.broadcast('accounts:delta', {
+              type: 'ACCOUNT_UPDATED',
+              accountId,
+              partialSnapshot: {
+                backendState: payload.browserStatus === 'ACTIVE' ? 'ACTIVE' : 'IDLE',
+                statusDescription: payload.browserStatus
+              }
+            });
+          }
           break;
         }
 
@@ -307,10 +326,19 @@ export class RuntimeManager extends EventEmitter {
     this.ensureServerStarted();
 
     let targetScript = scriptPath || process.env.RUNTIME_ENTRY_SCRIPT;
-    if (!targetScript && options.useDevWorkerFallback !== false) {
-      const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true';
-      if (isDev) {
-        targetScript = path.resolve(__dirname, '../../test/fixtures/mock-orchestrated-worker.mjs');
+    if (!targetScript) {
+      const realWorkerCandidate = path.resolve(__dirname, '../../../bettingAutomation/src/worker/index.mjs');
+      const isTest = process.env.NODE_ENV === 'test' ||
+                     process.env.npm_lifecycle_event?.includes('test') ||
+                     process.env.ACP_USE_MOCK_WORKER === 'true';
+      const preferMock = isTest || options.useMockWorker === true;
+      if (!preferMock && fs.existsSync(realWorkerCandidate)) {
+        targetScript = realWorkerCandidate;
+      } else if (options.useDevWorkerFallback !== false) {
+        const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true' || isTest;
+        if (isDev) {
+          targetScript = path.resolve(__dirname, '../../test/fixtures/mock-orchestrated-worker.mjs');
+        }
       }
     }
 

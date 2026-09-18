@@ -40,7 +40,7 @@ export function createDefaultGlobalConfig() {
     },
     proxy: {
       proxyAllocationMode: 'round_robin',
-      proxyFailureMode: 'strict',
+      proxyFailureMode: 'loose',
       maxAccountsPerProxy: 3,
       masterUseProxy: false,
       connectionTimeoutMs: 5000,
@@ -87,7 +87,9 @@ export function createDefaultGlobalConfig() {
       disableWebRtc: true,
       spoofAudioContext: true,
       isolateCookiesPerSession: true,
-      customUserAgentOverride: ''
+      customUserAgentOverride: '',
+      recordActionSequence: false,
+      replayActionSequence: false
     }
   };
 }

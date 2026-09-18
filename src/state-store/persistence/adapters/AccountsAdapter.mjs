@@ -1,6 +1,4 @@
 // @ts-check
-import { SanitizerGate } from '../../validation/SanitizerGate.mjs';
-import { vaultCredentialPipeline } from '../../../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 
 /**
  * Persistence adapter for accounts_metadata_cache.
@@ -21,7 +19,8 @@ export class AccountsAdapter {
   listByUser(userId) {
     const rows = this.engine.prepare(`
       SELECT account_id AS id, user_id AS userId, name, platform_id AS platformId,
-             account_username AS accountUsername, last_known_balance AS lastKnownBalance,
+             account_username AS accountUsername, account_password AS accountPassword,
+             last_known_balance AS lastKnownBalance,
              currency_symbol AS currencySymbol, backend_state AS backendState,
              presentation_category AS presentationCategory, status_description AS statusDescription,
              tags_json AS tagsJson, effective_config_json AS effectiveConfigJson,
@@ -40,7 +39,7 @@ export class AccountsAdapter {
       platformId: r.platformId,
       platformDisplayName: r.name,
       accountUsername: r.accountUsername,
-      accountPassword: '[PROTECTED]',
+      accountPassword: r.accountPassword || '[PROTECTED]',
       lastKnownBalance: r.lastKnownBalance,
       currencySymbol: r.currencySymbol,
       backendState: r.backendState,
@@ -65,29 +64,31 @@ export class AccountsAdapter {
    * @param {any} account
    */
   upsert(userId, account) {
-    if (account.accountPassword && account.accountPassword !== '[PROTECTED]' && account.id) {
-      vaultCredentialPipeline.storeCredential(account.id, account.accountPassword);
-    }
-
-    SanitizerGate.assertZeroSecrets(account);
-
     const now = new Date().toISOString();
     const tagsJson = JSON.stringify(account.tags || []);
     const effectiveConfigJson = account.effectiveConfig ? JSON.stringify(account.effectiveConfig) : null;
     const platformId = (account.platformId || account.platformDisplayName || 'unknown').toLowerCase();
+    const passwordToStore = account.accountPassword && account.accountPassword !== '[PROTECTED]'
+      ? account.accountPassword
+      : '';
 
     this.engine.prepare(`
       INSERT INTO accounts_metadata_cache (
-        account_id, user_id, name, platform_id, account_username,
+        account_id, user_id, name, platform_id, account_username, account_password,
         last_known_balance, currency_symbol, backend_state, presentation_category,
         status_description, tags_json, effective_config_json,
         desired_state, observed_state, execution_status_reason,
         last_updated, last_synchronization
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         name = excluded.name,
         platform_id = excluded.platform_id,
         account_username = excluded.account_username,
+        account_password = CASE 
+          WHEN excluded.account_password != '' AND excluded.account_password != '[PROTECTED]' 
+          THEN excluded.account_password 
+          ELSE accounts_metadata_cache.account_password 
+        END,
         last_known_balance = excluded.last_known_balance,
         currency_symbol = excluded.currency_symbol,
         backend_state = excluded.backend_state,
@@ -106,6 +107,7 @@ export class AccountsAdapter {
       account.name || account.accountUsername,
       platformId,
       account.accountUsername,
+      passwordToStore,
       Number(account.lastKnownBalance || account.currentBalance) || 0.0,
       account.currencySymbol || '₦',
       account.backendState || 'READY',

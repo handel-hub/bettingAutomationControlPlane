@@ -70,7 +70,7 @@ export const MOCK_GLOBAL_CONFIG = {
   },
   proxy: {
     proxyAllocationMode: 'round_robin',
-    proxyFailureMode: 'strict',
+    proxyFailureMode: 'loose',
     maxAccountsPerProxy: 3,
     connectionTimeoutMs: 5000,
     rotateOnRateLimit: true,

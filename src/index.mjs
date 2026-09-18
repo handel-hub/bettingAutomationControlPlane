@@ -164,6 +164,7 @@ export function registerDefaultCommandHandlers() {
       const store = getSharedStateStore();
       store.accounts.upsert(created);
     } catch { /* ignore */ }
+    workspaceAggregator.stageAccount(created.id);
     try {
       await backendSyncService.syncMutation('REGISTER_ACCOUNT', cmd.payload);
     } catch (err) {
@@ -425,6 +426,97 @@ executionBoundaryManager.on('clientConnected', (connId) => {
 executionBoundaryManager.on('clientDisconnected', (connId) => {
   runtimeManager.activeConnections.delete(connId);
   runtimeManager.emit('clientDisconnected', connId);
+});
+
+executionBoundaryManager.on('stateChanged', ({ state, message }) => {
+  logger.info({ state, message }, `[ExecutionBoundary] Engine state transitioned to ${state}`);
+  try {
+    const store = getSharedStateStore();
+    let observed = state;
+    if (state === 'READY' || state === 'RUNNING') {
+      observed = 'RUNNING';
+    } else if (state === 'STOPPED' || state === 'OFFLINE') {
+      observed = 'STOPPED';
+    } else if (state === 'ERROR' || state === 'DEGRADED') {
+      observed = 'ERROR_DEGRADED';
+    }
+
+    store.lifecycle.setObservedState(observed, message || 'EXECUTION_STATE_CHANGED');
+    workspaceAggregator.setLifecycle(observed, message);
+    wsServer.broadcast('automation:delta', {
+      type: 'LIFECYCLE_CHANGED',
+      lifecycle: observed,
+      message
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, '[ExecutionBoundary] Error handling stateChanged event');
+  }
+});
+
+executionBoundaryManager.on('browserStatus', (payload) => {
+  logger.info({ payload }, `[ExecutionBoundary] Browser status update received for [${payload.browserId || payload.accountId}]`);
+  try {
+    const store = getSharedStateStore();
+    let accountId = payload.accountId || payload.id;
+    const username = payload.accountUsername || payload.username;
+
+    // Resolve canonical accountId if only username is present
+    if (!accountId && username && store && store.accountsContainer) {
+      const allAccounts = store.accountsContainer.getAll();
+      const match = allAccounts.find(a => a.accountUsername === username);
+      if (match) accountId = match.id;
+    }
+
+    if (accountId) {
+      if (payload.browserStatus === 'ACTIVE' || payload.accountStatus === 'IN_USE') {
+        workspaceAggregator.activateAccount(accountId);
+      } else if (payload.browserStatus === 'STOPPED') {
+        workspaceAggregator.activeAccountIds.delete(accountId);
+      }
+
+      if (store && store.accounts && typeof store.accounts.updateExecutionState === 'function') {
+        store.accounts.updateExecutionState(accountId, {
+          observedState: payload.observedState || (payload.browserStatus === 'ACTIVE' ? 'RUNNING' : 'STOPPED'),
+          executionStatusReason: payload.executionStatusReason || null
+        });
+      }
+
+      // Broadcast real-time interactive delta to frontend automation store
+      wsServer.broadcast('automation:delta', {
+        type: 'ACCOUNT_UPDATED',
+        accountId,
+        partialSnapshot: {
+          browserStatus: payload.browserStatus || 'STOPPED',
+          accountStatus: payload.accountStatus || 'IDLE',
+          observedState: payload.observedState || (payload.browserStatus === 'ACTIVE' ? 'RUNNING' : 'STOPPED'),
+          executionStatusReason: payload.executionStatusReason || null
+        }
+      });
+
+      // Broadcast updated browser counts to automation store
+      const activeCount = typeof payload.activeBrowsers === 'number' 
+        ? payload.activeBrowsers 
+        : workspaceAggregator.activeAccountIds.size;
+      wsServer.broadcast('automation:delta', {
+        type: 'STATUS_UPDATED',
+        partialStatus: {
+          activeBrowsers: activeCount
+        }
+      });
+
+      // Also broadcast to accounts store
+      wsServer.broadcast('accounts:delta', {
+        type: 'ACCOUNT_UPDATED',
+        accountId,
+        partialSnapshot: {
+          backendState: payload.browserStatus === 'ACTIVE' ? 'ACTIVE' : 'IDLE',
+          statusDescription: payload.browserStatus
+        }
+      });
+    }
+  } catch (err) {
+    logger.error({ err: err.message }, '[ExecutionBoundary] Error handling browserStatus event');
+  }
 });
 
 executionBoundaryManager.on('quarantineRequired', (data) => {

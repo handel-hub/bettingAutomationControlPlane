@@ -15,6 +15,7 @@ export const automationRouter = Router();
 automationRouter.get('/snapshot', async (req, res) => {
   try {
     const store = getSharedStateStore();
+    await workspaceAggregator.getSnapshot();
     const runtimeState = {
       lifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: workspaceAggregator.lifecycleMessage,
@@ -184,7 +185,11 @@ automationRouter.post('/accounts/activate', async (req, res) => {
           account
         });
       }
-      res.json({ account });
+      wsServer.broadcast('automation:delta', {
+        type: 'CAPABILITIES_CHANGED',
+        capabilities: snapshot.capabilities
+      });
+      res.json({ account, capabilities: snapshot.capabilities });
     }
   });
 });
@@ -200,13 +205,18 @@ automationRouter.post('/accounts/:id/deactivate', async (req, res) => {
     type: 'DEACTIVATE_ACCOUNT',
     target: accountId,
     payload: { accountId },
-    onSuccess: () => {
+    onSuccess: async () => {
       workspaceAggregator.deactivateAccount(accountId);
+      const snapshot = await workspaceAggregator.getSnapshot();
       wsServer.broadcast('automation:delta', {
         type: 'ACCOUNT_DEACTIVATED',
         accountId
       });
-      res.json({ success: true, accountId });
+      wsServer.broadcast('automation:delta', {
+        type: 'CAPABILITIES_CHANGED',
+        capabilities: snapshot.capabilities
+      });
+      res.json({ success: true, accountId, capabilities: snapshot.capabilities });
     }
   });
 });

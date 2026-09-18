@@ -13,10 +13,14 @@ preludeRouter.get('/', async (req, res) => {
     const workspaceSnapshot = await workspaceAggregator.getSnapshot();
     const runtimeState = {
       lifecycleState: 'Authorized',
+      lifecycle: workspaceAggregator.lifecycle,
       automationLifecycle: workspaceAggregator.lifecycle,
+      lifecycleMessage: workspaceAggregator.lifecycleMessage,
       automationMessage: workspaceAggregator.lifecycleMessage,
+      capabilities: workspaceSnapshot.capabilities,
       automationCapabilities: workspaceSnapshot.capabilities,
       automationAccounts: workspaceSnapshot.accounts,
+      stagedAccountIds: workspaceAggregator.stagedAccountIds,
       systemStatus: workspaceSnapshot.systemStatus,
       globalActionPending: operationTracker.getCurrentPendingAction()
     };

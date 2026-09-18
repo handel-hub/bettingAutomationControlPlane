@@ -1,4 +1,6 @@
 // @ts-check
+import fs from 'fs';
+import path from 'path';
 import { StateStore } from './StateStore.mjs';
 
 /** @type {StateStore | null} */
@@ -11,7 +13,16 @@ let _sharedStore = null;
  */
 export function getSharedStateStore(options = {}) {
   if (!_sharedStore) {
-    const dbPath = options.dbPath || process.env.ACP_CACHE_DB_PATH || ':memory:';
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    let defaultDbPath = ':memory:';
+    if (!isTest) {
+      const dataDir = path.join(process.cwd(), 'data');
+      if (!fs.existsSync(dataDir)) {
+        try { fs.mkdirSync(dataDir, { recursive: true }); } catch { /* ignore */ }
+      }
+      defaultDbPath = path.join(dataDir, 'acp_state.db');
+    }
+    const dbPath = options.dbPath || process.env.ACP_CACHE_DB_PATH || defaultDbPath;
     const userId = options.userId || process.env.ACP_USER_ID || 'usr_operator';
     _sharedStore = new StateStore({ dbPath, userId });
     _sharedStore.initialize();
