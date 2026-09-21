@@ -368,6 +368,27 @@ export class ExecutionBoundaryManager extends EventEmitter {
       }
     }
 
+    // Invariant: Fast-reject if all target accounts are explicitly excluded from Bet Cycle
+    if (this.stateStore && typeof this.stateStore.accountsContainer?.getAll === 'function') {
+      const allAccounts = this.stateStore.accountsContainer.getAll();
+      const accountsToCheck = targetAccounts.length > 0
+        ? allAccounts.filter(a => targetAccounts.includes(a.id) || targetAccounts.includes(a.accountUsername))
+        : allAccounts;
+
+      if (accountsToCheck.length > 0) {
+        const anyEligible = accountsToCheck.some(a => {
+          const overrides = typeof this.stateStore.configContainer?.getAccountOverride === 'function'
+            ? this.stateStore.configContainer.getAccountOverride(a.id)
+            : {};
+          return overrides.betCycleEnabled !== false;
+        });
+
+        if (!anyEligible) {
+          throw new Error('[EXEC_003] Execution Denied: All target accounts have Bet Cycle disabled');
+        }
+      }
+    }
+
     const idempotencyKey = betPayload?.idempotencyKey || `idem_${betPayload?.operationId || Date.now()}`;
     const check = this.idempotency.check(idempotencyKey);
 
