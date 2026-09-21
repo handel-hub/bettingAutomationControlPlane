@@ -143,7 +143,39 @@ test('Phase 20: Full End-to-End Multi-Process Integration Test', async (t) => {
 
     // Give 500ms for clean child exit
     await new Promise((r) => setTimeout(r, 500));
-    // 6. Clean up test account
+
+    // 6. Restart Automation via REST to verify clean Stop -> Start restart cycle without 15s timeout
+    const restartRes = await fetch(`${baseUrl}/api/v1/automation/start`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${devToken}`
+      },
+      body: JSON.stringify({})
+    });
+    assert.equal(restartRes.status, 200, 'Subsequent start automation must succeed without timeout');
+
+    // Wait for worker process reconnection & running state
+    const restartRunningWait = Date.now();
+    while (runtimeManager.activeConnections.size === 0 && Date.now() - restartRunningWait < 5000) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.strictEqual(runtimeManager.activeConnections.size, 1, 'Restarted child process must connect and authenticate over IPC');
+
+    // 7. Stop Automation again
+    const stopAgainRes = await fetch(`${baseUrl}/api/v1/automation/stop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${devToken}`
+      },
+      body: JSON.stringify({})
+    });
+    assert.equal(stopAgainRes.status, 200);
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 8. Clean up test account
     await fetch(`${baseUrl}/api/v1/accounts/${createdAcc.id}/action`, {
       method: 'POST',
       headers: {

@@ -38,6 +38,10 @@ pub fn start_secure_pipe_server(
     on_data: ThreadsafeFunction<(u32, String), ErrorStrategy::Fatal>,
     on_disconnect: ThreadsafeFunction<u32, ErrorStrategy::Fatal>,
 ) -> Result<()> {
+    if SERVER_RUNNING.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
     let sddl = CString::new("D:(A;;GA;;;SY)(A;;GA;;;OW)").unwrap();
 
     let mut sd_ptr = std::ptr::null_mut();
@@ -351,7 +355,9 @@ pub fn authorize_pipe_read(_conn_id: u32) -> Result<()> {
 }
 
 pub fn stop_secure_pipe_server() -> Result<()> {
-    SERVER_RUNNING.store(false, Ordering::SeqCst);
+    if !SERVER_RUNNING.swap(false, Ordering::SeqCst) {
+        return Ok(());
+    }
     let pipe_name = SERVER_PIPE_NAME.lock().unwrap().clone();
     if !pipe_name.is_empty() {
         if let Ok(pipe_c) = CString::new(pipe_name) {

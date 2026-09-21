@@ -32,6 +32,21 @@ export class RuntimeHeartbeat {
     }
     return stalled;
   }
+
+  /**
+   * Clears a terminated PID from tracking.
+   * @param {number} pid
+   */
+  remove(pid) {
+    this.lastSeen.delete(pid);
+  }
+
+  /**
+   * Clears all tracking records.
+   */
+  clear() {
+    this.lastSeen.clear();
+  }
 }
 
 export const runtimeHeartbeat = new RuntimeHeartbeat();

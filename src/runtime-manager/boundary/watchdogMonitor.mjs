@@ -36,9 +36,19 @@ export class WatchdogMonitor extends EventEmitter {
   }
 
   /**
+   * Resets internal tracking state to clean initial baseline.
+   */
+  reset() {
+    this.livenessState = 'OFFLINE';
+    this.lastHeartbeatTimestamp = 0;
+    this.lastHeartbeatPayload = null;
+  }
+
+  /**
    * Starts periodic watchdog checks.
    */
   start() {
+    this.reset();
     if (this._timer) return;
     this._timer = setInterval(() => this.checkLiveness(), this.checkIntervalMs);
     if (this._timer.unref) {
@@ -54,7 +64,7 @@ export class WatchdogMonitor extends EventEmitter {
       clearInterval(this._timer);
       this._timer = null;
     }
-    this.livenessState = 'OFFLINE';
+    this.reset();
   }
 
   /**

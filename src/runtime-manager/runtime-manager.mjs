@@ -39,13 +39,22 @@ export class RuntimeManager extends EventEmitter {
   }
 
   stopServer() {
-    NativeCore.stopSecurePipeServer();
+    if (!this.serverStarted) {
+      this.activeConnections.clear();
+      return;
+    }
+    try {
+      NativeCore.stopSecurePipeServer();
+    } catch {}
     this.serverStarted = false;
     this.activeConnections.clear();
   }
 
   ensureServerStarted() {
     if (this.serverStarted) return;
+    if (executionBoundaryManager.transport?.isListening || executionBoundaryManager.isConnected()) {
+      return;
+    }
     
     NativeCore.startSecurePipeServer(
       this.pipeName,
@@ -348,8 +357,12 @@ export class RuntimeManager extends EventEmitter {
     const pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
       if (handshakeTimer) clearTimeout(handshakeTimer);
       this.activeRuntimes.delete(exitedPid);
-      this.engineStatus = 'STOPPED';
+      runtimeHeartbeat.remove(exitedPid);
+      if (this.engineStatus !== 'ABORTED') {
+        this.engineStatus = 'STOPPED';
+      }
       this.emit('runtimeExited', exitedPid);
+      executionBoundaryManager.abortConnection(new Error(`Execution Plane process (PID ${exitedPid}) exited prematurely before connection`));
     }, targetScript, expectedSha256);
     
     this.activeRuntimes.add(pid);
@@ -364,6 +377,7 @@ export class RuntimeManager extends EventEmitter {
           this.terminateRuntime(pid);
           this.engineStatus = 'ABORTED';
           this.emit('handshakeTimeout', { pid, handshakeTimeoutMs });
+          executionBoundaryManager.abortConnection(new Error(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
         }
       }, handshakeTimeoutMs);
 
@@ -402,6 +416,7 @@ export class RuntimeManager extends EventEmitter {
     if (this.activeRuntimes.has(pid)) {
       NativeCore.terminateExecutionProcess(pid);
       this.activeRuntimes.delete(pid);
+      runtimeHeartbeat.remove(pid);
     }
   }
 
@@ -412,6 +427,7 @@ export class RuntimeManager extends EventEmitter {
     for (const pid of this.activeRuntimes) {
       this.terminateRuntime(pid);
     }
+    runtimeHeartbeat.clear();
     this.engineStatus = 'OFFLINE';
     this.stopServer();
   }

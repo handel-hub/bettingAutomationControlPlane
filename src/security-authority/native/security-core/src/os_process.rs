@@ -5,8 +5,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::io::Write;
 use sha2::{Sha256, Digest};
+use std::thread;
 use std::os::windows::io::AsRawHandle;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+use windows::Win32::System::Threading::{GetCurrentProcess, WaitForSingleObject, INFINITE};
 use windows::Win32::System::JobObjects::{
     CreateJobObjectW, SetInformationJobObject, AssignProcessToJobObject,
     JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -26,7 +28,7 @@ lazy_static::lazy_static! {
 
 pub fn spawn_execution_process(
     pipe_name: String,
-    _on_exit: ThreadsafeFunction<u32, ErrorStrategy::Fatal>,
+    on_exit: ThreadsafeFunction<u32, ErrorStrategy::Fatal>,
     script_path: Option<String>,
     expected_sha256: Option<String>,
 ) -> Result<u32> {
@@ -92,10 +94,27 @@ pub fn spawn_execution_process(
 
     // 5. Assign child process to Job Object
     let raw_proc_handle = HANDLE(child.as_raw_handle() as isize);
+    let mut exit_watch_handle = HANDLE::default();
+    unsafe {
+        let current_proc = GetCurrentProcess();
+        let _ = DuplicateHandle(
+            current_proc,
+            raw_proc_handle,
+            current_proc,
+            &mut exit_watch_handle,
+            0,
+            windows::Win32::Foundation::BOOL(0),
+            DUPLICATE_SAME_ACCESS,
+        );
+    }
+
     unsafe {
         if let Err(e) = AssignProcessToJobObject(job_handle, raw_proc_handle) {
             let _ = child.kill();
             let _ = CloseHandle(job_handle);
+            if exit_watch_handle.0 != 0 {
+                let _ = CloseHandle(exit_watch_handle);
+            }
             return Err(Error::new(Status::GenericFailure, format!("AssignProcessToJobObject failed: {}", e)));
         }
     }
@@ -104,12 +123,22 @@ pub fn spawn_execution_process(
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(e) = stdin.write_all(&session_key) {
             let _ = child.kill();
-            unsafe { let _ = CloseHandle(job_handle); }
+            unsafe {
+                let _ = CloseHandle(job_handle);
+                if exit_watch_handle.0 != 0 {
+                    let _ = CloseHandle(exit_watch_handle);
+                }
+            }
             return Err(Error::new(Status::GenericFailure, format!("Failed to write session key: {}", e)));
         }
     } else {
         let _ = child.kill();
-        unsafe { let _ = CloseHandle(job_handle); }
+        unsafe {
+            let _ = CloseHandle(job_handle);
+            if exit_watch_handle.0 != 0 {
+                let _ = CloseHandle(exit_watch_handle);
+            }
+        }
         return Err(Error::new(Status::GenericFailure, "Failed to capture stdin".to_string()));
     }
 
@@ -119,6 +148,22 @@ pub fn spawn_execution_process(
         session_key,
         job_handle: job_handle.0 as isize,
     });
+
+    // 8. Spawn thread to await child process termination and notify caller
+    if exit_watch_handle.0 != 0 {
+        let on_exit_cb = on_exit.clone();
+        let pid_copy = pid;
+        thread::spawn(move || {
+            unsafe {
+                WaitForSingleObject(exit_watch_handle, INFINITE);
+                let _ = CloseHandle(exit_watch_handle);
+            }
+            let mut h = ACTIVE_EXECUTION_HANDLES.lock().unwrap();
+            h.remove(&pid_copy);
+            drop(h);
+            on_exit_cb.call(pid_copy, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+        });
+    }
 
     Ok(pid)
 }

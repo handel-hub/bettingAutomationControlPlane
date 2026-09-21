@@ -108,6 +108,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   stopServer() {
     this.watchdog.stop();
+    this.abortConnection(new Error('Transport server stopped'));
     this.transport.stopServer();
 
     // Cancel all pending correlation timers
@@ -121,12 +122,22 @@ export class ExecutionBoundaryManager extends EventEmitter {
     this.activeBrowserCount = 0;
   }
 
+  /**
+   * Immediately aborts any in-flight waitForConnection promises.
+   * @param {Error|string} [reason]
+   */
+  abortConnection(reason) {
+    const err = reason instanceof Error ? reason : new Error(reason || 'Execution Plane connection aborted');
+    this.emit('connectionAborted', err);
+  }
+
   isConnected() {
     return this.transport.isConnected();
   }
 
   /**
    * Awaits client named pipe connection and mutual HMAC handshake.
+   * Rejects immediately if connection is aborted, process exits, or quarantine trips.
    * @param {number} [timeoutMs=15000]
    * @returns {Promise<boolean>}
    */
@@ -135,19 +146,43 @@ export class ExecutionBoundaryManager extends EventEmitter {
       return Promise.resolve(true);
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let timer = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
         this.off('clientConnected', onConnect);
+        this.off('connectionAborted', onAbort);
+        this.off('quarantineRequired', onQuarantine);
+      };
+
+      const onConnect = (connId) => {
+        cleanup();
+        resolve(true);
+      };
+
+      const onAbort = (err) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      };
+
+      const onQuarantine = (data) => {
+        cleanup();
+        reject(new Error(`Execution Plane quarantined before connection established: ${data?.reason || 'Watchdog alert'}`));
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
         reject(new Error(`Timed out waiting for Execution Plane client connection after ${timeoutMs}ms`));
       }, timeoutMs);
 
       if (timer.unref) timer.unref();
 
-      const onConnect = (connId) => {
-        clearTimeout(timer);
-        resolve(true);
-      };
-
       this.once('clientConnected', onConnect);
+      this.once('connectionAborted', onAbort);
+      this.once('quarantineRequired', onQuarantine);
     });
   }
 
