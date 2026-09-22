@@ -571,7 +571,11 @@ async function bootstrap() {
     // 3. Register Commands
     registerDefaultCommandHandlers();
 
-    // 4. Initialize Backend Synchronization & Hydration Pipeline (Blocking prerequisite)
+    // 4. Initialize Shared StateStore & Wire SQLite Engine to BackendSyncService
+    const store = getSharedStateStore();
+    backendSyncService.setEngine(store.engine);
+
+    // 5. Initialize Backend Synchronization & Hydration Pipeline (Blocking prerequisite)
     const isDev = process.env.NODE_ENV !== 'production' && process.env.ACP_FORCE_DEGRADED !== 'true';
 
     try {
@@ -581,15 +585,32 @@ async function bootstrap() {
           logger.info('[ControlPlane] Cloud Backend offline in development mode.');
           logger.info('[ControlPlane] Activating Local Developer Operational Mode (Full Capabilities & Standby Lifecycle).');
           await securityFacade.initDevSession();
-          const store = getSharedStateStore();
           store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
           store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
           workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
         } else {
-          logger.warn('[ControlPlane] Backend/Internet offline. Entering DEGRADED mode (Execution Plane strictly quarantined)');
-          await securityFacade.transitionToDegraded('BACKEND_OFFLINE_AT_BOOT');
-          runtimeManager.quarantineExecution('BACKEND_OFFLINE_AT_BOOT');
-          workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend offline: Execution Plane disabled');
+          // Check 2-hour offline operational grace period
+          const isWithinGrace = backendSyncService.checkGracePeriod();
+          if (isWithinGrace) {
+            logger.warn('[ControlPlane] Cloud Backend offline. Valid cached subscription found within 2-hour operational grace period.');
+            logger.info('[ControlPlane] Entering OFFLINE_GRACE mode. Execution Plane is permitted to operate.');
+            await securityFacade.transitionToDegraded('OFFLINE_GRACE');
+            store.lifecycle.setDesiredState('STOPPED', 'OFFLINE_GRACE_READY');
+            store.lifecycle.setObservedState('STOPPED', 'OFFLINE_GRACE_READY');
+            workspaceAggregator.setLifecycle('STOPPED', 'Operating in Offline Grace Period (Backend offline)');
+
+            // Start background grace monitor to quarantine when 2-hour window expires
+            backendSyncService.startGracePeriodMonitor(() => {
+              logger.warn('[ControlPlane] 2-hour offline grace window expired. Quarantining execution.');
+              runtimeManager.quarantineExecution('OFFLINE_GRACE_EXPIRED');
+              workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Offline grace period expired: Execution Plane disabled');
+            });
+          } else {
+            logger.warn('[ControlPlane] Backend/Internet offline and no valid grace period. Entering DEGRADED mode (Execution Plane strictly quarantined)');
+            await securityFacade.transitionToDegraded('BACKEND_OFFLINE_NO_GRACE');
+            runtimeManager.quarantineExecution('BACKEND_OFFLINE_NO_GRACE');
+            workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend offline: Execution Plane disabled');
+          }
         }
       } else {
         logger.info('[ControlPlane] Backend synchronization pipeline connected & operational');
@@ -598,19 +619,34 @@ async function bootstrap() {
       if (isDev) {
         logger.info({ err: syncErr.message }, '[ControlPlane] Backend sync unavailable in development mode. Activating Local Developer Operational Mode.');
         await securityFacade.initDevSession();
-        const store = getSharedStateStore();
         store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
         store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
         workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
       } else {
-        logger.warn({ error: syncErr.message }, '[ControlPlane] Backend sync error. Entering DEGRADED mode');
-        await securityFacade.transitionToDegraded('BACKEND_SYNC_FAILURE');
-        runtimeManager.quarantineExecution('BACKEND_SYNC_FAILURE');
-        workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend sync failure: Execution Plane disabled');
+        const isWithinGrace = backendSyncService.checkGracePeriod();
+        if (isWithinGrace) {
+          logger.warn('[ControlPlane] Backend sync error. Valid cached subscription found within 2-hour operational grace period.');
+          logger.info('[ControlPlane] Entering OFFLINE_GRACE mode. Execution Plane is permitted to operate.');
+          await securityFacade.transitionToDegraded('OFFLINE_GRACE');
+          store.lifecycle.setDesiredState('STOPPED', 'OFFLINE_GRACE_READY');
+          store.lifecycle.setObservedState('STOPPED', 'OFFLINE_GRACE_READY');
+          workspaceAggregator.setLifecycle('STOPPED', 'Operating in Offline Grace Period (Backend error)');
+
+          backendSyncService.startGracePeriodMonitor(() => {
+            logger.warn('[ControlPlane] 2-hour offline grace window expired. Quarantining execution.');
+            runtimeManager.quarantineExecution('OFFLINE_GRACE_EXPIRED');
+            workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Offline grace period expired: Execution Plane disabled');
+          });
+        } else {
+          logger.warn({ error: syncErr.message }, '[ControlPlane] Backend sync error. Entering DEGRADED mode');
+          await securityFacade.transitionToDegraded('BACKEND_SYNC_FAILURE');
+          runtimeManager.quarantineExecution('BACKEND_SYNC_FAILURE');
+          workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Backend sync failure: Execution Plane disabled');
+        }
       }
     }
 
-    // 5. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready
+    // 6. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready
     const port = Number(process.env.PORT) || 8000;
     const host = process.env.HOST || '127.0.0.1';
     await apiServer.listen(port, host);
@@ -627,6 +663,7 @@ async function bootstrap() {
 const shutdown = async (signal) => {
   logger.info({ signal }, '[ControlPlane] Graceful shutdown initiated');
   try {
+    backendSyncService.stop();
     executionBoundaryManager.stopServer();
     runtimeManager.quarantineExecution(`SHUTDOWN_${signal}`);
     await apiServer.close();

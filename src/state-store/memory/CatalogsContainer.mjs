@@ -125,7 +125,14 @@ export class CatalogsContainer {
    * @param {string} [etag]
    */
   replacePlansCatalog(catalog, etag = null) {
-    this._plansCatalog = Object.freeze(JSON.parse(JSON.stringify(catalog)));
+    if (Array.isArray(catalog)) {
+      this._plansCatalog = Object.freeze({
+        ...createDefaultPlansCatalog(),
+        plans: JSON.parse(JSON.stringify(catalog))
+      });
+    } else if (catalog && typeof catalog === 'object') {
+      this._plansCatalog = Object.freeze(JSON.parse(JSON.stringify(catalog)));
+    }
     if (etag) this._plansEtag = etag;
     this._revision += 1;
     this._lastUpdated = new Date().toISOString();

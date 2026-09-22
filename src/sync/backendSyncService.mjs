@@ -31,6 +31,7 @@ export class BackendSyncService {
    */
   constructor(options = {}) {
     this.client = options.client || backendClient;
+    this.machineIdentity = options.identity || machineIdentity;
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
@@ -72,6 +73,17 @@ export class BackendSyncService {
   }
 
   /**
+   * Connects the SQLite storage engine and initializes outbox persistence.
+   * @param {any} engine
+   */
+  setEngine(engine) {
+    if (!engine || this.engine === engine) return;
+    this.engine = engine;
+    this._initOutboxPersistence();
+    this._hydrateOutboxFromPersistence();
+  }
+
+  /**
    * Initializes SQLite outbox persistence schema.
    * @private
    */
@@ -105,17 +117,21 @@ export class BackendSyncService {
         WHERE status = 'PENDING'
         ORDER BY created_at ASC
       `);
+      const existingIds = new Set(this.outbox.map(i => i.id));
       for (const row of rows) {
-        this.outbox.push({
-          id: row.id,
-          mutationType: row.mutation_type,
-          payload: JSON.parse(row.payload_json),
-          attempts: row.attempts,
-          status: row.status,
-          createdAt: row.created_at,
-          nextRetryAt: row.next_retry_at,
-          lastError: row.last_error
-        });
+        if (!existingIds.has(row.id)) {
+          this.outbox.push({
+            id: row.id,
+            mutationType: row.mutation_type,
+            payload: JSON.parse(row.payload_json),
+            attempts: row.attempts,
+            status: row.status,
+            createdAt: row.created_at,
+            nextRetryAt: row.next_retry_at,
+            lastError: row.last_error
+          });
+          existingIds.add(row.id);
+        }
       }
     } catch { /* ignore */ }
   }
@@ -166,33 +182,60 @@ export class BackendSyncService {
 
     // 1. Ensure machine identity is initialized
     try {
-      if (!machineIdentity.publicKeyHex) {
-        await machineIdentity.initialize();
+      if (!this.machineIdentity.publicKeyHex) {
+        await this.machineIdentity.initialize();
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Machine identity init warning');
     }
 
-    // 2. Check Backend liveness
-    const health = await this.client.checkHealth();
+    // 2. Lazily wire SQLite engine from shared state store if not provided
+    if (!this.engine) {
+      try {
+        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+        const store = getSharedStateStore();
+        if (store?.engine) {
+          this.setEngine(store.engine);
+        }
+      } catch { /* ignore */ }
+    }
+
+    // 3. Check Backend liveness
+    let health = { ok: false, status: 503 };
+    try {
+      health = await this.client.checkHealth();
+    } catch { /* ignore */ }
+
     if (!health.ok) {
-      logger.warn({ status: health.status }, '[BackendSyncService] Cloud Backend unreachable. Falling back to local encrypted cache.');
+      logger.warn({ status: health.status }, '[BackendSyncService] Cloud Backend unreachable. Falling back to local state store and encrypted cache.');
       const loaded = this.loadLocalCache();
       this.isConnected = false;
       this.isHydrated = loaded;
-      return { isConnected: false, isHydrated: loaded };
+
+      // Extract last sync / validated timestamp from SQLite if present
+      if (this.engine) {
+        try {
+          const rows = this.engine.query("SELECT last_validated_at FROM cache_metadata WHERE entity_key = 'billing'");
+          if (rows && rows[0]?.last_validated_at) {
+            this.lastSyncTimestamp = rows[0].last_validated_at;
+            this.isHydrated = true;
+          }
+        } catch { /* ignore */ }
+      }
+
+      return { isConnected: false, isHydrated: this.isHydrated };
     }
 
-    // 3. Backend is reachable: register machine if needed
+    // 4. Backend is reachable: register machine if needed
     try {
-      const desc = machineIdentity.getDescriptor();
-      const selfSig = machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
+      const desc = this.machineIdentity.getDescriptor();
+      const selfSig = this.machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
       await this.client.registerMachine(desc.machineKeyPub, `inst_${desc.hardwareId}`, selfSig, desc);
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Machine registration returned notice (may already be registered)');
     }
 
-    // 4. Authenticate session if credentials provided or available in env
+    // 5. Authenticate session if credentials provided or available in env
     const email = credentials?.email || process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
     const password = credentials?.password || process.env.OPERATOR_PASSWORD || 'Password123!';
 
@@ -203,17 +246,20 @@ export class BackendSyncService {
       logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; proceeding with public/local capability scope');
     }
 
-    // 5. Pull authoritative snapshot and hydrate in-memory repositories
+    // 6. Pull authoritative snapshot and hydrate in-memory repositories & state store
     try {
       await this.pullAuthoritativeSnapshot();
       this.isConnected = true;
       this.isHydrated = true;
 
-      // 6. Save encrypted cache for future offline cold boot
-      this.saveLocalCache();
-      logger.info('[BackendSyncService] Authoritative state hydrated and local encrypted cache updated.');
+      // 7. Flush pending outbox mutations now that we are connected
+      await this.flushOutbox();
 
-      // 7. Establish Server-to-ACP Event Stream WebSocket connection
+      // 8. Save encrypted cache for future offline cold boot & test fixture compatibility
+      this.saveLocalCache();
+      logger.info('[BackendSyncService] Authoritative state hydrated and local cache updated.');
+
+      // 9. Establish Server-to-ACP Event Stream WebSocket connection
       if (this.enableWebSocket && this.client.sessionId) {
         this.connectWebSocket();
       }
@@ -248,6 +294,9 @@ export class BackendSyncService {
       ws.on('open', () => {
         logger.info('[BackendSyncService] Connected to Backend Server Event Stream');
         this.reconnectAttempts = 0;
+        this.flushOutbox().catch(err => {
+          logger.warn({ err: err.message }, '[BackendSyncService] Error flushing outbox upon WS open');
+        });
       });
 
       ws.on('message', async (data) => {
@@ -423,8 +472,18 @@ export class BackendSyncService {
    * @returns {boolean} True if within grace period, false if expired.
    */
   checkGracePeriod() {
-    if (!this.lastSyncTimestamp) return false;
-    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(this.lastSyncTimestamp);
+    let timestamp = this.lastSyncTimestamp;
+    if (!timestamp && this.engine) {
+      try {
+        const rows = this.engine.query("SELECT last_validated_at FROM cache_metadata WHERE entity_key = 'billing'");
+        if (rows && rows[0]?.last_validated_at) {
+          timestamp = rows[0].last_validated_at;
+          this.lastSyncTimestamp = timestamp;
+        }
+      } catch { /* ignore */ }
+    }
+    if (!timestamp) return false;
+    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(timestamp);
     if (!isWithin && !securityFacade.isDegraded()) {
       logger.warn('[BackendSyncService] 2-hour offline operational grace period expired. Transitioning to degraded mode.');
       securityFacade.transitionToDegraded('GRACE_PERIOD_EXPIRED').catch(() => {});
@@ -433,11 +492,49 @@ export class BackendSyncService {
   }
 
   /**
-   * Pulls authoritative automation and accounts state from Backend.
+   * Starts the background monitor for the 2-hour offline operational grace period.
+   * Periodically checks if the grace period has expired while offline.
+   * @param {() => void} [onExpired] Optional callback when grace expires (e.g. quarantine execution)
+   */
+  startGracePeriodMonitor(onExpired) {
+    if (this.graceMonitorInterval) return;
+    this.graceMonitorInterval = setInterval(async () => {
+      if (this.isConnected) {
+        this.stopGracePeriodMonitor();
+        return;
+      }
+      const isWithin = this.checkGracePeriod();
+      if (!isWithin) {
+        logger.warn('[BackendSyncService] Grace monitor tripped: 2-hour operational window expired.');
+        if (typeof onExpired === 'function') {
+          try { onExpired(); } catch {}
+        }
+        this.stopGracePeriodMonitor();
+      }
+    }, 30000);
+    if (this.graceMonitorInterval && typeof this.graceMonitorInterval.unref === 'function') {
+      this.graceMonitorInterval.unref();
+    }
+  }
+
+  /**
+   * Stops the grace period monitor.
+   */
+  stopGracePeriodMonitor() {
+    if (this.graceMonitorInterval) {
+      clearInterval(this.graceMonitorInterval);
+      this.graceMonitorInterval = null;
+    }
+  }
+
+  /**
+   * Pulls authoritative automation, accounts, billing, and catalogs state from Backend.
    */
   async pullAuthoritativeSnapshot() {
     const configRepo = repositoryFactory.getConfigRepo();
     const accountsRepo = repositoryFactory.getAccountsRepo();
+    const billingRepo = repositoryFactory.getBillingRepo();
+    const catalogsRepo = repositoryFactory.getCatalogsRepo();
 
     // 1. Fetch automation configuration and accounts snapshot
     try {
@@ -460,6 +557,46 @@ export class BackendSyncService {
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch accounts list directly');
+    }
+
+    // 3. Fetch billing snapshot (subscription & invoices)
+    try {
+      const billingRes = await this.client.getBillingSnapshot();
+      if (billingRes) {
+        const sub = billingRes.subscription || (billingRes.status ? billingRes : null);
+        const invs = billingRes.invoices || [];
+        if (typeof billingRepo.hydrate === 'function') {
+          billingRepo.hydrate(sub, invs);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch billing snapshot directly');
+    }
+
+    // 4. Fetch platform registry and plans catalog with conditional ETag revalidation
+    try {
+      let currentPlatformEtag = undefined;
+      let currentPlansEtag = undefined;
+      try {
+        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+        const store = getSharedStateStore();
+        currentPlatformEtag = store.metadataAdapter?.get('platform_registry')?.etag;
+        currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
+      } catch { /* ignore */ }
+
+      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
+      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
+        const platforms = platformRes.registry.platforms || platformRes.registry;
+        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+      }
+
+      const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
+      if (!plansRes.notModified && plansRes.catalog && catalogsRepo) {
+        const plans = plansRes.catalog.plans || plansRes.catalog;
+        catalogsRepo.hydratePlans(plans, plansRes.etag);
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch catalog snapshots directly');
     }
 
     this.lastSyncTimestamp = new Date().toISOString();
@@ -655,6 +792,7 @@ export class BackendSyncService {
    */
   stop() {
     this.isStopping = true;
+    this.stopGracePeriodMonitor();
     this.disconnectWebSocket();
   }
 }

@@ -120,7 +120,7 @@ export class DecisionEngine {
     // Emergency stop is also a non-entitlement-gated safety invariant.
     const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP];
 
-    if (this.inMemoryState?.state !== SecurityState.OPERATIONAL) {
+    if (this.inMemoryState?.state !== SecurityState.OPERATIONAL && this.inMemoryState?.state !== SecurityState.OFFLINE_GRACE) {
       return baseCaps;
     }
     if (this.inMemoryState.authorization?.status !== 'VALID') {

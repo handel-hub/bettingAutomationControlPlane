@@ -117,6 +117,9 @@ class StateStoreConfigAdapter {
     if (!globalConfig) return;
     const store = getSharedStateStore();
     store.configContainer.hydrate(globalConfig);
+    try {
+      store.configAdapter.save(store.userId, globalConfig);
+    } catch { /* ignore */ }
   }
 }
 
@@ -137,6 +140,22 @@ class StateStoreBillingAdapter {
   async addInvoice(invoice) {
     const store = getSharedStateStore();
     return store.billing.addInvoice(invoice);
+  }
+
+  hydrate(subscription, invoices = []) {
+    const store = getSharedStateStore();
+    if (subscription) {
+      store.billingContainer.hydrate(subscription, invoices);
+      try {
+        store.billingAdapter.saveSubscription(store.userId, subscription);
+        if (Array.isArray(invoices)) {
+          for (const inv of invoices) {
+            store.billingAdapter.saveInvoice(store.userId, inv);
+          }
+        }
+        store.metadataAdapter.set('billing', { lastValidatedAt: new Date().toISOString() });
+      } catch { /* ignore */ }
+    }
   }
 
   async verifyReference(reference) {
@@ -222,6 +241,31 @@ class StateStoreNotificationsAdapter {
 }
 
 /**
+ * StateStoreCatalogsAdapter: bridges catalog repositories to SQLite WAL StateStore.
+ */
+class StateStoreCatalogsAdapter {
+  async getPlansCatalog() {
+    const store = getSharedStateStore();
+    return store.catalogs.getPlansCatalog();
+  }
+
+  async getPlatformRegistry() {
+    const store = getSharedStateStore();
+    return store.catalogs.getPlatformRegistry();
+  }
+
+  hydratePlans(plans, etag = null) {
+    const store = getSharedStateStore();
+    store.catalogs.replacePlansCatalog(plans, etag);
+  }
+
+  hydratePlatforms(platforms, etag = null) {
+    const store = getSharedStateStore();
+    store.catalogs.replacePlatformRegistry(platforms, etag);
+  }
+}
+
+/**
  * RepositoryFactory: Canonical facade delegating 100% of domain persistence
  * to the SQLite WAL StateStore singleton (getSharedStateStore).
  */
@@ -232,6 +276,7 @@ class RepositoryFactory {
     this.billingRepo = new StateStoreBillingAdapter();
     this.settingsRepo = new StateStoreSettingsAdapter();
     this.notificationsRepo = new StateStoreNotificationsAdapter();
+    this.catalogsRepo = new StateStoreCatalogsAdapter();
   }
 
   getAccountsRepo() { return this.accountsRepo; }
@@ -239,6 +284,7 @@ class RepositoryFactory {
   getBillingRepo() { return this.billingRepo; }
   getSettingsRepo() { return this.settingsRepo; }
   getNotificationsRepo() { return this.notificationsRepo; }
+  getCatalogsRepo() { return this.catalogsRepo; }
 }
 
 export const repositoryFactory = new RepositoryFactory();

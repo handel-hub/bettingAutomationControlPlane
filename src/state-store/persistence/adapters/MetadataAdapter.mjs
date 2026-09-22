@@ -53,9 +53,11 @@ export class MetadataAdapter {
    * @param {string} [params.etag]
    * @param {number} [params.revision]
    * @param {string} [params.expiresAt]
+   * @param {string} [params.lastValidatedAt]
    */
-  set(entityKey, { etag = null, revision = 1, expiresAt = null } = {}) {
+  set(entityKey, { etag = null, revision = 1, expiresAt = null, lastValidatedAt = null } = {}) {
     const now = new Date().toISOString();
+    const validatedAt = lastValidatedAt || now;
     this.engine.prepare(`
       INSERT INTO cache_metadata (entity_key, etag, revision, schema_version, cached_at, expires_at, last_validated_at)
       VALUES (?, ?, ?, 1, ?, ?, ?)
@@ -65,7 +67,7 @@ export class MetadataAdapter {
         cached_at = excluded.cached_at,
         expires_at = excluded.expires_at,
         last_validated_at = excluded.last_validated_at
-    `).run(entityKey, etag, revision, now, expiresAt, now);
+    `).run(entityKey, etag, revision, now, expiresAt, validatedAt);
   }
 
   /**

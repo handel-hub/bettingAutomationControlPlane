@@ -51,6 +51,8 @@ export class CatalogsAdapter {
    */
   savePlansCatalog(catalog, etag = null) {
     const now = new Date().toISOString();
+    const plansList = Array.isArray(catalog) ? catalog : (catalog?.plans || []);
+    const defaultPlanId = Array.isArray(catalog) ? 'pro' : (catalog?.defaultPlanId || 'pro');
     this.engine.prepare(`
       INSERT INTO plans_catalog_cache (
         catalog_id, default_plan_id, annual_discount_percent, tax_rate,
@@ -67,13 +69,13 @@ export class CatalogsAdapter {
         cached_at = excluded.cached_at
     `).run(
       'default_plans_v1',
-      catalog.defaultPlanId || 'pro',
-      catalog.annualDiscountPercent !== undefined ? catalog.annualDiscountPercent : 20,
-      catalog.taxRate !== undefined ? catalog.taxRate : 0.075,
-      catalog.currency || 'NGN',
-      catalog.currencySymbol || '₦',
-      JSON.stringify(catalog.plans || []),
-      etag || catalog.etag || null,
+      defaultPlanId,
+      catalog?.annualDiscountPercent !== undefined ? catalog.annualDiscountPercent : 20,
+      catalog?.taxRate !== undefined ? catalog.taxRate : 0.075,
+      catalog?.currency || 'NGN',
+      catalog?.currencySymbol || '₦',
+      JSON.stringify(plansList),
+      etag || catalog?.etag || null,
       now
     );
   }
@@ -126,7 +128,7 @@ export class CatalogsAdapter {
       for (const p of platforms) {
         insert.run(
           p.id,
-          p.displayName,
+          p.displayName || p.name || p.id,
           p.iconUrl || null,
           p.status || 'ONLINE',
           p.isAvailable !== false ? 1 : 0,
