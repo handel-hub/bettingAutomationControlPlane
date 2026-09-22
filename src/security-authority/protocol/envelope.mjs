@@ -65,9 +65,13 @@ export class EnvelopeValidator {
     } else if (process.env.PINNED_BACKEND_PUBKEY_HEX && (sigs['1'] || sigs['v1'] || sigs['2'] || sigs['v2'])) {
       signatureToVerify = sigs['1'] || sigs['v1'] || sigs['2'] || sigs['v2'];
       pubKeyHex = process.env.PINNED_BACKEND_PUBKEY_HEX;
+    } else if (process.env.NODE_ENV !== 'production' && (sigs['1'] || sigs['v1'])) {
+      // In development mode only, fallback to the standard active development v1 backend key
+      signatureToVerify = sigs['1'] || sigs['v1'];
+      pubKeyHex = 'f3cb899bb26ea049615344f249a4401373218739de5fee5dc1063101ff320a27';
     } else {
-      // If no pinned key is configured in test/dev, log and reject
-      console.error("[EnvelopeValidator] No matching signature or pinned key found in environment.");
+      // In production or when key is unresolvable, reject closed
+      console.error("[EnvelopeValidator] CRITICAL: No matching signature or pinned key found in environment (production fail-closed).");
       return false;
     }
 

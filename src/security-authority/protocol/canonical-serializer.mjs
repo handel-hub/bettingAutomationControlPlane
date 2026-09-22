@@ -18,6 +18,10 @@ export class CanonicalSerializer {
       return value;
     }
 
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
     if (Array.isArray(value)) {
       return value.map(CanonicalSerializer.canonicalize);
     }
