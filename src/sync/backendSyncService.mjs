@@ -242,8 +242,10 @@ export class BackendSyncService {
     try {
       const authRes = await this.client.initAuth({ email, password });
       logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
+      console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; proceeding with public/local capability scope');
+      console.warn(`⚠ [ControlPlane] Cloud Backend login failed for "${email}": ${err.message}`);
     }
 
     // 6. Pull authoritative snapshot and hydrate in-memory repositories & state store
@@ -293,6 +295,7 @@ export class BackendSyncService {
 
       ws.on('open', () => {
         logger.info('[BackendSyncService] Connected to Backend Server Event Stream');
+        console.log('✓ [ControlPlane] Connected to Cloud Backend Event Stream (/ws/v1/events)');
         this.reconnectAttempts = 0;
         this.flushOutbox().catch(err => {
           logger.warn({ err: err.message }, '[BackendSyncService] Error flushing outbox upon WS open');
