@@ -66,6 +66,15 @@ billingRouter.post('/checkout/verify', async (req, res) => {
         }
 
         const snapshot = store.billing.getSnapshot();
+        if (verifyRes && verifyRes.verified === false) {
+          return res.status(400).json({
+            reference,
+            verified: false,
+            error: verifyRes.error || 'Payment not verified on payment gateway',
+            snapshot
+          });
+        }
+
         wsServer.broadcast('billing:snapshot', snapshot);
         wsServer.broadcast('app:state', { state: 'Authorized' });
         res.json({
@@ -75,7 +84,7 @@ billingRouter.post('/checkout/verify', async (req, res) => {
           snapshot
         });
       } catch (err) {
-        res.status(err.status || 500).json({ error: err.message, verified: false });
+        res.status(err.status || 400).json({ error: err.message, verified: false });
       }
     }
   });
