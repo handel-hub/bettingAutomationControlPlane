@@ -96,6 +96,17 @@ export class AccountsAdapter {
       account.accountPassword.includes('•••');
     const passwordToStore = isMaskedPassword ? '' : account.accountPassword;
 
+    // Evict any stale row matching the unique constraint (user_id, platform_id, account_username)
+    // with a different account_id to prevent SQLite UNIQUE constraint failure during sync
+    const existingByUsername = this.engine.prepare(`
+      SELECT account_id FROM accounts_metadata_cache
+      WHERE user_id = ? AND platform_id = ? AND account_username = ?
+    `).get(userId, platformId, account.accountUsername);
+
+    if (existingByUsername && existingByUsername.account_id !== account.id) {
+      this.engine.prepare('DELETE FROM accounts_metadata_cache WHERE account_id = ?').run(existingByUsername.account_id);
+    }
+
     this.engine.prepare(`
       INSERT INTO accounts_metadata_cache (
         account_id, user_id, name, platform_id, platform_display_name, account_username, account_password,

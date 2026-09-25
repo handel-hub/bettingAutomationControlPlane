@@ -258,7 +258,7 @@ export class InMemoryConfigRepo extends IAutomationConfigRepository {
       },
       advancedRuntime: {
         useStealthPlugin: false,
-        browserBinary: 'chromium',
+        browserBinary: 'chrome',
         randomizeUserAgent: false,
         blockWebRTC: false,
         matchProxyTimezone: true,
