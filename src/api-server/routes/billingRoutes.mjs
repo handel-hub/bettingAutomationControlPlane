@@ -3,6 +3,8 @@ import { Router } from 'express';
 import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
+import { backendClient } from '../../security-authority/protocol/backend-client.mjs';
+import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 
 export const billingRouter = Router();
 
@@ -26,20 +28,25 @@ billingRouter.get('/plans', (req, res) => {
   }
 });
 
-// POST initialize checkout
+// POST initialize checkout -> authoritative Backend initiation
 billingRouter.post('/checkout/initialize', async (req, res) => {
-  const { planName = 'Pro', email = 'operator@bettingautomation.io' } = req.body || {};
-  const reference = `PSTK-REC-${Date.now()}`;
-  res.json({
-    authorizationUrl: `https://checkout.paystack.com/${reference}`,
-    accessCode: `acc_${reference}`,
-    reference
-  });
+  try {
+    const { planId, planName = 'Pro', billingInterval = 'monthly', returnUrl } = req.body || {};
+    const targetPlanId = planId || planName;
+    const checkoutData = await backendClient.initiateCheckout(targetPlanId, billingInterval, returnUrl);
+    res.json(checkoutData);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
 
-// POST verify transaction
+// POST verify transaction -> authoritative Backend verification & state store hydration
 billingRouter.post('/checkout/verify', async (req, res) => {
   const { reference } = req.body || {};
+  if (!reference) {
+    return res.status(400).json({ error: 'Missing transaction reference' });
+  }
+
   return executeCommand({
     req,
     res,
@@ -47,35 +54,64 @@ billingRouter.post('/checkout/verify', async (req, res) => {
     type: 'VERIFY_CHECKOUT',
     payload: { reference },
     onSuccess: async () => {
-      const store = getSharedStateStore();
-      const verified = {
-        reference,
-        verified: true,
-        snapshot: store.billing.getSnapshot()
-      };
-      wsServer.broadcast('billing:snapshot', verified.snapshot);
-      res.json(verified);
+      try {
+        const verifyRes = await backendClient.verifyCheckout(reference);
+        const store = getSharedStateStore();
+
+        if (verifyRes?.snapshot) {
+          const billingRepo = repositoryFactory.getBillingRepository();
+          if (billingRepo && typeof billingRepo.hydrate === 'function') {
+            billingRepo.hydrate(verifyRes.snapshot, verifyRes.snapshot.invoices || []);
+          }
+        }
+
+        const snapshot = store.billing.getSnapshot();
+        wsServer.broadcast('billing:snapshot', snapshot);
+        wsServer.broadcast('app:state', { state: 'Authorized' });
+        res.json({
+          reference,
+          verified: true,
+          status: 'Authorized',
+          snapshot
+        });
+      } catch (err) {
+        res.status(err.status || 500).json({ error: err.message, verified: false });
+      }
     }
   });
 });
 
 // POST portal session
 billingRouter.post('/session', async (req, res) => {
-  res.json({ portalUrl: 'https://billing.paystack.com/session/sample' });
+  res.json({ portalUrl: 'https://flutterwave.com' });
 });
 
-// POST cancel subscription
+// POST cancel subscription -> authoritative Backend cancel
 billingRouter.post('/subscription/cancel', async (req, res) => {
-  const store = getSharedStateStore();
-  const expirationDate = new Date(Date.now() + 15 * 86400000).toISOString();
-  store.billing.updateSubscription({ status: 'Cancelled', expirationDate });
-  res.json({ status: 'Cancelled', expirationDate });
+  try {
+    const cancelRes = await backendClient.cancelSubscription();
+    const store = getSharedStateStore();
+    const expirationDate = cancelRes?.expirationDate || new Date(Date.now() + 15 * 86400000).toISOString();
+    store.billing.updateSubscription({ status: 'Cancelled', expirationDate });
+    const snapshot = store.billing.getSnapshot();
+    wsServer.broadcast('billing:snapshot', snapshot);
+    res.json({ status: 'Cancelled', expirationDate });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
 
-// POST resume subscription
+// POST resume subscription -> authoritative Backend resume
 billingRouter.post('/subscription/resume', async (req, res) => {
-  const store = getSharedStateStore();
-  const renewalDate = new Date(Date.now() + 30 * 86400000).toISOString();
-  store.billing.updateSubscription({ status: 'Active', renewalDate });
-  res.json({ status: 'Active', renewalDate });
+  try {
+    const resumeRes = await backendClient.resumeSubscription();
+    const store = getSharedStateStore();
+    const renewalDate = resumeRes?.renewalDate || new Date(Date.now() + 30 * 86400000).toISOString();
+    store.billing.updateSubscription({ status: 'Active', renewalDate });
+    const snapshot = store.billing.getSnapshot();
+    wsServer.broadcast('billing:snapshot', snapshot);
+    res.json({ status: 'Active', renewalDate });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });

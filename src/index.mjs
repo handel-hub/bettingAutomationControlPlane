@@ -156,17 +156,30 @@ export function registerDefaultCommandHandlers() {
     return { deactivated: true, accountId: cmd.target, sent };
   });
 
-  // Persistence category
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName, payload: SanitizerGate.sanitize(cmd.payload) }, '[Command] REGISTER_ACCOUNT executing');
-    const created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
+    let created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
     try {
       const store = getSharedStateStore();
       store.accounts.upsert(created);
     } catch { /* ignore */ }
     workspaceAggregator.stageAccount(created.id);
     try {
-      await backendSyncService.syncMutation('REGISTER_ACCOUNT', cmd.payload);
+      const syncResult = await backendSyncService.syncMutation('REGISTER_ACCOUNT', {
+        id: created.id,
+        ...cmd.payload
+      });
+      if (syncResult && syncResult.id && syncResult.id !== created.id) {
+        const oldId = created.id;
+        try {
+          const store = getSharedStateStore();
+          store.accounts.delete(oldId);
+          created = { ...created, id: syncResult.id };
+          store.accounts.upsert(created);
+        } catch { /* ignore */ }
+        workspaceAggregator.unstageAccount(oldId);
+        workspaceAggregator.stageAccount(created.id);
+      }
     } catch (err) {
       logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for REGISTER_ACCOUNT');
     }
@@ -175,6 +188,14 @@ export function registerDefaultCommandHandlers() {
 
   commandRouter.register('Persistence', 'ACCOUNT_ACTION', async (cmd) => {
     logger.info({ traceId: cmd.traceId, action: cmd.payload?.actionType, target: cmd.target, payload: cmd.payload }, '[Command] ACCOUNT_ACTION executed');
+    try {
+      await backendSyncService.syncMutation('ACCOUNT_ACTION', {
+        accountId: cmd.target,
+        action: cmd.payload?.actionType
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for ACCOUNT_ACTION');
+    }
     return { executed: true };
   });
 

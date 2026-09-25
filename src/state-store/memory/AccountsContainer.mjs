@@ -1,5 +1,6 @@
 // @ts-check
 import { ulid } from 'ulid';
+import crypto from 'crypto';
 import { RevisionConflictError, ValidationError } from '../types/errors.mjs';
 import { SanitizerGate } from '../validation/SanitizerGate.mjs';
 
@@ -145,7 +146,7 @@ export class AccountsContainer {
       : (existing?.accountPassword || accountData.accountPassword || '[PROTECTED]');
 
     const record = {
-      id: sanitized.id || ('acc_' + ulid()),
+      id: sanitized.id || crypto.randomUUID(),
       name: sanitized.name || sanitized.accountUsername,
       platformId: sanitized.platformId || platform.toLowerCase(),
       platformDisplayName: sanitized.platformDisplayName || platform,

@@ -420,10 +420,49 @@ export class BackendSyncService {
 
       case 'SUBSCRIPTION_STATUS_CHANGED': {
         if (payload.subscription) {
-          await repositoryFactory.getBillingRepo().updateSubscription(payload.subscription);
+          const sub = payload.subscription;
+          const normalizedStatus = sub.status === 'ACTIVE' ? 'Active' : (sub.status === 'PAST_DUE' ? 'Past_Due' : (sub.status === 'CANCELLED' ? 'Cancelled' : sub.status));
+          const normalizedSub = {
+            ...sub,
+            planId: sub.planId || sub.plan_id || sub.currentPlanId,
+            status: normalizedStatus
+          };
+          await repositoryFactory.getBillingRepo().updateSubscription(normalizedSub);
+          if (normalizedStatus === 'Active') {
+            wsServer.broadcast('app:state', { state: 'Authorized' });
+          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required') {
+            wsServer.broadcast('app:state', { state: 'Payment_Required' });
+          }
         }
         const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
         wsServer.broadcast('billing:snapshot', billingSnapshot);
+        break;
+      }
+
+      case 'accounts:delta': {
+        const innerType = payload.type || payload.action;
+        const targetAccId = payload.accountId || payload.id || payload.partialSnapshot?.id;
+
+        if (innerType === 'ACCOUNT_STATUS_CHANGED' || innerType === 'ACCOUNT_LOCKED') {
+          if (targetAccId) {
+            await repositoryFactory.getAccountsRepo().update(targetAccId, {
+              backendState: payload.backendState || payload.status || (innerType === 'ACCOUNT_LOCKED' ? 'LOCKED' : 'SUSPENDED'),
+              presentationCategory: payload.presentationCategory,
+              statusDescription: payload.statusDescription
+            });
+          }
+        } else if (innerType === 'ACCOUNT_CREATED' && payload.partialSnapshot) {
+          try {
+            await repositoryFactory.getAccountsRepo().create(payload.partialSnapshot);
+          } catch { /* ignore if already exists */ }
+        }
+
+        wsServer.broadcast('accounts:delta', payload);
+        break;
+      }
+
+      case 'automation:delta': {
+        wsServer.broadcast('automation:delta', payload);
         break;
       }
 
@@ -432,7 +471,9 @@ export class BackendSyncService {
         const targetAccId = payload.accountId || payload.id;
         if (targetAccId) {
           await repositoryFactory.getAccountsRepo().update(targetAccId, {
-            backendState: payload.status || (eventType === 'ACCOUNT_LOCKED' ? 'LOCKED' : 'SUSPENDED')
+            backendState: payload.backendState || payload.status || (eventType === 'ACCOUNT_LOCKED' ? 'LOCKED' : 'SUSPENDED'),
+            presentationCategory: payload.presentationCategory,
+            statusDescription: payload.statusDescription
           });
         }
         wsServer.broadcast('accounts:delta', payload);
@@ -682,7 +723,7 @@ export class BackendSyncService {
         break;
 
       case 'UPDATE_ACCOUNT_CONFIG':
-        result = await this.client.updateAccountConfigOverride(payload.accountId, payload.config);
+        result = await this.client.updateAccountConfigOverride(payload.accountId, payload.category, payload.config);
         break;
 
       case 'TOGGLE_BET_CYCLE':
@@ -742,6 +783,48 @@ export class BackendSyncService {
         this.outbox.splice(i, 1);
         i--;
       } catch (err) {
+        if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
+          logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating session...');
+          try {
+            const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
+            const password = process.env.OPERATOR_PASSWORD || 'Password123!';
+            await this.client.initAuth({ email, password });
+            await this._dispatchMutation(item.mutationType, item.payload);
+            flushed++;
+            if (this.engine) {
+              try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+            }
+            this.outbox.splice(i, 1);
+            i--;
+            continue;
+          } catch (retryErr) {
+            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
+          }
+        }
+
+        // If the resource already exists on backend, consider mutation fulfilled
+        if (err.code === 'BE_STATE_ACCOUNT_EXISTS' || err.code === 'ACCOUNT_EXISTS' || err.message?.includes('already exists')) {
+          logger.info({ item: item.id, type: item.mutationType }, '[BackendSyncService] Resource already exists on Backend; reconciling outbox');
+          flushed++;
+          if (this.engine) {
+            try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+          }
+          this.outbox.splice(i, 1);
+          i--;
+          continue;
+        }
+
+        // If non-retryable protocol failure and max attempts reached, drop from outbox
+        if (err.details?.retryable === false && (item.attempts || 0) >= 3) {
+          logger.warn({ item: item.id, type: item.mutationType, err: err.message }, '[BackendSyncService] Non-retryable protocol failure; dropping outbox item');
+          if (this.engine) {
+            try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+          }
+          this.outbox.splice(i, 1);
+          i--;
+          continue;
+        }
+
         item.attempts = (item.attempts || 0) + 1;
         const delayMs = Math.min(300_000, 1000 * Math.pow(2, item.attempts));
         item.nextRetryAt = Date.now() + delayMs;
@@ -783,6 +866,27 @@ export class BackendSyncService {
       this.saveLocalCache();
       return result;
     } catch (err) {
+      if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
+        logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session to reconcile generation counter...');
+        try {
+          const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
+          const password = process.env.OPERATOR_PASSWORD || 'Password123!';
+          await this.client.initAuth({ email, password });
+          const result = await this._dispatchMutation(type, payload);
+          this.saveLocalCache();
+          return result;
+        } catch (retryErr) {
+          logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+        }
+      }
+
+      // If the resource already exists on backend, do not enqueue into retry outbox
+      if (err.code === 'BE_STATE_ACCOUNT_EXISTS' || err.code === 'ACCOUNT_EXISTS' || err.message?.includes('already exists')) {
+        logger.info({ type }, '[BackendSyncService] Resource already exists on Backend; ignoring duplicate');
+        this.saveLocalCache();
+        return { exists: true, duplicated: true };
+      }
+
       logger.warn({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation directly to Backend; enqueuing in retry outbox');
       const item = this.enqueueOutbox(type, payload);
       this.saveLocalCache();

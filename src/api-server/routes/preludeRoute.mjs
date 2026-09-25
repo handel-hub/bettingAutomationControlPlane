@@ -11,11 +11,13 @@ preludeRouter.get('/', async (req, res) => {
   try {
     const store = getSharedStateStore();
     const workspaceSnapshot = await workspaceAggregator.getSnapshot();
+    const billingSnapshot = store.billing.getSnapshot();
+    const isPaymentRequired = billingSnapshot?.status === 'Payment_Required' || billingSnapshot?.status === 'Past_Due';
     const runtimeState = {
-      lifecycleState: 'Authorized',
+      lifecycleState: isPaymentRequired ? 'Payment_Required' : 'Authorized',
       lifecycle: workspaceAggregator.lifecycle,
       automationLifecycle: workspaceAggregator.lifecycle,
-      lifecycleMessage: workspaceAggregator.lifecycleMessage,
+      lifecycleMessage: isPaymentRequired ? 'Payment required to activate automation suite' : workspaceAggregator.lifecycleMessage,
       automationMessage: workspaceAggregator.lifecycleMessage,
       capabilities: workspaceSnapshot.capabilities,
       automationCapabilities: workspaceSnapshot.capabilities,

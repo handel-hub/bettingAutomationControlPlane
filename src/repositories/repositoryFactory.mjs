@@ -159,8 +159,12 @@ class StateStoreBillingAdapter {
   }
 
   async verifyReference(reference) {
+    const { backendClient } = await import('../security-authority/protocol/backend-client.mjs');
+    const verifyRes = await backendClient.verifyCheckout(reference);
+    if (verifyRes?.snapshot) {
+      this.hydrate(verifyRes.snapshot, verifyRes.snapshot.invoices || []);
+    }
     const store = getSharedStateStore();
-    store.billing.updateSubscription({ status: 'Active' });
     return { verified: true, snapshot: store.billing.getSnapshot() };
   }
 }

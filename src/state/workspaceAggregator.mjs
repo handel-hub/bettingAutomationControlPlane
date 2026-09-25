@@ -114,6 +114,11 @@ export class WorkspaceAggregator {
         customRisk: overrides.customRisk,
         customRebet: overrides.customRebet,
         pendingOperation: null,
+        currentBalance: Number(acc.lastKnownBalance || acc.currentBalance) || 0,
+        currencySymbol: acc.currencySymbol || '₦',
+        activeBetsCount: acc.activeBetsCount || 0,
+        exposure: acc.exposure || 0,
+        successRatePercent: acc.successRatePercent !== undefined ? acc.successRatePercent : 100.0,
         canActivate: !isBrowserActive && activeBrowsers < maxCapacity,
         canDeactivate: true,
         canToggleBetCycle: true

@@ -149,27 +149,30 @@ export class PreludeProjection {
                     ? runtimeState.stagedAccountIds.has(acc.id) 
                     : true
                 ))
-                .map(acc => ({
-                  id: acc.id,
-                  name: acc.name,
-                  platformDisplayName: acc.platformDisplayName,
-                  accountUsername: acc.accountUsername,
-                  status: acc.backendState,
-                  activeBetsCount: 0,
-                  betCycleEnabled: true,
-                  currencySymbol: acc.currencySymbol,
-                  currentBalance: acc.currentBalance,
-                  exposure: 0,
-                  successRatePercent: 100.0,
-                  effectiveConfig: { baseStake: globalConfig.pricing.baseStake, source: 'GLOBAL' },
-                  pricingSource: 'GLOBAL',
-                  riskSource: 'GLOBAL',
-                  rebetSource: 'GLOBAL',
-                  pendingOperation: null,
-                  canActivate: true,
-                  canDeactivate: true,
-                  canToggleBetCycle: true
-                })),
+                .map(acc => {
+                  const cfg = acc.effectiveConfig || {};
+                  return {
+                    id: acc.id,
+                    name: acc.name,
+                    platformDisplayName: acc.platformDisplayName,
+                    accountUsername: acc.accountUsername,
+                    status: acc.backendState,
+                    activeBetsCount: acc.activeBetsCount || 0,
+                    betCycleEnabled: cfg.betCycleEnabled !== undefined ? cfg.betCycleEnabled : (acc.betCycleEnabled !== undefined ? acc.betCycleEnabled : true),
+                    currencySymbol: acc.currencySymbol || '₦',
+                    currentBalance: acc.currentBalance !== undefined ? acc.currentBalance : (acc.lastKnownBalance || 0),
+                    exposure: acc.exposure || 0,
+                    successRatePercent: acc.successRatePercent !== undefined ? acc.successRatePercent : 100.0,
+                    effectiveConfig: cfg.baseStake ? cfg : { baseStake: globalConfig.pricing.baseStake, source: 'GLOBAL' },
+                    pricingSource: cfg.pricingSource || acc.pricingSource || 'GLOBAL',
+                    riskSource: cfg.riskSource || acc.riskSource || 'GLOBAL',
+                    rebetSource: cfg.rebetSource || acc.rebetSource || 'GLOBAL',
+                    pendingOperation: null,
+                    canActivate: true,
+                    canDeactivate: true,
+                    canToggleBetCycle: true
+                  };
+                }),
           systemStatus: {
             acpConnected: true,
             engineStatus: runtimeState.engineStatus || 'READY',

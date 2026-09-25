@@ -191,9 +191,6 @@ export class BackendClient {
           }
         }
 
-        // Increment local client generation counter on successful mutation
-        this.clientGeneration++;
-
         return { envelope: json.signatures ? json : undefined, data: decodedPayload };
 
       } catch (err) {

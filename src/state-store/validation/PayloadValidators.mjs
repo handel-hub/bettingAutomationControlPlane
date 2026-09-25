@@ -66,7 +66,7 @@ export class PayloadValidators {
     if (!sub.status || typeof sub.status !== 'string') {
       throw new ValidationError('Subscription requires a valid string `status`');
     }
-    if (!sub.planId && !sub.currentPlanId) {
+    if (!sub.planId && !sub.currentPlanId && !sub.plan_id) {
       throw new ValidationError('Subscription requires a `planId`');
     }
   }
