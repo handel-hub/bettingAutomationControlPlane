@@ -129,7 +129,7 @@ export class AccountsAdapter {
           ELSE accounts_metadata_cache.account_password 
         END,
         last_known_balance = CASE
-          WHEN excluded.last_known_balance > 0 THEN excluded.last_known_balance
+          WHEN excluded.last_known_balance IS NOT NULL THEN excluded.last_known_balance
           ELSE accounts_metadata_cache.last_known_balance
         END,
         currency_symbol = excluded.currency_symbol,
@@ -152,7 +152,9 @@ export class AccountsAdapter {
       platformDisplayName,
       account.accountUsername,
       passwordToStore,
-      Number(account.lastKnownBalance || account.currentBalance) || 0.0,
+      (account.lastKnownBalance !== undefined && account.lastKnownBalance !== null)
+        ? Number(account.lastKnownBalance)
+        : ((account.currentBalance !== undefined && account.currentBalance !== null) ? Number(account.currentBalance) : 0.0),
       account.currencySymbol || '₦',
       account.backendState || 'READY',
       account.presentationCategory || 'Healthy',

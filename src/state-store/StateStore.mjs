@@ -1,6 +1,7 @@
 // @ts-check
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { SqliteStorageEngine } from './persistence/SqliteStorageEngine.mjs';
 import { SchemaMigrator } from './schema/SchemaMigrator.mjs';
 import { MetadataAdapter } from './persistence/adapters/MetadataAdapter.mjs';
@@ -22,6 +23,7 @@ import { HydrationPipeline } from './hydration/HydrationPipeline.mjs';
 import { PreludeProjection } from './projections/PreludeProjection.mjs';
 import { WorkspaceSnapshotProjection } from './projections/WorkspaceSnapshotProjection.mjs';
 import { DatabaseCorruptError } from './types/errors.mjs';
+import { sanitizeAccountForExport } from './validation/SanitizerGate.mjs';
 
 /**
  * StateStore: Central ACP In-Memory State and SQLite Materialized Cache Subsystem.
@@ -320,8 +322,9 @@ export class StateStore {
     return {
       viewportAccounts: slice.map(acc => {
         const bal = this.accountsContainer.getBalance(acc.id);
+        const clean = sanitizeAccountForExport(acc);
         return {
-          ...acc,
+          ...clean,
           currentBalance: bal.balance,
           currencySymbol: bal.currencySymbol
         };
@@ -345,6 +348,24 @@ export class StateStore {
     };
   }
 
+  /**
+   * Returns a sanitized, safe public projection of a single account by ID.
+   * Strips all credentials and masks password.
+   * @param {string} id
+   * @returns {any}
+   */
+  getAccountByIdView(id) {
+    const acc = this.accountsContainer.getById(id);
+    if (!acc) return null;
+    const bal = this.accountsContainer.getBalance(acc.id);
+    const clean = sanitizeAccountForExport(acc);
+    return {
+      ...clean,
+      currentBalance: bal.balance,
+      currencySymbol: bal.currencySymbol
+    };
+  }
+
   // --- INTERNAL DOMAIN BINDINGS ---
 
   _bindDomainApis() {
@@ -356,8 +377,12 @@ export class StateStore {
       updateBalance: (id, bal, sym) => this.accountsContainer.updateBalance(id, bal, sym),
       upsert: (account, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
-          const res = this.accountsContainer.upsert(account);
-          this.accountsAdapter.upsert(this.userId, res.account);
+          const targetAccount = {
+            id: account.id || crypto.randomUUID(),
+            ...account
+          };
+          this.accountsAdapter.upsert(this.userId, targetAccount);
+          const res = this.accountsContainer.upsert(targetAccount);
           this.preludeProjection.invalidate();
           return res.account;
         }).result;
@@ -372,13 +397,19 @@ export class StateStore {
       },
       updateExecutionState: (id, stateUpdate, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
+          const current = this.accountsContainer.getById(id);
+          if (!current) return null;
+          const updated = {
+            ...current,
+            desiredState: stateUpdate.desiredState !== undefined ? stateUpdate.desiredState : current.desiredState,
+            observedState: stateUpdate.observedState !== undefined ? stateUpdate.observedState : current.observedState,
+            executionStatusReason: stateUpdate.executionStatusReason !== undefined ? stateUpdate.executionStatusReason : current.executionStatusReason,
+            lastUpdated: new Date().toISOString()
+          };
+          this.accountsAdapter.upsert(this.userId, updated);
           const res = this.accountsContainer.updateExecutionState(id, stateUpdate);
-          if (res) {
-            this.accountsAdapter.upsert(this.userId, res.account);
-            this.preludeProjection.invalidate();
-            return res.account;
-          }
-          return null;
+          this.preludeProjection.invalidate();
+          return res ? res.account : updated;
         }).result;
       },
       replaceAll: (accountsList) => {
@@ -420,17 +451,40 @@ export class StateStore {
       getCategory: (cat) => this.configContainer.getCategory(cat),
       updateCategory: (category, values, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('global_config', expectedRevision, (nextRev) => {
+          const current = this.configContainer.getCategory(category);
+          const updatedValues = { ...current, ...values };
+          const fullConfig = {
+            ...this.configContainer.getGlobalConfig(),
+            [category]: updatedValues
+          };
+          this.configAdapter.save(this.userId, fullConfig);
           const res = this.configContainer.updateCategory(category, values);
-          this.configAdapter.save(this.userId, this.configContainer._globalConfig);
           this.preludeProjection.invalidate();
           return res.updatedValues;
         }).result;
       },
       getAccountOverride: (accId) => this.configContainer.getAccountOverride(accId),
       updateAccountOverride: (accId, updates, expectedRevision) => {
-        const res = this.configContainer.updateAccountOverride(accId, updates, expectedRevision);
-        this.preludeProjection.invalidate();
-        return res.updated;
+        return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
+          const currentOverride = this.configContainer.getAccountOverride(accId);
+          const updatedOverride = { ...currentOverride, ...updates };
+
+          const acc = this.accountsContainer.getById(accId);
+          if (acc) {
+            const updatedAcc = {
+              ...acc,
+              effectiveConfig: updatedOverride,
+              lastUpdated: new Date().toISOString()
+            };
+            this.accountsAdapter.upsert(this.userId, updatedAcc);
+            if (this.accountsContainer._accounts && this.accountsContainer._accounts.has(accId)) {
+              this.accountsContainer._accounts.set(accId, Object.freeze(updatedAcc));
+            }
+          }
+          const res = this.configContainer.updateAccountOverride(accId, updates);
+          this.preludeProjection.invalidate();
+          return res.updated;
+        }).result;
       }
     };
 
@@ -440,8 +494,10 @@ export class StateStore {
       getInvoices: () => this.billingContainer.getInvoices(),
       updateSubscription: (updates, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('billing', expectedRevision, (nextRev) => {
-          const res = this.billingContainer.updateSubscription(updates, expectedRevision);
-          this.billingAdapter.saveSubscription(this.userId, res.subscription);
+          const current = this.billingContainer.getSnapshot();
+          const targetSub = { ...current, ...updates };
+          this.billingAdapter.saveSubscription(this.userId, targetSub);
+          const res = this.billingContainer.updateSubscription(updates);
           this.preludeProjection.invalidate();
           return res.subscription;
         }).result;
@@ -485,24 +541,39 @@ export class StateStore {
       getSnapshot: () => this.settingsContainer.getSnapshot(),
       updateProfile: (profile, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('settings', expectedRevision, (nextRev) => {
-          const res = this.settingsContainer.updateProfile(profile, expectedRevision);
-          this.settingsAdapter.save(this.userId, res.settings);
+          const current = this.settingsContainer.getSnapshot();
+          const targetSettings = {
+            ...current,
+            profile: { ...current.profile, ...profile }
+          };
+          this.settingsAdapter.save(this.userId, targetSettings);
+          const res = this.settingsContainer.updateProfile(profile);
           this.preludeProjection.invalidate();
           return res.settings;
         }).result;
       },
       updatePresentation: (prefs, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('settings', expectedRevision, (nextRev) => {
-          const res = this.settingsContainer.updatePresentation(prefs, expectedRevision);
-          this.settingsAdapter.save(this.userId, res.settings);
+          const current = this.settingsContainer.getSnapshot();
+          const targetSettings = {
+            ...current,
+            presentation: { ...current.presentation, ...prefs }
+          };
+          this.settingsAdapter.save(this.userId, targetSettings);
+          const res = this.settingsContainer.updatePresentation(prefs);
           this.preludeProjection.invalidate();
           return res.settings;
         }).result;
       },
       updateSecurity: (sec, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('settings', expectedRevision, (nextRev) => {
-          const res = this.settingsContainer.updateSecurity(sec, expectedRevision);
-          this.settingsAdapter.save(this.userId, res.settings);
+          const current = this.settingsContainer.getSnapshot();
+          const targetSettings = {
+            ...current,
+            security: { ...current.security, ...sec }
+          };
+          this.settingsAdapter.save(this.userId, targetSettings);
+          const res = this.settingsContainer.updateSecurity(sec);
           this.preludeProjection.invalidate();
           return res.settings;
         }).result;

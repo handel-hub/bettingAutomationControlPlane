@@ -15,5 +15,6 @@ export function createStateStore(options = {}) {
 export { StateStore };
 export * from './types/errors.mjs';
 export * from './types/contracts.mjs';
-export { SanitizerGate } from './validation/SanitizerGate.mjs';
+export { SanitizerGate, sanitizeAccountForExport } from './validation/SanitizerGate.mjs';
 export { FreshnessEvaluator } from './hydration/FreshnessEvaluator.mjs';
+

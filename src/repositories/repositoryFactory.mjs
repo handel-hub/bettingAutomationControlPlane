@@ -29,10 +29,10 @@ class StateStoreAccountsAdapter {
     return store.accounts.upsert(accountData);
   }
 
-  async update(id, updates) {
+  async update(id, updates, expectedRevision = null) {
     const store = getSharedStateStore();
     const existing = store.accounts.getById(id) || {};
-    return store.accounts.upsert({ ...existing, ...updates, id });
+    return store.accounts.upsert({ ...existing, ...updates, id }, expectedRevision);
   }
 
   async delete(id) {

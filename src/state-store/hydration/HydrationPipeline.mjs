@@ -66,22 +66,19 @@ export class HydrationPipeline {
       containers.catalogs.reset();
     }
 
-    // 3. Hydrate Global Config & Overrides
-    try {
-      const configMeta = metadataMap.get('global_config');
-      const globalConfig = this.adapters.config.get(userId);
-      containers.config.hydrate(globalConfig, {}, configMeta?.revision || 1);
-      loadedCounts['config'] = 7;
-    } catch (err) {
-      containers.config.reset();
-    }
-
-    // 4. Hydrate Connected Accounts
+    // 3. Hydrate Connected Accounts & Overrides
+    const accountOverrides = {};
     try {
       const accountsMeta = metadataMap.get('accounts');
       const accountsList = this.adapters.accounts.listByUser(userId);
       containers.accounts.hydrate(accountsList, accountsMeta?.revision || 1);
       loadedCounts['accounts'] = accountsList.length;
+
+      for (const acc of accountsList) {
+        if (acc.effectiveConfig && typeof acc.effectiveConfig === 'object') {
+          accountOverrides[acc.id] = acc.effectiveConfig;
+        }
+      }
 
       // Check balance freshness
       if (accountsMeta?.lastValidatedAt && !FreshnessEvaluator.isFresh(accountsMeta.lastValidatedAt, FreshnessEvaluator.TTL_POLICIES.account_balances)) {
@@ -90,6 +87,16 @@ export class HydrationPipeline {
       }
     } catch (err) {
       containers.accounts.reset();
+    }
+
+    // 4. Hydrate Global Config & Overrides
+    try {
+      const configMeta = metadataMap.get('global_config');
+      const globalConfig = this.adapters.config.get(userId);
+      containers.config.hydrate(globalConfig, accountOverrides, configMeta?.revision || 1);
+      loadedCounts['config'] = 7;
+    } catch (err) {
+      containers.config.reset();
     }
 
     // 5. Hydrate Subscription & Invoices

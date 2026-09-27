@@ -96,4 +96,50 @@ describe('StateStore Persistence & Hydration Lifecycle', () => {
 
     store.close();
   });
+
+  it('CAN-06: persists genuine zero balance (0.00) in accounts_metadata_cache across store restarts', () => {
+    const testDbPath = path.join(testDbDir, `can06_${Date.now()}.db`);
+    const userId = 'usr_can06';
+
+    const store1 = createStateStore({ dbPath: testDbPath, userId });
+    store1.initialize();
+
+    // 1. Initial account with positive balance
+    store1.accounts.upsert({
+      id: 'acc-can06',
+      name: 'SportyBet Depletion Test',
+      platformDisplayName: 'SportyBet',
+      platformId: 'sportybet',
+      accountUsername: 'can06_user',
+      lastKnownBalance: 50000,
+      currencySymbol: '₦'
+    });
+
+    assert.equal(store1.accounts.getById('acc-can06').lastKnownBalance, 50000);
+
+    // 2. Account balance is updated to zero (account balance wiped out / depleted)
+    store1.accounts.upsert({
+      id: 'acc-can06',
+      name: 'SportyBet Depletion Test',
+      platformDisplayName: 'SportyBet',
+      platformId: 'sportybet',
+      accountUsername: 'can06_user',
+      lastKnownBalance: 0,
+      currencySymbol: '₦'
+    });
+
+    assert.equal(store1.accounts.getById('acc-can06').lastKnownBalance, 0);
+    store1.close();
+
+    // 3. Re-open store from SQLite and verify balance rehydrates as 0, not 50000
+    const store2 = createStateStore({ dbPath: testDbPath, userId });
+    store2.initialize();
+
+    const hydrated = store2.accounts.getById('acc-can06');
+    assert.ok(hydrated);
+    assert.strictEqual(hydrated.lastKnownBalance, 0);
+
+    store2.close();
+  });
 });
+

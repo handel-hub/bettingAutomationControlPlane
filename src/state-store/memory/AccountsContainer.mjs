@@ -162,6 +162,7 @@ export class AccountsContainer {
       availableActions: Array.isArray(sanitized.availableActions) ? sanitized.availableActions : ['ACTIVATE', 'DEACTIVATE', 'DELETE'],
       pendingOperation: sanitized.pendingOperation || null,
       tags: Array.isArray(sanitized.tags) ? sanitized.tags : [],
+      effectiveConfig: sanitized.effectiveConfig || existing?.effectiveConfig || null,
       lastUpdated: now,
       lastSynchronization: sanitized.lastSynchronization || now
     };
