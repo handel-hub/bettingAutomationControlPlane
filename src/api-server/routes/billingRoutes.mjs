@@ -59,7 +59,7 @@ billingRouter.post('/checkout/verify', async (req, res) => {
         const store = getSharedStateStore();
 
         if (verifyRes?.snapshot) {
-          const billingRepo = repositoryFactory.getBillingRepository();
+          const billingRepo = repositoryFactory.getBillingRepo();
           if (billingRepo && typeof billingRepo.hydrate === 'function') {
             billingRepo.hydrate(verifyRes.snapshot, verifyRes.snapshot.invoices || []);
           }

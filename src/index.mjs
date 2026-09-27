@@ -412,6 +412,10 @@ runtimeManager.on('stateChanged', ({ state, message }) => {
   workspaceAggregator.setLifecycle(state, message);
 });
 
+runtimeManager.on('fleetReadiness', (readiness) => {
+  workspaceAggregator.setFleetReadiness(readiness);
+});
+
 runtimeManager.on('runtimeExited', (pid) => {
   logger.warn({ pid }, '[RuntimeManager] Runtime worker process exited');
   try {
@@ -423,6 +427,7 @@ runtimeManager.on('runtimeExited', (pid) => {
     store.lifecycle.setObservedState(targetObserved, exitReason);
     store.accounts.resetObservedStates(exitReason);
     workspaceAggregator.setLifecycle('STOPPED', exitReason);
+    workspaceAggregator.setFleetReadiness(null);
 
     // Broadcast deltas to connected clients
     wsServer.broadcast('automation:delta', {
@@ -456,8 +461,14 @@ executionBoundaryManager.on('stateChanged', ({ state, message }) => {
     let observed = state;
     if (state === 'READY' || state === 'RUNNING') {
       observed = 'RUNNING';
+      executionBoundaryManager.getFleetReadiness().catch(() => {});
     } else if (state === 'STOPPED' || state === 'OFFLINE') {
       observed = 'STOPPED';
+      workspaceAggregator.setFleetReadiness(null);
+      wsServer.broadcast('automation:delta', {
+        type: 'FLEET_READINESS_CHANGED',
+        readiness: null
+      });
     } else if (state === 'ERROR' || state === 'DEGRADED') {
       observed = 'ERROR_DEGRADED';
     }
@@ -550,6 +561,21 @@ executionBoundaryManager.on('quarantineRequired', (data) => {
 executionBoundaryManager.on('livenessDegraded', (data) => {
   logger.warn({ data }, '[ExecutionBoundary] Execution plane liveness degraded');
   workspaceAggregator.setLifecycle('DEGRADED', 'Execution process liveness degraded');
+});
+
+executionBoundaryManager.on('fleetReadiness', (readiness) => {
+  workspaceAggregator.setFleetReadiness(readiness);
+  logger.info({
+    state: readiness?.state,
+    ready: readiness?.ready,
+    severity: readiness?.severity,
+    reason: readiness?.reason,
+    epoch: readiness?.epoch
+  }, `[ExecutionBoundary] Received FLEET_READINESS from Engine: state=${readiness?.state}, ready=${readiness?.ready}`);
+  wsServer.broadcast('automation:delta', {
+    type: 'FLEET_READINESS_CHANGED',
+    readiness
+  });
 });
 
 // Wire uncertain operations into ReconciliationCoordinator to preserve financial safety

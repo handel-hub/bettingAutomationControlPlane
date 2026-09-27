@@ -180,6 +180,7 @@ export class PreludeProjection {
             activeBrowsers: runtimeState.activeBrowsers || 0,
             totalConfiguredCapacity: globalConfig.browserSpawning.maxAccountsToSpawn || 4
           },
+          fleetReadiness: runtimeState.fleetReadiness || null,
           globalActionPending: runtimeState.globalActionPending || null
         }
       },

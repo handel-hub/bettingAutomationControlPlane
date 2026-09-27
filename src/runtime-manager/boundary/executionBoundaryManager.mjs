@@ -344,6 +344,14 @@ export class ExecutionBoundaryManager extends EventEmitter {
   }
 
   /**
+   * Dispatches an on-demand fleet readiness query to the execution engine.
+   * @param {string} [traceId]
+   */
+  getFleetReadiness(traceId) {
+    return this.dispatchEnvelope(ExecutionMessageType.GET_FLEET_READINESS, {}, { traceId });
+  }
+
+  /**
    * Dispatches a tactical bet command with financial idempotency verification.
    * @param {object} betPayload
    * @param {string} [betPayload.idempotencyKey]
@@ -780,6 +788,11 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
         case ExecutionMessageType.AUDIT_EVENT: {
           this.emit('auditEvent', envelope.payload);
+          break;
+        }
+
+        case ExecutionMessageType.FLEET_READINESS: {
+          this.emit('fleetReadiness', envelope.payload);
           break;
         }
 

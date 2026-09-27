@@ -63,7 +63,8 @@ class WsStreamer {
           automationCapabilities: automationSnapshot.capabilities,
           automationAccounts: automationSnapshot.accounts,
           systemStatus: automationSnapshot.systemStatus,
-          globalActionPending: operationTracker.getCurrentPendingAction()
+          globalActionPending: operationTracker.getCurrentPendingAction(),
+          fleetReadiness: workspaceAggregator.fleetReadiness || null
         };
 
         const preludePayload = store.getPreludeSnapshot(runtimeState);
@@ -131,7 +132,8 @@ class WsStreamer {
               automationCapabilities: automationSnapshot.capabilities,
               automationAccounts: automationSnapshot.accounts,
               systemStatus: automationSnapshot.systemStatus,
-              globalActionPending: operationTracker.getCurrentPendingAction()
+              globalActionPending: operationTracker.getCurrentPendingAction(),
+              fleetReadiness: workspaceAggregator.fleetReadiness || null
             };
             const preludePayload = store.getPreludeSnapshot(runtimeState);
             this.send(ws, 'app:prelude', preludePayload.payload || preludePayload);
@@ -185,6 +187,10 @@ class WsStreamer {
       ...(traceId ? { traceId } : {}),
       payload
     });
+
+    if (payload?.type === 'FLEET_READINESS_CHANGED') {
+      logger.info({ clientCount: this.wss.clients.size, state: payload.readiness?.state, ready: payload.readiness?.ready }, `[WebSocket] Broadcasted FLEET_READINESS_CHANGED to ${this.wss.clients.size} client(s): state=${payload.readiness?.state}`);
+    }
 
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) {

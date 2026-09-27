@@ -19,6 +19,8 @@ import { operationTracker } from '../state/operationTracker.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
 import { executionBoundaryManager } from './boundary/index.mjs';
+import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
+import { logger } from '../shared/logging.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -36,6 +38,7 @@ export class RuntimeManager extends EventEmitter {
     this.router = new CommandRouter();
     this.engineStatus = 'OFFLINE';
     this.activeBrowserCount = 0;
+    this.latestFleetReadiness = null;
   }
 
   stopServer() {
@@ -110,6 +113,11 @@ export class RuntimeManager extends EventEmitter {
           if (state) {
             this.engineStatus = state;
             this.emit('stateChanged', { state, message });
+            if (state === 'RUNNING') {
+              this.getFleetReadiness().catch(() => {});
+            } else if (state === 'STOPPED') {
+              this.latestFleetReadiness = null;
+            }
             wsServer.broadcast('automation:delta', {
               type: 'LIFECYCLE_CHANGED',
               lifecycle: state,
@@ -143,6 +151,24 @@ export class RuntimeManager extends EventEmitter {
               }
             });
           }
+          break;
+        }
+
+        case ExecutionMessageType.FLEET_READINESS: {
+          this.latestFleetReadiness = envelope.payload;
+          this.emit('fleetReadiness', envelope.payload);
+          workspaceAggregator.setFleetReadiness(envelope.payload);
+          logger.info({
+            state: envelope.payload?.state,
+            ready: envelope.payload?.ready,
+            severity: envelope.payload?.severity,
+            reason: envelope.payload?.reason,
+            epoch: envelope.payload?.epoch
+          }, `[RuntimeManager] Received FLEET_READINESS from Engine: state=${envelope.payload?.state}, ready=${envelope.payload?.ready}`);
+          wsServer.broadcast('automation:delta', {
+            type: 'FLEET_READINESS_CHANGED',
+            readiness: envelope.payload
+          });
           break;
         }
 
@@ -279,6 +305,14 @@ export class RuntimeManager extends EventEmitter {
       throw new Error("Execution Denied: Control Plane is in DEGRADED mode (Backend Offline)");
     }
     return this.sendEnvelope(ExecutionMessageType.UPDATE_POLICY, { category, values }, traceId);
+  }
+
+  getFleetReadiness(traceId) {
+    return this.sendEnvelope(ExecutionMessageType.GET_FLEET_READINESS, {}, traceId);
+  }
+
+  getLatestFleetReadiness() {
+    return this.latestFleetReadiness;
   }
 
   /**

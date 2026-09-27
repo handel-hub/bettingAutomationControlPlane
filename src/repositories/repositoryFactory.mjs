@@ -284,11 +284,17 @@ class RepositoryFactory {
   }
 
   getAccountsRepo() { return this.accountsRepo; }
+  getAccountsRepository() { return this.accountsRepo; }
   getConfigRepo() { return this.configRepo; }
+  getConfigRepository() { return this.configRepo; }
   getBillingRepo() { return this.billingRepo; }
+  getBillingRepository() { return this.billingRepo; }
   getSettingsRepo() { return this.settingsRepo; }
+  getSettingsRepository() { return this.settingsRepo; }
   getNotificationsRepo() { return this.notificationsRepo; }
+  getNotificationsRepository() { return this.notificationsRepo; }
   getCatalogsRepo() { return this.catalogsRepo; }
+  getCatalogsRepository() { return this.catalogsRepo; }
 }
 
 export const repositoryFactory = new RepositoryFactory();

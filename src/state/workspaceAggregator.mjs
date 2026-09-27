@@ -17,11 +17,20 @@ export class WorkspaceAggregator {
     this.activeAccountIds = new Set();
     /** @type {Set<string>} staged account IDs ready in automation */
     this.stagedAccountIds = new Set();
+    /** @type {any} */
+    this.fleetReadiness = null;
+  }
+
+  setFleetReadiness(readiness) {
+    this.fleetReadiness = readiness;
   }
 
   setLifecycle(lifecycle, message = undefined) {
     this.lifecycle = lifecycle;
     this.lifecycleMessage = message;
+    if (lifecycle === 'STOPPED') {
+      this.fleetReadiness = null;
+    }
     try {
       const store = getSharedStateStore();
       if (store && store.lifecycle) {
@@ -153,6 +162,7 @@ export class WorkspaceAggregator {
         activeBrowsers,
         totalConfiguredCapacity: maxCapacity
       },
+      fleetReadiness: this.fleetReadiness || null,
       globalActionPending
     };
   }

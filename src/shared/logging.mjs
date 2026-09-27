@@ -10,6 +10,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isTest = process.env.NODE_ENV === 'test';
+const logDir = path.resolve(__dirname, '../../logs');
+if (!fs.existsSync(logDir)) {
+    try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
+}
+const logStream = isTest ? null : fs.createWriteStream(path.join(logDir, 'control-plane.log'), { flags: 'a' });
+
+const streams = isTest
+    ? [{ stream: process.stdout }]
+    : [
+        { stream: process.stdout },
+        { stream: logStream }
+    ];
 
 export const logger = pino({
     level: process.env.LOG_LEVEL || (isTest ? 'silent' : 'info'),
@@ -56,6 +68,6 @@ export const logger = pino({
             return method.apply(this, inputArgs);
         }
     }
-});
+}, pino.multistream(streams));
 
 
