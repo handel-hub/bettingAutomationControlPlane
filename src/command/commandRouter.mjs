@@ -8,6 +8,7 @@ import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 export const COMMAND_CAPABILITY_MAP = Object.freeze({
     'START_AUTOMATION': CAPABILITY.AUTOMATION_START,
     'STOP_AUTOMATION': CAPABILITY.AUTOMATION_STOP,
+    'EMERGENCY_STOP': CAPABILITY.AUTOMATION_STOP,
     'UPDATE_GLOBAL_CONFIG': CAPABILITY.CONFIG_MODIFY
 });
 
@@ -171,6 +172,19 @@ export class CommandRouter extends EventEmitter {
                 this._emitViolation(errorMsg, command);
                 this._metrics.rejected++;
                 logger.error(`[CommandRouter] Capability check failed for ${command.type}: ${errorMsg}`);
+                this.emit('rejected', { command, reason: errorMsg, headers });
+                throw new ContractViolationError(errorMsg);
+            }
+        }
+
+        // Ingress State Permission Validation (CAN-20 / DEF-20)
+        if (sec && typeof sec.isCommandPermitted === 'function') {
+            if (!sec.isCommandPermitted(command.type)) {
+                const systemState = typeof sec.getSystemState === 'function' ? sec.getSystemState() : 'DEGRADED';
+                const errorMsg = `[LF-701] Execution Denied: Control Plane is in DEGRADED mode (${systemState}). Command [${command.type}] is prohibited.`;
+                this._emitViolation(errorMsg, command);
+                this._metrics.rejected++;
+                logger.error(`[CommandRouter] State permission check failed for ${command.type}: ${errorMsg}`);
                 this.emit('rejected', { command, reason: errorMsg, headers });
                 throw new ContractViolationError(errorMsg);
             }

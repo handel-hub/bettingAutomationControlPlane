@@ -55,6 +55,16 @@ export class DecisionEngine {
       machine: rawState.machine
     };
 
+    // Ensure native FFI revocation flag reflects persisted security state upon boot/restart (survives restart)
+    const nonRevokedStates = [
+      SecurityState.OPERATIONAL,
+      SecurityState.AUTHENTICATED,
+      SecurityState.AUTHENTICATING,
+      SecurityState.RENEWING,
+      SecurityState.OFFLINE_GRACE
+    ];
+    NativeCore.setRevokedSync(!nonRevokedStates.includes(this.inMemoryState.state));
+
     if (this.inMemoryState.state === SecurityState.UNINITIALIZED) {
       // Begin bootstrap automatically
       await this.dispatch(TransitionEvent.INITIALIZE, { singleInstanceLockHeld: true });

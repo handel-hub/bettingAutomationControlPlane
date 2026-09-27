@@ -137,7 +137,37 @@ export const Transitions = [
     nextState: SecurityState.EXPIRED
   },
   {
+    currentState: SecurityState.OFFLINE_GRACE,
+    event: TransitionEvent.SESSION_OR_LICENSE_EXPIRED,
+    guard: (state, payload) => payload.now >= payload.expiresAt,
+    nextState: SecurityState.EXPIRED
+  },
+  {
+    currentState: SecurityState.RENEWING,
+    event: TransitionEvent.SESSION_OR_LICENSE_EXPIRED,
+    guard: (state, payload) => payload.now >= payload.expiresAt,
+    nextState: SecurityState.EXPIRED
+  },
+  {
     currentState: SecurityState.OPERATIONAL,
+    event: TransitionEvent.BACKEND_REVOCATION,
+    guard: (state, payload) => payload.nonceChecked === true,
+    nextState: SecurityState.REVOKED
+  },
+  {
+    currentState: SecurityState.OFFLINE_GRACE,
+    event: TransitionEvent.BACKEND_REVOCATION,
+    guard: (state, payload) => payload.nonceChecked === true,
+    nextState: SecurityState.REVOKED
+  },
+  {
+    currentState: SecurityState.RENEWING,
+    event: TransitionEvent.BACKEND_REVOCATION,
+    guard: (state, payload) => payload.nonceChecked === true,
+    nextState: SecurityState.REVOKED
+  },
+  {
+    currentState: SecurityState.AUTHENTICATED,
     event: TransitionEvent.BACKEND_REVOCATION,
     guard: (state, payload) => payload.nonceChecked === true,
     nextState: SecurityState.REVOKED

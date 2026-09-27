@@ -412,9 +412,10 @@ export class BackendSyncService {
       }
 
       case 'LICENSE_REVOKED': {
-        logger.warn('[BackendSyncService] Authoritative license revoked by Backend. Transitioning to degraded mode.');
-        await securityFacade.transitionToDegraded('LICENSE_REVOKED');
-        wsServer.broadcast('app:state', 'Degraded');
+        logger.error({ reason: payload?.reason }, '[BackendSyncService] Authoritative license revoked by Backend! Executing immediate fail-closed revocation.');
+        await securityFacade.revokeLicense(payload?.reason || 'AUTHORITATIVE_BACKEND_REVOCATION');
+        wsServer.broadcast('app:state', { state: 'Revoked', reason: payload?.reason });
+        wsServer.broadcast('license:revoked', { reason: payload?.reason });
         break;
       }
 

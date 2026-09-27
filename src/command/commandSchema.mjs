@@ -40,11 +40,61 @@ export class CommandPayloadSchema {
     const payload = cmd.payload || {};
     switch (cmd.type) {
       case 'PLACE_BET':
-        if (payload.stake !== undefined && (typeof payload.stake !== 'number' || payload.stake < 0)) {
-          errors.push('PLACE_BET payload.stake must be a positive number');
+        if (payload.stake !== undefined) {
+          if (
+            typeof payload.stake !== 'number' ||
+            !Number.isFinite(payload.stake) ||
+            Number.isNaN(payload.stake) ||
+            payload.stake <= 0 ||
+            payload.stake > 1_000_000
+          ) {
+            errors.push('PLACE_BET payload.stake must be a positive number (finite, > 0, <= 1,000,000)');
+          } else {
+            const stakeStr = payload.stake.toString();
+            if (stakeStr.includes('.') && stakeStr.split('.')[1].length > 2) {
+              errors.push('PLACE_BET payload.stake precision cannot exceed 2 decimal places');
+            }
+          }
         }
-        if (payload.odds !== undefined && (typeof payload.odds !== 'number' || payload.odds <= 1.0)) {
-          errors.push('PLACE_BET payload.odds must be a number > 1.0');
+        if (payload.odds !== undefined) {
+          if (
+            typeof payload.odds !== 'number' ||
+            !Number.isFinite(payload.odds) ||
+            Number.isNaN(payload.odds) ||
+            payload.odds <= 1.0 ||
+            payload.odds > 10_000
+          ) {
+            errors.push('PLACE_BET payload.odds must be a number > 1.0 and <= 10,000');
+          } else {
+            const oddsStr = payload.odds.toString();
+            if (oddsStr.includes('.') && oddsStr.split('.')[1].length > 4) {
+              errors.push('PLACE_BET payload.odds precision cannot exceed 4 decimal places');
+            }
+          }
+        }
+        break;
+
+      case 'CASH_OUT':
+        if (payload.percentage !== undefined) {
+          if (
+            typeof payload.percentage !== 'number' ||
+            !Number.isFinite(payload.percentage) ||
+            Number.isNaN(payload.percentage) ||
+            payload.percentage < 1 ||
+            payload.percentage > 100
+          ) {
+            errors.push('CASH_OUT payload.percentage must be a number between 1 and 100');
+          }
+        }
+        if (payload.amount !== undefined) {
+          if (
+            typeof payload.amount !== 'number' ||
+            !Number.isFinite(payload.amount) ||
+            Number.isNaN(payload.amount) ||
+            payload.amount <= 0
+          ) {
+            errors.push('CASH_OUT payload.amount must be a positive number');
+          }
         }
         break;
 

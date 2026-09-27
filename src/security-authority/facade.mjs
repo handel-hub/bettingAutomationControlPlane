@@ -184,12 +184,12 @@ export class SecurityFacade {
   }
 
   /**
-   * Returns true if system is degraded, offline, revoked, or uninitialized.
-   * In any of these states, Execution Plane access is strictly forbidden.
+   * Returns true if system is degraded, offline, or revoked.
    * @returns {boolean}
    */
   isDegraded() {
     const s = this.getSystemState();
+    if (s === "UNINITIALIZED") return false;
     return s !== SecurityState.OPERATIONAL;
   }
 
@@ -209,6 +209,100 @@ export class SecurityFacade {
       });
       return await engineInstance.dispatch(TransitionEvent.RENEW_BACKEND_UNREACHABLE, { reason });
     }
+    return true;
+  }
+
+  /**
+   * Evaluates if a given command is permitted given the current security state (CAN-20 / DEF-20).
+   * Tactical operator and safety commands (EMERGENCY_STOP, STOP_AUTOMATION, CANCEL_ALL_BETS, FREEZE_ACCOUNT, VIEW_STATUS)
+   * and administrative config/persistence commands are permitted in both OPERATIONAL and OFFLINE_GRACE states.
+   * Automated betting/execution dispatch commands are strictly blocked when degraded.
+   * In REVOKED state, all commands except emergency stops and status view are strictly blocked.
+   * @param {string} commandType
+   * @returns {boolean}
+   */
+  isCommandPermitted(commandType) {
+    const s = this.getSystemState();
+    
+    // In REVOKED state, hard lockdown: only emergency containment stops and view status are permitted
+    if (s === SecurityState.REVOKED || this.isSessionRevokedSync()) {
+      return commandType === 'EMERGENCY_STOP' || commandType === 'STOP_AUTOMATION' || commandType === 'VIEW_STATUS';
+    }
+
+    if (this.isDegraded()) {
+      const AUTOMATED_EXECUTION_COMMANDS = new Set([
+        'PLACE_BET',
+        'CASH_OUT',
+        'START_AUTOMATION',
+        'VALIDATE',
+        'ACTIVATE_ACCOUNT',
+        'DEACTIVATE_ACCOUNT',
+        'TEST_DEGRADED_BET'
+      ]);
+      if (AUTOMATED_EXECUTION_COMMANDS.has(commandType)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Irreversibly revokes the current license and locks down execution (CAN-09 / DEF-09).
+   * Immediately sets the native FFI revocation flag to fail-closed,
+   * severs active CDP proxies, closes secure IPC pipes, and persists the REVOKED state.
+   * @param {string} [reason]
+   * @returns {Promise<boolean>}
+   */
+  async revokeLicense(reason = 'BACKEND_REVOCATION') {
+    // 1. Immediately assert native FFI revocation kill-switch hot-path (< 50ms)
+    NativeCore.setRevokedSync(true);
+
+    // 2. Dispatch state machine transition to REVOKED
+    try {
+      await engineInstance.dispatch(TransitionEvent.BACKEND_REVOCATION, {
+        nonceChecked: true,
+        reason
+      });
+    } catch {
+      // Continue fail-closed lockdown even if state machine transition errors
+    }
+
+    // 3. Ensure in-memory state and persistent state are set to REVOKED (survives restart)
+    if (engineInstance.inMemoryState) {
+      engineInstance.inMemoryState.state = SecurityState.REVOKED;
+      engineInstance.inMemoryState.license = {
+        status: 'REVOKED',
+        revokedAt: Date.now(),
+        reason
+      };
+      try {
+        const row = await StorageAdapter.getSecurityStateRow();
+        if (row && row.state !== SecurityState.REVOKED) {
+          await StorageAdapter.commitTransitionWithOCC(
+            row.state_version,
+            engineInstance.inMemoryState,
+            TransitionEvent.BACKEND_REVOCATION
+          );
+        }
+      } catch { /* storage fallback */ }
+    }
+
+    // 4. Forcefully sever all active CDP proxy connections immediately
+    try {
+      SecureCdpProxy.closeAll();
+    } catch {}
+
+    // 5. Forcefully stop secure IPC server
+    try {
+      NativeCore.stopSecurePipeServer();
+    } catch {}
+
+    // 6. Log audit event
+    try {
+      await this.logAuditEvent('LICENSE_REVOKED', 'CRITICAL', { reason });
+    } catch {}
+
     return true;
   }
 
