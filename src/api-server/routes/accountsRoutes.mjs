@@ -5,6 +5,8 @@ import { executeCommand } from '../middleware/commandAdapter.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
 import { backendSyncService } from '../../sync/backendSyncService.mjs';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
+import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
+import { RevisionConflictError } from '../../state-store/types/errors.mjs';
 
 export const accountsRouter = Router();
 
@@ -43,10 +45,7 @@ accountsRouter.post('/', async (req, res) => {
         accountPassword,
         tags
       });
-      const sanitized = {
-        ...created,
-        accountPassword: '[PROTECTED]'
-      };
+      const sanitized = sanitizeAccountForExport(created);
       wsServer.broadcast('accounts:delta', {
         type: 'ACCOUNT_CREATED',
         partialSnapshot: sanitized
@@ -66,28 +65,52 @@ accountsRouter.post('/', async (req, res) => {
 accountsRouter.get('/:id', async (req, res) => {
   const account = await repositoryFactory.getAccountsRepo().findById(req.params.id);
   if (!account) return res.status(404).json({ error: 'Account not found' });
-  res.json({ ...account, accountPassword: '[PROTECTED]', history: [], diagnostics: { uptime: '100%', networkLatencyMs: 45 } });
+  const sanitized = sanitizeAccountForExport(account);
+  res.json({ ...sanitized, history: [], diagnostics: { uptime: '100%', networkLatencyMs: 45 } });
 });
 
 // PATCH update account details / password
 accountsRouter.patch('/:id', async (req, res) => {
-  const accountId = req.params.id;
-  const updates = req.body || {};
-  const existing = await repositoryFactory.getAccountsRepo().findById(accountId);
-  if (!existing) return res.status(404).json({ error: 'Account not found' });
+  try {
+    const accountId = req.params.id;
+    const updates = req.body || {};
+    const existing = await repositoryFactory.getAccountsRepo().findById(accountId);
+    if (!existing) return res.status(404).json({ error: 'Account not found' });
 
-  const updated = await repositoryFactory.getAccountsRepo().update(accountId, updates);
-  backendSyncService.saveLocalCache();
-  const sanitized = {
-    ...updated,
-    accountPassword: '[PROTECTED]'
-  };
-  wsServer.broadcast('accounts:delta', {
-    type: 'ACCOUNT_UPDATED',
-    accountId,
-    partialSnapshot: sanitized
-  });
-  res.json(sanitized);
+    // OCC: Extract expectedRevision from If-Match, x-expected-revision header, or body
+    const ifMatch = req.headers['if-match'];
+    const headerRevision = req.headers['x-expected-revision'];
+    const bodyRevision = req.body?.expectedRevision;
+    let expectedRevision = null;
+    if (headerRevision !== undefined && headerRevision !== null) {
+      expectedRevision = Number(headerRevision);
+    } else if (ifMatch) {
+      const match = String(ifMatch).replace(/["'W/]/g, '').trim();
+      if (match && !isNaN(Number(match))) expectedRevision = Number(match);
+    } else if (bodyRevision !== undefined && bodyRevision !== null) {
+      expectedRevision = Number(bodyRevision);
+    }
+
+    const updated = await repositoryFactory.getAccountsRepo().update(accountId, updates, expectedRevision);
+    backendSyncService.saveLocalCache();
+    const sanitized = sanitizeAccountForExport(updated);
+    wsServer.broadcast('accounts:delta', {
+      type: 'ACCOUNT_UPDATED',
+      accountId,
+      partialSnapshot: sanitized
+    });
+    res.json(sanitized);
+  } catch (err) {
+    if (err instanceof RevisionConflictError || err.name === 'RevisionConflictError' || err.code === 'ERR_REVISION_CONFLICT') {
+      return res.status(409).json({
+        error: 'Revision Conflict',
+        message: err.message,
+        expectedRevision: err.expectedRevision,
+        actualRevision: err.actualRevision
+      });
+    }
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // POST single account action
@@ -175,12 +198,17 @@ accountsRouter.post('/bulk-action', async (req, res) => {
           for (const id of accountIds) {
             const acc = await repositoryFactory.getAccountsRepo().findById(id);
             if (acc) {
+              const sanitized = sanitizeAccountForExport({
+                ...acc,
+                backendState: 'ACTIVE',
+                presentationCategory: 'Healthy'
+              });
               wsServer.broadcast('accounts:delta', {
                 type: 'ACCOUNT_STATUS_CHANGED',
                 accountId: id,
                 backendState: 'ACTIVE',
                 presentationCategory: 'Healthy',
-                partialSnapshot: acc
+                partialSnapshot: sanitized
               });
             }
           }
@@ -189,12 +217,17 @@ accountsRouter.post('/bulk-action', async (req, res) => {
             workspaceAggregator.deactivateAccount(id);
             const acc = await repositoryFactory.getAccountsRepo().findById(id);
             if (acc) {
+              const sanitized = sanitizeAccountForExport({
+                ...acc,
+                backendState: 'SUSPENDED',
+                presentationCategory: 'Neutral'
+              });
               wsServer.broadcast('accounts:delta', {
                 type: 'ACCOUNT_STATUS_CHANGED',
                 accountId: id,
                 backendState: 'SUSPENDED',
                 presentationCategory: 'Neutral',
-                partialSnapshot: acc
+                partialSnapshot: sanitized
               });
               wsServer.broadcast('automation:delta', {
                 type: 'ACCOUNT_DEACTIVATED',

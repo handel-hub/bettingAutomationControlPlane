@@ -7,7 +7,9 @@ import { SecurityViolationError } from '../types/errors.mjs';
 const FORBIDDEN_SECRET_KEYS = new Set([
   'accountPassword',
   'password',
+  'rawPassword',
   'sessionToken',
+  'session_token',
   'token',
   'jwt',
   'refreshToken',
@@ -17,7 +19,13 @@ const FORBIDDEN_SECRET_KEYS = new Set([
   'secretKey',
   'cardToken',
   'cvv',
-  'authorizationCode'
+  'authorizationCode',
+  'cookies',
+  'cookie',
+  'credentials',
+  'credential',
+  'privateKey',
+  'private_key'
 ]);
 
 /**
@@ -81,3 +89,55 @@ export class SanitizerGate {
     SanitizerGate.sanitize(data, { throwOnDetection: true });
   }
 }
+
+/**
+ * Strict projection scrubber for account objects exposed across public boundaries
+ * (REST API, WebSocket broadcasts, views).
+ * Guarantees that accountPassword is masked to '[PROTECTED]' and all credentials/cookies/tokens are stripped.
+ * 
+ * @param {any} acc
+ * @returns {any}
+ */
+export function sanitizeAccountForExport(acc) {
+  if (acc === null || typeof acc !== 'object') {
+    return acc;
+  }
+  if (Array.isArray(acc)) {
+    return acc.map(item => sanitizeAccountForExport(item));
+  }
+
+  const clean = SanitizerGate.sanitize(acc);
+  clean.accountPassword = '[PROTECTED]';
+
+  // Ensure forbidden fields are completely absent
+  delete clean.password;
+  delete clean.rawPassword;
+  delete clean.cookies;
+  delete clean.cookie;
+  delete clean.credentials;
+  delete clean.credential;
+  delete clean.privateKey;
+  delete clean.private_key;
+  delete clean.session_token;
+  delete clean.sessionToken;
+  delete clean.token;
+  delete clean.jwt;
+  delete clean.refreshToken;
+  delete clean.secret;
+  delete clean.secretKey;
+  delete clean.proxyPassword;
+  delete clean.proxyAuth;
+  delete clean.cardToken;
+  delete clean.cvv;
+  delete clean.authorizationCode;
+
+  if (clean.effectiveConfig && typeof clean.effectiveConfig === 'object') {
+    clean.effectiveConfig = { ...clean.effectiveConfig };
+    for (const secretKey of FORBIDDEN_SECRET_KEYS) {
+      delete clean.effectiveConfig[secretKey];
+    }
+  }
+
+  return clean;
+}
+

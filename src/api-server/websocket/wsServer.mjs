@@ -8,6 +8,72 @@ import { isValidToken } from '../middleware/auth.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { DEFAULT_STRATEGY_CATALOG } from '../../state-store/types/contracts.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
+import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
+
+/**
+ * Verifies if an Origin header is permitted to connect to the Control Plane WebSocket.
+ * Blocks CSWSH (Cross-Site WebSocket Hijacking) from untrusted browser origins.
+ * 
+ * @param {string | undefined} origin
+ * @returns {boolean}
+ */
+export function isAllowedOrigin(origin) {
+  if (!origin || origin === 'null') return true;
+
+  // Custom environment override
+  if (process.env.ALLOWED_ORIGINS) {
+    const customAllowed = process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim().toLowerCase());
+    if (customAllowed.includes(origin.toLowerCase())) {
+      return true;
+    }
+  }
+
+  try {
+    const parsed = new URL(origin);
+    const host = parsed.hostname.toLowerCase();
+
+    // Allow local loopbacks on any port
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
+      return true;
+    }
+
+    // Allow desktop / custom application schemes
+    if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:' || parsed.protocol === 'file:') {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sanitizes outbound account payloads to ensure no secrets or plain passwords escape over WS.
+ * @param {string} topic
+ * @param {any} payload
+ * @returns {any}
+ */
+function sanitizeOutboundPayload(topic, payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+
+  if (topic === 'accounts:delta' && payload.partialSnapshot) {
+    return {
+      ...payload,
+      partialSnapshot: sanitizeAccountForExport(payload.partialSnapshot)
+    };
+  }
+  if (topic === 'accounts:view' && Array.isArray(payload.viewportAccounts)) {
+    return {
+      ...payload,
+      viewportAccounts: payload.viewportAccounts.map(sanitizeAccountForExport)
+    };
+  }
+  if (topic === 'accounts:snapshot' && Array.isArray(payload)) {
+    return payload.map(sanitizeAccountForExport);
+  }
+  return payload;
+}
 
 class WsStreamer {
   constructor() {
@@ -29,9 +95,29 @@ class WsStreamer {
    * @param {import('http').Server} httpServer
    */
   attach(httpServer) {
-    this.wss = new WebSocketServer({ server: httpServer, path: '/ws/v1/events' });
+    this.wss = new WebSocketServer({
+      server: httpServer,
+      path: '/ws/v1/events',
+      verifyClient: (info, callback) => {
+        const origin = info.origin || info.req.headers['origin'];
+        if (!isAllowedOrigin(origin)) {
+          logger.warn({ origin, remoteAddress: info.req.socket?.remoteAddress }, '[WebSocket] CSWSH Protection: Untrusted Origin rejected');
+          callback(false, 403, 'Forbidden: Untrusted Origin');
+          return;
+        }
+        callback(true);
+      }
+    });
 
     this.wss.on('connection', async (ws, req) => {
+      // CSWSH Defense: Validate Origin
+      const origin = req.headers['origin'];
+      if (!isAllowedOrigin(origin)) {
+        logger.warn({ origin, remoteAddress: req.socket.remoteAddress }, '[WebSocket] CSWSH Protection: Untrusted Origin rejected on connection');
+        ws.close(4403, 'Forbidden: Untrusted Origin');
+        return;
+      }
+
       // Authenticate WebSocket connection
       const parsedUrl = new URL(req.url || '', 'http://localhost');
       const token = req.headers['authorization'] || 
@@ -178,6 +264,8 @@ class WsStreamer {
     const currentRev = (this.revisions.get(domainPrefix) || 1) + 1;
     this.revisions.set(domainPrefix, currentRev);
 
+    const cleanPayload = sanitizeOutboundPayload(topic, payload);
+
     const msg = JSON.stringify({
       protocolVersion: '2.0',
       topic,
@@ -185,7 +273,7 @@ class WsStreamer {
       timestamp: new Date().toISOString(),
       ...(correlationId ? { correlationId } : {}),
       ...(traceId ? { traceId } : {}),
-      payload
+      payload: cleanPayload
     });
 
     if (payload?.type === 'FLEET_READINESS_CHANGED') {
@@ -221,6 +309,7 @@ class WsStreamer {
 
       const domainPrefix = topic.split(':')[0] || 'system';
       const currentRev = this.revisions.get(domainPrefix) || 1;
+      const cleanPayload = sanitizeOutboundPayload(topic, payload);
 
       ws.send(JSON.stringify({
         protocolVersion: '2.0',
@@ -229,7 +318,7 @@ class WsStreamer {
         timestamp: new Date().toISOString(),
         ...(correlationId ? { correlationId } : {}),
         ...(traceId ? { traceId } : {}),
-        payload
+        payload: cleanPayload
       }));
     }
   }
