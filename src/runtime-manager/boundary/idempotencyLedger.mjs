@@ -16,7 +16,7 @@ export class IdempotencyLedger {
     this.maxAgeMs = maxAgeMs;
     this.maxEntries = maxEntries;
     this.engine = engine;
-    /** @type {Map<string, { idempotencyKey: string, operationId: string, status: 'IN_FLIGHT' | 'COMPLETED' | 'FAILED', createdAt: number, updatedAt: number, cachedResult: any, metadata: any }>} */
+    /** @type {Map<string, { idempotencyKey: string, operationId: string, status: 'IN_FLIGHT' | 'COMPLETED' | 'FAILED' | 'UNCERTAIN', createdAt: number, updatedAt: number, cachedResult: any, metadata: any }>} */
     this.records = new Map();
 
     if (this.engine) {
@@ -78,7 +78,7 @@ export class IdempotencyLedger {
   /**
    * Checks whether an idempotencyKey has already been processed or is currently in-flight.
    * @param {string} idempotencyKey
-   * @returns {{ exists: boolean, status: 'NEW' | 'IN_FLIGHT' | 'COMPLETED' | 'FAILED', operationId?: string, cachedResult?: any, record?: any }}
+   * @returns {{ exists: boolean, status: 'NEW' | 'IN_FLIGHT' | 'COMPLETED' | 'FAILED' | 'UNCERTAIN', operationId?: string, cachedResult?: any, record?: any }}
    */
   check(idempotencyKey) {
     if (!idempotencyKey || typeof idempotencyKey !== 'string') {
@@ -159,9 +159,9 @@ export class IdempotencyLedger {
   }
 
   /**
-   * Records a terminal execution outcome (COMPLETED or FAILED).
+   * Records a terminal or uncertain execution outcome (COMPLETED, FAILED, or UNCERTAIN).
    * @param {string} idempotencyKey
-   * @param {'COMPLETED' | 'FAILED'} status
+   * @param {'COMPLETED' | 'FAILED' | 'UNCERTAIN'} status
    * @param {any} [cachedResult=null]
    */
   recordTerminal(idempotencyKey, status, cachedResult = null) {

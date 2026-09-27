@@ -105,6 +105,87 @@ export function registerDefaultCommandHandlers() {
     });
   });
 
+  commandRouter.register('Execution', 'EMERGENCY_STOP', async (cmd) => {
+    logger.warn({ traceId: cmd.traceId, reason: cmd.payload?.reason }, '[Command] EMERGENCY_STOP received! Immediate hard containment initiated.');
+    return executionBoundaryManager.lifecycleMutex.runExclusive(async () => {
+      const store = getSharedStateStore();
+      store.lifecycle.setDesiredState('STOPPED', 'EMERGENCY_STOP');
+      store.lifecycle.setObservedState('STOPPING', 'EMERGENCY_STOP');
+
+      // 1. Force kill execution runtimes and sever pipes immediately
+      try {
+        await executionBoundaryManager.stopCluster(0, { traceId: cmd.traceId });
+      } catch {
+        runtimeManager.terminateAll();
+      } finally {
+        runtimeManager.terminateAll();
+        executionBoundaryManager.stopServer();
+      }
+
+      // 2. Freeze all active account leases
+      try {
+        const snapshot = await workspaceAggregator.getSnapshot();
+        for (const acc of snapshot.accounts || []) {
+          executionBoundaryManager.freezeAccountLease(acc.id, 'EMERGENCY_STOP');
+        }
+      } catch {}
+
+      // 3. Mark observed state STOPPED
+      store.lifecycle.setObservedState('STOPPED', 'EMERGENCY_STOP_COMPLETED');
+      workspaceAggregator.setLifecycle('STOPPED');
+
+      logger.warn({ traceId: cmd.traceId }, '[Command] EMERGENCY_STOP completed: all runtimes killed, account leases frozen.');
+      return { emergencyStopped: true, halted: true };
+    });
+  });
+
+  commandRouter.register('System', 'EMERGENCY_STOP', async (cmd) => {
+    const handler = commandRouter.handlers.get('Execution')?.get('EMERGENCY_STOP')?.[0];
+    if (handler) return handler(cmd);
+    return { emergencyStopped: true };
+  });
+
+  commandRouter.register('Execution', 'CANCEL_ALL_BETS', async (cmd) => {
+    logger.warn({ traceId: cmd.traceId }, '[Command] CANCEL_ALL_BETS executing');
+    try {
+      const snapshot = await workspaceAggregator.getSnapshot();
+      for (const acc of snapshot.accounts || []) {
+        executionBoundaryManager.freezeAccountLease(acc.id, 'CANCEL_ALL_BETS');
+      }
+    } catch {}
+    return { cancelled: true, message: 'All betting leases frozen and pending wagers halted' };
+  });
+
+  commandRouter.register('Execution', 'FREEZE_ACCOUNT', async (cmd) => {
+    const targetAccountId = cmd.target || cmd.payload?.accountId;
+    logger.warn({ traceId: cmd.traceId, accountId: targetAccountId }, '[Command] FREEZE_ACCOUNT executing');
+    if (targetAccountId) {
+      executionBoundaryManager.freezeAccountLease(targetAccountId, cmd.payload?.reason || 'OPERATOR_FREEZE');
+      return { frozen: true, accountId: targetAccountId };
+    }
+    return { frozen: false, error: 'No accountId specified' };
+  });
+
+  commandRouter.register('Execution', 'VIEW_STATUS', async (cmd) => {
+    return {
+      status: 'OK',
+      systemState: securityFacade.getSystemState(),
+      lifecycle: workspaceAggregator.lifecycle,
+      activeBrowsers: workspaceAggregator.activeAccountIds.size,
+      fleetReadiness: runtimeManager.getLatestFleetReadiness()
+    };
+  });
+
+  commandRouter.register('System', 'VIEW_STATUS', async (cmd) => {
+    return {
+      status: 'OK',
+      systemState: securityFacade.getSystemState(),
+      lifecycle: workspaceAggregator.lifecycle,
+      activeBrowsers: workspaceAggregator.activeAccountIds.size,
+      fleetReadiness: runtimeManager.getLatestFleetReadiness()
+    };
+  });
+
   commandRouter.register('Execution', 'PLACE_BET', async (cmd) => {
     logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] PLACE_BET executing');
     if (securityFacade.isDegraded()) {

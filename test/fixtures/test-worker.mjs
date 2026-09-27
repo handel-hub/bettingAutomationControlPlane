@@ -22,7 +22,12 @@ async function main() {
   });
 
   client.on('message', (msg) => {
-    // Keep running until terminated
+    if (msg.type === 'ECHO_LARGE') {
+      client.send({
+        type: 'ECHO_ACK',
+        length: msg.data ? msg.data.length : 0
+      });
+    }
   });
 }
 

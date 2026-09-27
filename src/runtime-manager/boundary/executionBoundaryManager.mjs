@@ -67,6 +67,9 @@ export class ExecutionBoundaryManager extends EventEmitter {
     /** @type {Map<string, { resolve: Function, reject: Function, timer: NodeJS.Timeout, type: string, traceId: string }>} */
     this.pendingCorrelations = new Map();
 
+    /** @type {Map<string, { idempotencyKey: string, accountId?: string, targetAccounts?: string[], dispatchedAt: number, payload: any }>} */
+    this.inFlightOperations = new Map();
+
     this._bindInternalEvents();
   }
 
@@ -368,8 +371,27 @@ export class ExecutionBoundaryManager extends EventEmitter {
       throw new Error('[LF-701] Execution Denied: Execution Plane is DEGRADED (Watchdog Alert)');
     }
 
-    // Invariant (Section 3.2 & 8.2): Prevent betting on frozen accounts
     const targetAccounts = betPayload?.targetAccounts || (betPayload?.accountId ? [betPayload.accountId] : []);
+
+    const idempotencyKey = betPayload?.idempotencyKey || `idem_${betPayload?.operationId || Date.now()}`;
+    const check = this.idempotency.check(idempotencyKey);
+
+    if (check.exists) {
+      if (check.status === 'IN_FLIGHT') {
+        return { duplicate: true, status: 'IN_FLIGHT', cachedAck: true };
+      }
+      if (check.status === 'COMPLETED') {
+        return { duplicate: true, status: 'COMPLETED', cachedResult: check.cachedResult };
+      }
+      if (check.status === 'UNCERTAIN') {
+        return { duplicate: true, status: 'UNCERTAIN', cachedResult: check.cachedResult, error: 'Operation outcome is UNCERTAIN. Account is frozen pending reconciliation.' };
+      }
+      if (check.status === 'FAILED' && !betPayload?.forceRetry) {
+        return { duplicate: true, status: 'FAILED', cachedResult: check.cachedResult, error: 'Operation previously failed. Re-execution requires forceRetry: true' };
+      }
+    }
+
+    // Invariant (Section 3.2 & 8.2): Prevent betting on frozen accounts
     for (const acc of targetAccounts) {
       if (this.isAccountFrozen(acc)) {
         throw new Error(`[EP_STATE_002] Execution Denied: Account [${acc}] is frozen pending reconciliation of an UNKNOWN transaction`);
@@ -397,23 +419,28 @@ export class ExecutionBoundaryManager extends EventEmitter {
       }
     }
 
-    const idempotencyKey = betPayload?.idempotencyKey || `idem_${betPayload?.operationId || Date.now()}`;
-    const check = this.idempotency.check(idempotencyKey);
-
-    if (check.exists) {
-      if (check.status === 'IN_FLIGHT') {
-        return { duplicate: true, status: 'IN_FLIGHT', cachedAck: true };
+    if (betPayload?.stake !== undefined) {
+      if (typeof betPayload.stake !== 'number' || !Number.isFinite(betPayload.stake) || Number.isNaN(betPayload.stake) || betPayload.stake <= 0) {
+        throw new Error('[VAL_001] Invalid stake: Must be a finite positive number');
       }
-      if (check.status === 'COMPLETED') {
-        return { duplicate: true, status: 'COMPLETED', cachedResult: check.cachedResult };
-      }
-      if (check.status === 'FAILED' && !betPayload?.forceRetry) {
-        return { duplicate: true, status: 'FAILED', cachedResult: check.cachedResult, error: 'Operation previously failed. Re-execution requires forceRetry: true' };
+    }
+    if (betPayload?.odds !== undefined) {
+      if (typeof betPayload.odds !== 'number' || !Number.isFinite(betPayload.odds) || Number.isNaN(betPayload.odds) || betPayload.odds <= 1.0) {
+        throw new Error('[VAL_002] Invalid odds: Must be a finite number greater than 1.0');
       }
     }
 
-    this.idempotency.recordInFlight(idempotencyKey, betPayload?.operationId || 'unknown', betPayload);
-    return this.dispatchEnvelope(ExecutionMessageType.PLACE_BET, { ...betPayload, idempotencyKey }, options);
+    const opId = betPayload?.operationId || `op_${Date.now()}`;
+    const payloadWithOp = { ...betPayload, operationId: opId, idempotencyKey, targetAccounts };
+    this.idempotency.recordInFlight(idempotencyKey, opId, payloadWithOp);
+    this.inFlightOperations.set(opId, {
+      idempotencyKey,
+      accountId: betPayload?.accountId,
+      targetAccounts,
+      dispatchedAt: Date.now(),
+      payload: payloadWithOp
+    });
+    return this.dispatchEnvelope(ExecutionMessageType.PLACE_BET, payloadWithOp, options);
   }
 
   /**
@@ -429,11 +456,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
       throw new Error('[LF-701] Execution Denied: Execution Plane is DEGRADED (Watchdog Alert)');
     }
 
-    // Invariant (Section 3.2 & 8.2): Prevent cashout on frozen account
     const targetAccount = cashOutPayload?.accountId || cashOutPayload?.targetAccount;
-    if (targetAccount && this.isAccountFrozen(targetAccount)) {
-      throw new Error(`[EP_STATE_002] Execution Denied: Account [${targetAccount}] is frozen pending reconciliation of an UNKNOWN transaction`);
-    }
 
     const idempotencyKey = cashOutPayload?.idempotencyKey || `idem_${cashOutPayload?.operationId || Date.now()}`;
     const check = this.idempotency.check(idempotencyKey);
@@ -445,13 +468,30 @@ export class ExecutionBoundaryManager extends EventEmitter {
       if (check.status === 'COMPLETED') {
         return { duplicate: true, status: 'COMPLETED', cachedResult: check.cachedResult };
       }
+      if (check.status === 'UNCERTAIN') {
+        return { duplicate: true, status: 'UNCERTAIN', cachedResult: check.cachedResult, error: 'Operation outcome is UNCERTAIN. Account is frozen pending reconciliation.' };
+      }
       if (check.status === 'FAILED' && !cashOutPayload?.forceRetry) {
         return { duplicate: true, status: 'FAILED', cachedResult: check.cachedResult, error: 'Operation previously failed. Re-execution requires forceRetry: true' };
       }
     }
 
-    this.idempotency.recordInFlight(idempotencyKey, cashOutPayload?.operationId || 'unknown', cashOutPayload);
-    return this.dispatchEnvelope(ExecutionMessageType.CASH_OUT, { ...cashOutPayload, idempotencyKey }, options);
+    // Invariant (Section 3.2 & 8.2): Prevent cashout on frozen account
+    if (targetAccount && this.isAccountFrozen(targetAccount)) {
+      throw new Error(`[EP_STATE_002] Execution Denied: Account [${targetAccount}] is frozen pending reconciliation of an UNKNOWN transaction`);
+    }
+
+    const opId = cashOutPayload?.operationId || `op_${Date.now()}`;
+    const payloadWithOp = { ...cashOutPayload, operationId: opId, idempotencyKey, accountId: targetAccount };
+    this.idempotency.recordInFlight(idempotencyKey, opId, payloadWithOp);
+    this.inFlightOperations.set(opId, {
+      idempotencyKey,
+      accountId: targetAccount,
+      targetAccounts: targetAccount ? [targetAccount] : [],
+      dispatchedAt: Date.now(),
+      payload: payloadWithOp
+    });
+    return this.dispatchEnvelope(ExecutionMessageType.CASH_OUT, payloadWithOp, options);
   }
 
   /**
@@ -720,26 +760,64 @@ export class ExecutionBoundaryManager extends EventEmitter {
         }
 
         case ExecutionMessageType.OPERATION_RESULT: {
-          const { operationId, status, idempotencyKey, error, code } = envelope.payload || {};
-          
+          let { operationId, status, idempotencyKey, accountId, targetAccounts, targetOutcomes, error, code } = envelope.payload || {};
+
+          // Re-correlate with in-flight operation if dropped by execution plane
+          const inFlight = operationId ? this.inFlightOperations.get(operationId) : null;
+          if (inFlight) {
+            idempotencyKey = idempotencyKey || inFlight.idempotencyKey;
+            accountId = accountId || inFlight.accountId;
+            targetAccounts = targetAccounts || inFlight.targetAccounts;
+            this.inFlightOperations.delete(operationId);
+          }
+
+          const isUncertain = status === 'UNCERTAIN' || status === 'UNKNOWN' || status === 'TIMEOUT' || code === ExecutionErrorCode.UNCERTAIN_OUTCOME;
+          const isCompleted = status === 'COMPLETED' || status === 'SUCCESS';
+          const isFailed = status === 'FAILED' || status === 'ABORTED';
+
           if (idempotencyKey) {
-            if (status === 'COMPLETED' || status === 'SUCCESS') {
+            if (isUncertain) {
+              this.idempotency.recordTerminal(idempotencyKey, 'UNCERTAIN', envelope.payload);
+            } else if (isCompleted) {
               this.idempotency.recordTerminal(idempotencyKey, 'COMPLETED', envelope.payload);
-            } else if (status === 'FAILED') {
+            } else if (isFailed) {
               this.idempotency.recordTerminal(idempotencyKey, 'FAILED', envelope.payload);
             }
           }
 
-          // Invariant: If outcome is UNKNOWN or EP_TX_001, freeze account lease
-          if (status === 'UNKNOWN' || code === ExecutionErrorCode.UNCERTAIN_OUTCOME) {
-            const targetAccount = envelope.payload?.accountId || envelope.payload?.targetAccounts?.[0] || 'unknown';
-            this.reconciliation.enqueueUncertainOperation({
-              operationId,
-              accountId: targetAccount,
-              idempotencyKey,
-              reason: error || 'Atomic bet commitment unconfirmed',
-              details: envelope.payload
-            });
+          // Invariant: If outcome is UNCERTAIN, UNKNOWN, TIMEOUT, or EP_TX_001, freeze account lease
+          if (isUncertain) {
+            const affectedAccounts = new Set();
+            if (accountId) affectedAccounts.add(accountId);
+            if (Array.isArray(targetAccounts)) {
+              for (const acc of targetAccounts) affectedAccounts.add(acc);
+            }
+            if (Array.isArray(targetOutcomes)) {
+              for (const out of targetOutcomes) {
+                if (out.status === 'UNCERTAIN' && out.targetId) {
+                  affectedAccounts.add(out.targetId);
+                }
+              }
+            }
+            if (affectedAccounts.size === 0) {
+              affectedAccounts.add('unknown');
+            }
+
+            for (const targetAccount of affectedAccounts) {
+              this.reconciliation.enqueueUncertainOperation({
+                operationId: operationId || 'unknown_op',
+                accountId: targetAccount,
+                idempotencyKey: idempotencyKey || '',
+                reason: error || 'Atomic bet commitment unconfirmed',
+                details: envelope.payload
+              });
+              this.emit('accountFrozen', {
+                accountId: targetAccount,
+                operationId: operationId || 'unknown_op',
+                idempotencyKey: idempotencyKey || '',
+                reason: error || 'UNCERTAIN_OUTCOME'
+              });
+            }
           }
 
           this.emit('operationResult', envelope.payload);

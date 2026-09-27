@@ -74,6 +74,7 @@ pub fn start_secure_pipe_server(
             lpSecurityDescriptor: sd_ptr,
             bInheritHandle: windows::Win32::Foundation::BOOL(0),
         };
+        let mut is_first = true;
         loop {
             if !SERVER_RUNNING.load(Ordering::SeqCst) {
                 unsafe {
@@ -84,10 +85,16 @@ pub fn start_secure_pipe_server(
                 break;
             }
 
+            let open_mode = if is_first {
+                3 | 0x00080000 // PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE
+            } else {
+                3 // PIPE_ACCESS_DUPLEX
+            };
+
             let handle = unsafe {
                 match CreateNamedPipeA(
                     PCSTR::from_raw(pipe_name_c.as_ptr() as *const u8),
-                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(3 | 0x00080000), 
+                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(open_mode), 
                     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                     255, 
                     65536,
@@ -95,7 +102,10 @@ pub fn start_secure_pipe_server(
                     0,
                     Some(&sa),
                 ) {
-                    Ok(h) => h,
+                    Ok(h) => {
+                        is_first = false;
+                        h
+                    },
                     Err(_) => {
                         let _ = windows::Win32::Foundation::LocalFree(
                             windows::Win32::Foundation::HLOCAL(sd_ptr),
@@ -406,10 +416,24 @@ pub fn write_pipe(conn_id: u32, data: String) -> Result<bool> {
     frame.extend_from_slice(&len_prefix);
     frame.extend_from_slice(bytes);
 
-    let mut bytes_written = 0;
-    let success = unsafe { WriteFile(handle, Some(&frame), Some(&mut bytes_written), None) };
+    let mut total_written = 0;
+    while total_written < frame.len() {
+        let mut bytes_written = 0;
+        let success = unsafe {
+            WriteFile(
+                handle,
+                Some(&frame[total_written..]),
+                Some(&mut bytes_written),
+                None,
+            )
+        };
+        if success.is_err() || bytes_written == 0 {
+            return Ok(false);
+        }
+        total_written += bytes_written as usize;
+    }
 
-    Ok(success.is_ok())
+    Ok(true)
 }
 
 pub fn close_pipe(conn_id: u32) -> Result<()> {

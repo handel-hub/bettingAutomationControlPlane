@@ -204,4 +204,95 @@ test('ExecutionBoundaryManager - Protocol Facade, Encapsulation & Correlation', 
 
     manager.stopServer();
   });
+
+  await t.test('FINANCIAL SAFETY: freezes account on UNCERTAIN outcome even when worker drops idempotencyKey and accountId', () => {
+    const { manager, mockTransport } = createTestFixture();
+    manager.startServer();
+    mockTransport.simulateClientConnect(1);
+
+    // 1. Dispatch a bet on acc_slave
+    const bet = manager.placeBet({
+      operationId: 'op_uncertain_tx_1',
+      idempotencyKey: 'idem_uncertain_tx_1',
+      accountId: 'acc_slave',
+      stake: 50,
+      odds: 1.95
+    }, { traceId: 'trace-unc-1' });
+
+    assert.ok(bet);
+    assert.strictEqual(manager.isAccountFrozen('acc_slave'), false);
+
+    // 2. Simulate worker returning OPERATION_RESULT with UNCERTAIN, omitting idempotencyKey and accountId
+    mockTransport.simulateIncomingData(1, JSON.stringify({
+      msgId: 'msg_res_unc',
+      traceId: 'trace-unc-1',
+      type: ExecutionMessageType.OPERATION_RESULT,
+      timestamp: Date.now(),
+      source: 'EXECUTION_PLANE',
+      payload: {
+        operationId: 'op_uncertain_tx_1',
+        status: 'UNCERTAIN',
+        error: 'Playwright locator wait timed out during bet submission'
+      }
+    }));
+
+    // Invariant: Account lease MUST be frozen
+    assert.strictEqual(manager.isAccountFrozen('acc_slave'), true);
+
+    // Invariant: Subsequent bet on frozen account must be REJECTED immediately
+    assert.throws(() => {
+      manager.placeBet({
+        operationId: 'op_followup_bet',
+        idempotencyKey: 'idem_new_key_1',
+        accountId: 'acc_slave',
+        stake: 50,
+        odds: 1.95
+      });
+    }, /\[EP_STATE_002\]/);
+
+    // Invariant: Duplicate retry with same idempotencyKey returns UNCERTAIN duplicate
+    const retry = manager.placeBet({
+      operationId: 'op_retry_same',
+      idempotencyKey: 'idem_uncertain_tx_1',
+      accountId: 'acc_slave',
+      stake: 50,
+      odds: 1.95
+    });
+    assert.strictEqual(retry.duplicate, true);
+    assert.strictEqual(retry.status, 'UNCERTAIN');
+
+    manager.stopServer();
+  });
+
+  await t.test('FINANCIAL SAFETY: rejects invalid numeric inputs in placeBet (NaN, Infinity, zero, negative)', () => {
+    const { manager, mockTransport } = createTestFixture();
+    manager.startServer();
+    mockTransport.simulateClientConnect(1);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: 0, odds: 2.0 });
+    }, /\[VAL_001\]/);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: -10, odds: 2.0 });
+    }, /\[VAL_001\]/);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: NaN, odds: 2.0 });
+    }, /\[VAL_001\]/);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: Infinity, odds: 2.0 });
+    }, /\[VAL_001\]/);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: 100, odds: 1.0 });
+    }, /\[VAL_002\]/);
+
+    assert.throws(() => {
+      manager.placeBet({ accountId: 'acc_slave', stake: 100, odds: NaN });
+    }, /\[VAL_002\]/);
+
+    manager.stopServer();
+  });
 });

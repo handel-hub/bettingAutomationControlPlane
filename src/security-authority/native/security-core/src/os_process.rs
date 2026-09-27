@@ -76,9 +76,9 @@ pub fn spawn_execution_process(
         }
     }
 
-    // 4. Spawn process
-    let exe_path = "node";
-    let mut child = Command::new(exe_path)
+    // 4. Spawn process using the pinned current node executable (CAN-16)
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("node"));
+    let mut child = Command::new(&current_exe)
         .arg(&entry_script)
         .env("CONTROL_PLANE_PIPE", &pipe_name)
         .stdin(Stdio::piped())
