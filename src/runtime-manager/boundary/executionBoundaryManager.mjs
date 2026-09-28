@@ -350,7 +350,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * Dispatches an on-demand fleet readiness query to the execution engine.
    * @param {string} [traceId]
    */
-  getFleetReadiness(traceId) {
+  async getFleetReadiness(traceId) {
     return this.dispatchEnvelope(ExecutionMessageType.GET_FLEET_READINESS, {}, { traceId });
   }
 

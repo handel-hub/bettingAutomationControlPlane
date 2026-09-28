@@ -47,11 +47,10 @@ export class AccountsContainer {
     this._accounts.clear();
     if (Array.isArray(accountsList)) {
       for (const raw of accountsList) {
-        const rawPassword = (raw.accountPassword && raw.accountPassword !== '[PROTECTED]') 
+        const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
+        const rawPassword = !isMaskedPassword(raw.accountPassword) 
           ? raw.accountPassword 
-          : (raw.account_password && raw.account_password !== '[PROTECTED]')
-            ? raw.account_password
-            : (raw.accountPassword || raw.account_password || '[PROTECTED]');
+          : (!isMaskedPassword(raw.account_password) ? raw.account_password : '[PROTECTED]');
 
         const sanitized = {
           ...SanitizerGate.sanitize(raw),
@@ -141,9 +140,10 @@ export class AccountsContainer {
     const now = new Date().toISOString();
     const sanitized = SanitizerGate.sanitize(accountData);
 
-    const rawPassword = accountData.accountPassword && accountData.accountPassword !== '[PROTECTED]'
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
+    const rawPassword = !isMaskedPassword(accountData.accountPassword)
       ? accountData.accountPassword
-      : (existing?.accountPassword || accountData.accountPassword || '[PROTECTED]');
+      : (existing?.accountPassword || '[PROTECTED]');
 
     const record = {
       id: sanitized.id || crypto.randomUUID(),

@@ -131,8 +131,9 @@ export class ExecutionPayloadBuilder {
     };
 
     // 2. Resolve credentials for physical browser execution
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
     const compiledAccounts = accounts.map((acc, index) => {
-      const password = acc.accountPassword && acc.accountPassword !== '[PROTECTED]'
+      const password = !isMaskedPassword(acc.accountPassword)
         ? acc.accountPassword
         : (vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword) || acc.rawPassword || '');
       return {
@@ -209,7 +210,8 @@ export class ExecutionPayloadBuilder {
    * @returns {object}
    */
   static buildActivateAccountPayload(account, store = null) {
-    const password = account.accountPassword && account.accountPassword !== '[PROTECTED]'
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
+    const password = !isMaskedPassword(account.accountPassword)
       ? account.accountPassword
       : (vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword || account.accountPassword) || account.rawPassword || '');
 
