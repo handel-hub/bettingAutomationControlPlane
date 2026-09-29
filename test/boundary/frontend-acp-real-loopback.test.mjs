@@ -14,6 +14,7 @@ describe('Frontend Console <-> Control Plane Real Loopback Wire Contract', () =>
 
   before(async () => {
     // Authorize operational capabilities
+    await securityFacade.initDevSession();
     // @ts-ignore
     securityFacade.authorize = () => ({ status: 'OPERATIONAL' });
 

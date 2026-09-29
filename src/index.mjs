@@ -693,8 +693,8 @@ async function bootstrap() {
     securityFacade.setActiveExecutionChecker(() => runtimeManager.activeRuntimes.size > 0);
 
     // 2. Initialize Ingress Token for Local Dev & Console Interop
-    const devToken = initDevToken();
-    logger.info({ devToken }, '[SecurityAuthority] Ingress access token active');
+    initDevToken();
+    logger.info('[SecurityAuthority] Ingress access token active');
 
     // 3. Register Commands
     registerDefaultCommandHandlers();
@@ -722,7 +722,10 @@ async function bootstrap() {
           if (isWithinGrace) {
             logger.warn('[ControlPlane] Cloud Backend offline. Valid cached subscription found within 2-hour operational grace period.');
             logger.info('[ControlPlane] Entering OFFLINE_GRACE mode. Execution Plane is permitted to operate.');
-            await securityFacade.transitionToDegraded('OFFLINE_GRACE');
+            await securityFacade.enterOfflineGrace({
+              leaseAgeMs: Date.now() - (backendSyncService.lastSyncTimestamp || Date.now()),
+              expiresAt: Date.now() + 7200000
+            });
             store.lifecycle.setDesiredState('STOPPED', 'OFFLINE_GRACE_READY');
             store.lifecycle.setObservedState('STOPPED', 'OFFLINE_GRACE_READY');
             workspaceAggregator.setLifecycle('STOPPED', 'Operating in Offline Grace Period (Backend offline)');
@@ -742,6 +745,9 @@ async function bootstrap() {
         }
       } else {
         logger.info('[ControlPlane] Backend synchronization pipeline connected & operational');
+        if (syncResult.session) {
+          await securityFacade.establishSession(syncResult.session);
+        }
       }
     } catch (syncErr) {
       if (isDev) {

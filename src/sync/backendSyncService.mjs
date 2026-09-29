@@ -239,8 +239,10 @@ export class BackendSyncService {
     const email = credentials?.email || process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
     const password = credentials?.password || process.env.OPERATOR_PASSWORD || 'Password123!';
 
+    let authRes = null;
     try {
-      const authRes = await this.client.initAuth({ email, password });
+      authRes = await this.client.initAuth({ email, password });
+      this.lastAuthResult = authRes;
       logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
       console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
     } catch (err) {
@@ -270,7 +272,11 @@ export class BackendSyncService {
       this.loadLocalCache();
     }
 
-    return { isConnected: this.isConnected, isHydrated: this.isHydrated };
+    return {
+      isConnected: this.isConnected,
+      isHydrated: this.isHydrated,
+      session: this.lastAuthResult
+    };
   }
 
   /**
@@ -389,13 +395,29 @@ export class BackendSyncService {
       } else if (seq > lastSeq + 1) {
         // Gap detected!
         logger.warn({ accountId, expected: lastSeq + 1, received: seq }, '[BackendSyncService] Monotonic sequence gap detected! Triggering full authoritative state reconciliation');
+        
+        // Await authoritative state reconciliation to restore clean baseline
+        try {
+          if (!this._reconcilingPromise) {
+            this._reconcilingPromise = this.pullAuthoritativeSnapshot();
+          }
+          await this._reconcilingPromise;
+        } catch (err) {
+          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed after gap');
+          return;
+        } finally {
+          this._reconcilingPromise = null;
+        }
+
+        // Drop frame if superseded by authoritative snapshot
+        const currentWatermark = this.accountSequences.get(accountId) ?? (this.lastObservedSequence ?? 0);
+        if (seq <= currentWatermark) {
+          logger.debug({ accountId, seq, currentWatermark }, '[BackendSyncService] Frame already captured by authoritative snapshot, dropping');
+          return;
+        }
+
         this.accountSequences.set(accountId, seq);
         this.lastObservedSequence = Math.max(this.lastObservedSequence, seq);
-        
-        // Trigger full state reconciliation
-        this.pullAuthoritativeSnapshot().catch(err => {
-          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed after gap');
-        });
       } else {
         // Duplicate or stale frame (seq <= lastSeq)
         logger.debug({ accountId, seq, lastSeq }, '[BackendSyncService] Dropping duplicate or stale frame');

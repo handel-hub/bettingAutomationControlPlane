@@ -388,27 +388,37 @@ export class RuntimeManager extends EventEmitter {
     const handshakeTimeoutMs = options.handshakeTimeoutMs || 10_000;
     let handshakeTimer = null;
 
+    let appRootModified = false;
     if (targetScript && !process.env.APP_ROOT) {
       const normalizedScript = path.resolve(targetScript);
       const srcIndex = normalizedScript.lastIndexOf(path.sep + 'src' + path.sep);
       const buildIndex = normalizedScript.lastIndexOf(path.sep + 'build' + path.sep);
       if (srcIndex !== -1) {
         process.env.APP_ROOT = normalizedScript.slice(0, srcIndex);
+        appRootModified = true;
       } else if (buildIndex !== -1) {
         process.env.APP_ROOT = normalizedScript.slice(0, buildIndex);
+        appRootModified = true;
       }
     }
 
-    const pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
-      if (handshakeTimer) clearTimeout(handshakeTimer);
-      this.activeRuntimes.delete(exitedPid);
-      runtimeHeartbeat.remove(exitedPid);
-      if (this.engineStatus !== 'ABORTED') {
-        this.engineStatus = 'STOPPED';
+    let pid;
+    try {
+      pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
+        if (handshakeTimer) clearTimeout(handshakeTimer);
+        this.activeRuntimes.delete(exitedPid);
+        runtimeHeartbeat.remove(exitedPid);
+        if (this.engineStatus !== 'ABORTED') {
+          this.engineStatus = 'STOPPED';
+        }
+        this.emit('runtimeExited', exitedPid);
+        executionBoundaryManager.abortConnection(new Error(`Execution Plane process (PID ${exitedPid}) exited prematurely before connection`));
+      }, targetScript, expectedSha256);
+    } finally {
+      if (appRootModified) {
+        delete process.env.APP_ROOT;
       }
-      this.emit('runtimeExited', exitedPid);
-      executionBoundaryManager.abortConnection(new Error(`Execution Plane process (PID ${exitedPid}) exited prematurely before connection`));
-    }, targetScript, expectedSha256);
+    }
     
     this.activeRuntimes.add(pid);
     runtimeHeartbeat.recordHeartbeat(pid);

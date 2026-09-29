@@ -2,9 +2,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiServer } from '../../src/api-server/server.mjs';
+import { securityFacade } from '../../src/security-authority/facade.mjs';
 import { WebSocket } from 'ws';
 
 test('Boundary Contract: Prelude Handshake & Atomic Projections', async (t) => {
+  await securityFacade.initDevSession();
   const server = new ApiServer();
   const port = 8092;
   await server.listen(port, '127.0.0.1');

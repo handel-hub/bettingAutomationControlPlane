@@ -9,6 +9,7 @@ import { WebSocket } from 'ws';
 
 test('Frontend <-> Control Plane End-to-End Interoperability Test', async (t) => {
   // Authorize all operations for testing
+  await securityFacade.initDevSession();
   // @ts-ignore
   securityFacade.authorize = () => ({ status: 'OPERATIONAL' });
 

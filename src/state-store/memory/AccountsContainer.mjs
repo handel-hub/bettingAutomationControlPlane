@@ -163,9 +163,20 @@ export class AccountsContainer {
       pendingOperation: sanitized.pendingOperation || null,
       tags: Array.isArray(sanitized.tags) ? sanitized.tags : [],
       effectiveConfig: sanitized.effectiveConfig || existing?.effectiveConfig || null,
+      lastKnownBalance: sanitized.lastKnownBalance !== undefined ? sanitized.lastKnownBalance : (existing?.lastKnownBalance !== undefined ? existing.lastKnownBalance : undefined),
+      currencySymbol: sanitized.currencySymbol || existing?.currencySymbol || '₦',
       lastUpdated: now,
       lastSynchronization: sanitized.lastSynchronization || now
     };
+
+    if (record.lastKnownBalance !== undefined) {
+      this._balances.set(record.id, {
+        balance: Number(record.lastKnownBalance) || 0,
+        currencySymbol: record.currencySymbol || '₦',
+        lastUpdated: now,
+        isStale: false
+      });
+    }
 
     this._accounts.set(record.id, Object.freeze(record));
     this._revision += 1;

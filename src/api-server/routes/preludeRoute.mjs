@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
+import { securityFacade } from '../../security-authority/facade.mjs';
 
 export const preludeRouter = Router();
 
@@ -13,8 +14,23 @@ preludeRouter.get('/', async (req, res) => {
     const workspaceSnapshot = await workspaceAggregator.getSnapshot();
     const billingSnapshot = store.billing.getSnapshot();
     const isPaymentRequired = billingSnapshot?.status === 'Payment_Required' || billingSnapshot?.status === 'Past_Due';
+    const secState = securityFacade.getSystemState();
+
+    let computedLifecycleState = 'Authorized';
+    if (isPaymentRequired) {
+      computedLifecycleState = 'Payment_Required';
+    } else if (securityFacade.isDegraded()) {
+      computedLifecycleState = 'Degraded';
+    } else if (secState === 'OFFLINE_GRACE') {
+      computedLifecycleState = 'Offline_Grace';
+    } else if (secState === 'UNINITIALIZED' || secState === 'INITIALIZING' || secState === 'SECURITY_STATE_READY' || secState === 'UNAUTHENTICATED' || secState === 'AUTHENTICATING') {
+      computedLifecycleState = 'Awaiting_Auth';
+    } else if (secState === 'REVOKED' || secState === 'COMPROMISED') {
+      computedLifecycleState = 'Revoked';
+    }
+
     const runtimeState = {
-      lifecycleState: isPaymentRequired ? 'Payment_Required' : 'Authorized',
+      lifecycleState: computedLifecycleState,
       lifecycle: workspaceAggregator.lifecycle,
       automationLifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: isPaymentRequired ? 'Payment required to activate automation suite' : workspaceAggregator.lifecycleMessage,

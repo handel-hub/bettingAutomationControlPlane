@@ -19,6 +19,7 @@ export const TransitionEvent = /** @type {const} */ ({
   RENEW_THRESHOLD_REACHED: "RENEW_THRESHOLD_REACHED",
   RENEW_SUCCESS: "RENEW_SUCCESS",
   RENEW_BACKEND_UNREACHABLE: "RENEW_BACKEND_UNREACHABLE",
+  ENTER_OFFLINE_GRACE: "ENTER_OFFLINE_GRACE",
   BACKEND_RECONNECTED: "BACKEND_RECONNECTED",
   OFFLINE_GRACE_EXHAUSTED: "OFFLINE_GRACE_EXHAUSTED",
   SESSION_OR_LICENSE_EXPIRED: "SESSION_OR_LICENSE_EXPIRED",
@@ -66,9 +67,21 @@ export const Transitions = [
   },
   {
     currentState: SecurityState.SECURITY_STATE_READY,
+    event: TransitionEvent.ENTER_OFFLINE_GRACE,
+    guard: (state, payload) => payload && payload.isWithinGrace === true,
+    nextState: SecurityState.OFFLINE_GRACE
+  },
+  {
+    currentState: SecurityState.SECURITY_STATE_READY,
     event: TransitionEvent.LOGIN_INTENT,
     guard: (state, payload) => true,
     nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.UNAUTHENTICATED,
+    event: TransitionEvent.ENTER_OFFLINE_GRACE,
+    guard: (state, payload) => payload && payload.isWithinGrace === true,
+    nextState: SecurityState.OFFLINE_GRACE
   },
   {
     currentState: SecurityState.UNAUTHENTICATED,

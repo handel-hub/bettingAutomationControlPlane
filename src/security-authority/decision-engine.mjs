@@ -55,15 +55,15 @@ export class DecisionEngine {
       machine: rawState.machine
     };
 
-    // Ensure native FFI revocation flag reflects persisted security state upon boot/restart (survives restart)
-    const nonRevokedStates = [
-      SecurityState.OPERATIONAL,
-      SecurityState.AUTHENTICATED,
-      SecurityState.AUTHENTICATING,
-      SecurityState.RENEWING,
-      SecurityState.OFFLINE_GRACE
-    ];
-    NativeCore.setRevokedSync(!nonRevokedStates.includes(this.inMemoryState.state));
+    if (this.inMemoryState.state === SecurityState.REVOKED) {
+      NativeCore.setRevokedSync(true);
+      return;
+    }
+
+    if (this.inMemoryState.state === SecurityState.COMPROMISED) {
+      NativeCore.setRevokedSync(true);
+      return;
+    }
 
     if (this.inMemoryState.state === SecurityState.UNINITIALIZED) {
       // Begin bootstrap automatically
@@ -76,7 +76,28 @@ export class DecisionEngine {
         storageVerified: true, 
         machineIdentityVerified: isMachineValid 
       });
+    } else {
+      // Invariant: Cold boot never revives active operational state directly from disk.
+      // Persisted credentials/session are retained as cached state, but active state begins in READY.
+      this.inMemoryState.state = SecurityState.SECURITY_STATE_READY;
+      const isMachineValid = NativeCore.verifyMachineIdentitySync();
+      if (!isMachineValid) {
+        this.inMemoryState.state = SecurityState.COMPROMISED;
+        NativeCore.setRevokedSync(true);
+        return;
+      }
     }
+
+    // Ensure native FFI revocation flag reflects active security state upon boot/restart
+    const nonRevokedStates = [
+      SecurityState.OPERATIONAL,
+      SecurityState.AUTHENTICATED,
+      SecurityState.AUTHENTICATING,
+      SecurityState.RENEWING,
+      SecurityState.OFFLINE_GRACE,
+      SecurityState.SECURITY_STATE_READY
+    ];
+    NativeCore.setRevokedSync(!nonRevokedStates.includes(this.inMemoryState.state));
   }
 
   /**

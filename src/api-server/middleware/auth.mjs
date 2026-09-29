@@ -20,10 +20,11 @@ export function initDevToken() {
     return authConfig.activeToken;
   }
 
-  // Load stable token from disk if exists, otherwise generate
+  const isProduction = process.env.NODE_ENV === 'production';
+  // Load stable token from disk if exists in dev mode, otherwise generate
   const tokenPath = path.join(process.cwd(), '.acp-dev-token');
   let savedToken = null;
-  if (!process.env.ACP_AUTH_TOKEN && fs.existsSync(tokenPath)) {
+  if (!isProduction && !process.env.ACP_AUTH_TOKEN && fs.existsSync(tokenPath)) {
     try {
       savedToken = fs.readFileSync(tokenPath, 'utf8').trim();
     } catch {}
@@ -31,17 +32,19 @@ export function initDevToken() {
 
   const generated = process.env.ACP_AUTH_TOKEN || savedToken || `dev_${crypto.randomBytes(16).toString('hex')}`;
   authConfig.activeToken = generated;
-  authConfig.requireAuth = process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true';
+  authConfig.requireAuth = process.env.ACP_AUTH_REQUIRED !== 'false';
 
-  try {
-    if (!savedToken) {
-      fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
-      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Ephemeral dev token provisioned');
-    } else {
-      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Persisted dev token loaded');
+  if (!isProduction) {
+    try {
+      if (!savedToken) {
+        fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+        logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Ephemeral dev token provisioned');
+      } else {
+        logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Persisted dev token loaded');
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[Auth] Could not write .acp-dev-token file');
     }
-  } catch (err) {
-    logger.warn({ err: err.message }, '[Auth] Could not write .acp-dev-token file');
   }
 
   return generated;
@@ -82,9 +85,8 @@ export function ingressAuthMiddleware(req, res, next) {
     return next();
   }
 
-  const headerVal = req.headers.authorization || req.headers['x-acp-token'];
-  const queryVal = typeof req.query?.token === 'string' ? req.query.token : null;
-  const token = headerVal || queryVal;
+  // Enforce header-only authentication for HTTP REST (disallow query param token leak)
+  const token = req.headers.authorization || req.headers['x-acp-token'];
 
   if (!isValidToken(token)) {
     return res.status(401).json({
