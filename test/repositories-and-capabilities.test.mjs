@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { InMemoryAccountsRepo, InMemoryConfigRepo } from '../src/repositories/in-memory/InMemoryRepos.mjs';
 import { CapabilityResolver } from '../src/state/capabilityResolver.mjs';
 import { WorkspaceAggregator } from '../src/state/workspaceAggregator.mjs';
+import { repositoryFactory } from '../src/repositories/repositoryFactory.mjs';
 
 test('InMemoryAccountsRepo: enforces composite uniqueness on (platform, username)', async () => {
   const repo = new InMemoryAccountsRepo();
@@ -81,6 +82,18 @@ test('CapabilityResolver: accurately reflects lifecycle states and disabled reas
 });
 
 test('WorkspaceAggregator: compiles complete workspace snapshot', async () => {
+  const accountsRepo = repositoryFactory.getAccountsRepo();
+  const list = await accountsRepo.list();
+  if (!list?.viewportAccounts || list.viewportAccounts.length < 2) {
+    try {
+      await accountsRepo.create({
+        id: 'acc-test-seed-2',
+        name: 'Default Test Account 2',
+        platformDisplayName: 'BetKing',
+        accountUsername: 'test_auto_user_2'
+      });
+    } catch {}
+  }
   const aggregator = new WorkspaceAggregator();
   const snapshot = await aggregator.getSnapshot();
 

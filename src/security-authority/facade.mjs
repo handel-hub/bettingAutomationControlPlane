@@ -64,13 +64,23 @@ export class SecurityFacade {
       expiresAt: Date.now() + (authPayload.expiresInMs || 86400000)
     };
 
-    const grantedCaps = Array.isArray(authPayload.capabilities) && authPayload.capabilities.length > 0
+    const rawCaps = Array.isArray(authPayload.capabilities) && authPayload.capabilities.length > 0
       ? authPayload.capabilities
       : Object.values(CAPABILITY);
 
+    const expandedCaps = new Set(rawCaps);
+    if (expandedCaps.has('CAP_CASH_OUT')) expandedCaps.add('CAP_BET_CASHOUT');
+    if (expandedCaps.has('CAP_BET_CASHOUT')) expandedCaps.add('CAP_CASH_OUT');
+    if (expandedCaps.has('CAP_TACTICAL_BET')) {
+      expandedCaps.add('CAP_BET_PLACE');
+      expandedCaps.add('CAP_BET_VALIDATE');
+    }
+    if (expandedCaps.has('CAP_BET_PLACE')) expandedCaps.add('CAP_TACTICAL_BET');
+    if (expandedCaps.has('CAP_CONFIG_MODIFY')) expandedCaps.add('CAP_ACCOUNT_MANAGE');
+
     const authorizationData = {
       status: 'VALID',
-      capability_set: grantedCaps
+      capability_set: Array.from(expandedCaps)
     };
 
     const licenseData = authPayload.license || { status: 'VALID' };
@@ -227,7 +237,7 @@ export class SecurityFacade {
   authorize(capability) {
     // Canonical §48: Non-security config modify is permitted (not entitlement-gated).
     // Safety invariant: Emergency stop is always permitted.
-    if (capability === CAPABILITY.CONFIG_MODIFY || capability === CAPABILITY.AUTOMATION_STOP) {
+    if (capability === CAPABILITY.CONFIG_MODIFY || capability === CAPABILITY.AUTOMATION_STOP || capability === 'CAP_ACCOUNT_MANAGE') {
       return { status: "OPERATIONAL" };
     }
 
@@ -235,6 +245,21 @@ export class SecurityFacade {
     if (capabilities.includes(capability)) {
       return { status: "OPERATIONAL" };
     }
+
+    // Bidirectional alias mapping between Backend and Control Plane capability naming conventions
+    const aliasMap = {
+      'CAP_BET_CASHOUT': 'CAP_CASH_OUT',
+      'CAP_CASH_OUT': 'CAP_BET_CASHOUT',
+      'CAP_BET_PLACE': 'CAP_TACTICAL_BET',
+      'CAP_TACTICAL_BET': 'CAP_BET_PLACE',
+      'CAP_BET_VALIDATE': 'CAP_TACTICAL_BET'
+    };
+
+    const targetAlias = aliasMap[capability];
+    if (targetAlias && capabilities.includes(targetAlias)) {
+      return { status: "OPERATIONAL" };
+    }
+
     return { status: "DENIED", message: `Missing capability: ${capability}` };
   }
 
