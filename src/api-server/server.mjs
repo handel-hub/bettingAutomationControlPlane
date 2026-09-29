@@ -13,13 +13,17 @@ import { systemRouter } from './routes/systemRoutes.mjs';
 import { supportRouter } from './routes/supportRoutes.mjs';
 import { platformsRouter } from './routes/platformsRoutes.mjs';
 import { preludeRouter } from './routes/preludeRoute.mjs';
-import { wsServer } from './websocket/wsServer.mjs';
+import { wsServer, isAllowedOrigin } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
 import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+  'http://localhost:5000',
+  'http://127.0.0.1:5000',
   'http://localhost:8000',
   'http://127.0.0.1:8000',
   ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : [])
@@ -36,7 +40,7 @@ export class ApiServer {
     // CORS headers - validated origin check
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (!origin || ALLOWED_ORIGINS.has(origin)) {
+      if (!origin || isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin || '*');
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');

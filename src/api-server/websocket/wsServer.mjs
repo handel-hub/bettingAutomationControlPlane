@@ -33,8 +33,16 @@ export function isAllowedOrigin(origin) {
     const parsed = new URL(origin);
     const host = parsed.hostname.toLowerCase();
 
-    // Allow local loopbacks on any port
-    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
+    // Allow local loopbacks on any port and private LAN subnets
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '[::1]' ||
+      host === '::1' ||
+      host.startsWith('192.168.') ||
+      host.startsWith('10.') ||
+      host.startsWith('172.')
+    ) {
       return true;
     }
 

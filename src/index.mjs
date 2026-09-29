@@ -747,6 +747,12 @@ async function bootstrap() {
         logger.info('[ControlPlane] Backend synchronization pipeline connected & operational');
         if (syncResult.session) {
           await securityFacade.establishSession(syncResult.session);
+        } else if (isDev) {
+          logger.warn('[ControlPlane] Backend connected but failed to issue authoritative operator session. Activating Local Developer Operational Mode.');
+          await securityFacade.initDevSession();
+          store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
+          store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
+          workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
         }
       }
     } catch (syncErr) {
