@@ -51,7 +51,7 @@ export function createDefaultGlobalConfig() {
       timeouts: {
         resultTimeoutMs: 30000,
         navigationTimeoutMs: 10000,
-        loginTimeoutMs: 15000,
+        loginTimeoutMs: 25000,
         decisionFreshnessTTLMs: 5000,
         reconciliationTimeoutMs: 12000
       },

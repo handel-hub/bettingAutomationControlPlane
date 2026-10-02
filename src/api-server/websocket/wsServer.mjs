@@ -1,4 +1,5 @@
 // @ts-check
+import net from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
@@ -33,20 +34,27 @@ export function isAllowedOrigin(origin) {
     const parsed = new URL(origin);
     const host = parsed.hostname.toLowerCase();
 
-    // Allow local loopbacks on any port and private LAN subnets
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host === '[::1]' ||
-      host === '::1' ||
-      host.startsWith('192.168.') ||
-      host.startsWith('10.') ||
-      host.startsWith('172.')
-    ) {
+    // 1. Allow standard loopback hostnames and IPv6 loopback
+    if (host === 'localhost' || host === '[::1]' || host === '::1') {
       return true;
     }
 
-    // Allow desktop / custom application schemes
+    // 2. Strict IPv4 literal checks (Loopback 127.0.0.0/8 and RFC 1918 Private Subnets)
+    if (net.isIPv4(host)) {
+      const parts = host.split('.').map(Number);
+      if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
+        // 127.0.0.0/8 (Loopback)
+        if (parts[0] === 127) return true;
+        // 10.0.0.0/8 (Private)
+        if (parts[0] === 10) return true;
+        // 192.168.0.0/16 (Private)
+        if (parts[0] === 192 && parts[1] === 168) return true;
+        // 172.16.0.0/12 (Private 172.16.0.0 - 172.31.255.255)
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+      }
+    }
+
+    // 3. Allow desktop / custom application schemes
     if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:' || parsed.protocol === 'file:') {
       return true;
     }

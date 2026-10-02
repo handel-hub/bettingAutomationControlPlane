@@ -55,7 +55,7 @@ export class ExecutionPayloadBuilder {
         Timeouts: {
           ResultTimeoutMs: Number(execution.orderTimeoutMs || 30000),
           NavigationTimeoutMs: Number(execution.navigationTimeoutMs || 10000),
-          LoginTimeoutMs: Number(execution.loginTimeoutMs || 15000),
+          LoginTimeoutMs: Number(execution.loginTimeoutMs || 25000),
           DecisionFreshnessTTLMs: Number(execution.decisionFreshnessTTLMs || 3000),
           ReconciliationTimeoutMs: Number(execution.reconciliationTimeoutMs || 120000)
         },

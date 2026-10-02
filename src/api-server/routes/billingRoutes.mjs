@@ -32,8 +32,9 @@ billingRouter.get('/plans', (req, res) => {
 billingRouter.post('/checkout/initialize', async (req, res) => {
   try {
     const { planId, planName = 'Pro', billingInterval = 'monthly', returnUrl } = req.body || {};
+    const idempotencyKey = req.headers['idempotency-key'] || req.body?.idempotencyKey;
     const targetPlanId = planId || planName;
-    const checkoutData = await backendClient.initiateCheckout(targetPlanId, billingInterval, returnUrl);
+    const checkoutData = await backendClient.initiateCheckout(targetPlanId, billingInterval, returnUrl, idempotencyKey);
     res.json(checkoutData);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });

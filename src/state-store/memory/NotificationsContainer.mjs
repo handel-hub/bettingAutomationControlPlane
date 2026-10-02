@@ -164,4 +164,16 @@ export class NotificationsContainer {
     }
     return changed;
   }
+
+  /**
+   * Clears all notifications.
+   */
+  clearAll() {
+    const count = this._notifications.size;
+    this._notifications.clear();
+    this._unreadCount = 0;
+    this._revision += 1;
+    this._lastUpdated = new Date().toISOString();
+    return { success: true, clearedCount: count };
+  }
 }

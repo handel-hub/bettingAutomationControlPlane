@@ -40,8 +40,10 @@ export class ApiServer {
     // CORS headers - validated origin check
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (!origin || isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+      if (origin && (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+      } else if (!origin) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature, X-ACP-Token');

@@ -234,7 +234,6 @@ automationRouter.patch('/accounts/:id/bet-cycle', async (req, res) => {
     target: accountId,
     payload: { accountId, enabled: Boolean(enabled) },
     onSuccess: async () => {
-      await repositoryFactory.getConfigRepo().updateAccountConfig(accountId, { betCycleEnabled: Boolean(enabled) });
       wsServer.broadcast('automation:delta', {
         type: 'ACCOUNT_UPDATED',
         accountId,
@@ -269,7 +268,6 @@ automationRouter.put('/accounts/:id/config', async (req, res) => {
         updates.rebetSource = source;
         updates.customRebet = values;
       }
-      await repositoryFactory.getConfigRepo().updateAccountConfig(accountId, updates);
       const snapshot = await workspaceAggregator.getSnapshot();
       const account = snapshot.accounts.find(a => a.id === accountId);
       wsServer.broadcast('automation:delta', {
@@ -294,8 +292,8 @@ automationRouter.put('/config/:category', async (req, res) => {
     type: 'UPDATE_GLOBAL_CONFIG',
     payload: { category, values },
     capability: CAPABILITY.CONFIG_MODIFY,
-    onSuccess: async () => {
-      const updatedGlobalConfig = await repositoryFactory.getConfigRepo().updateCategory(category, values);
+    onSuccess: async (commandResult) => {
+      const updatedGlobalConfig = commandResult || (await repositoryFactory.getConfigRepo().getCategory(category));
       wsServer.broadcast('automation:delta', {
         type: 'GLOBAL_CONFIG_UPDATED',
         category,

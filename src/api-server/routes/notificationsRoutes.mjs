@@ -39,19 +39,19 @@ const handleMarkAllRead = async (req, res) => {
 notificationsRouter.post('/mark-all-read', handleMarkAllRead);
 notificationsRouter.post('/read-all', handleMarkAllRead);
 
+notificationsRouter.delete('/clear-all', async (req, res) => {
+  const result = await repositoryFactory.getNotificationsRepo().clearAll();
+  wsServer.broadcast('notifications:delta', {
+    type: 'NOTIFICATIONS_CLEARED'
+  });
+  res.json(result);
+});
+
 notificationsRouter.delete('/:id', async (req, res) => {
   const result = await repositoryFactory.getNotificationsRepo().delete(req.params.id);
   wsServer.broadcast('notifications:delta', {
     type: 'NOTIFICATION_DELETED',
     id: req.params.id
-  });
-  res.json(result);
-});
-
-notificationsRouter.delete('/clear-all', async (req, res) => {
-  const result = await repositoryFactory.getNotificationsRepo().clearAll();
-  wsServer.broadcast('notifications:delta', {
-    type: 'NOTIFICATIONS_CLEARED'
   });
   res.json(result);
 });

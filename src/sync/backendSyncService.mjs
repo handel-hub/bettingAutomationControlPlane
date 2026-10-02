@@ -9,6 +9,7 @@ import { machineIdentity } from '../security-authority/identity/machine-identity
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { clock } from '../security-authority/time/clock.mjs';
 import { FreshnessEvaluator } from '../state-store/hydration/FreshnessEvaluator.mjs';
 import { logger } from '../shared/logging.mjs';
 
@@ -35,6 +36,10 @@ export class BackendSyncService {
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
+    /** @type {bigint | null} */
+    this.lastSyncHrtime = null;
+    /** @type {number} */
+    this.lastObservedEpoch = 0;
     this.enableWebSocket = options.enableWebSocket !== undefined ? options.enableWebSocket : true;
 
     /** @type {WebSocket | null} */
@@ -375,6 +380,33 @@ export class BackendSyncService {
   async handleServerEvent(event) {
     if (!event || typeof event !== 'object') return;
 
+    // Check server epoch reset / progression
+    const incomingEpoch = Number(event.server_epoch ?? event.epoch ?? 0);
+    if (incomingEpoch > 0) {
+      if (this.lastObservedEpoch === 0) {
+        this.lastObservedEpoch = incomingEpoch;
+      } else if (incomingEpoch > this.lastObservedEpoch) {
+        logger.info({ incomingEpoch, lastEpoch: this.lastObservedEpoch }, '[BackendSyncService] New server epoch detected! Resetting sequence watermarks and reconciling state.');
+        this.accountSequences.clear();
+        this.lastObservedSequence = 0;
+        this.lastObservedEpoch = incomingEpoch;
+        try {
+          if (!this._reconcilingPromise) {
+            this._reconcilingPromise = this.pullAuthoritativeSnapshot();
+          }
+          await this._reconcilingPromise;
+        } catch (err) {
+          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed on epoch change');
+          return;
+        } finally {
+          this._reconcilingPromise = null;
+        }
+      } else if (incomingEpoch < this.lastObservedEpoch) {
+        logger.debug({ incomingEpoch, currentEpoch: this.lastObservedEpoch }, '[BackendSyncService] Dropping event from prior server epoch');
+        return;
+      }
+    }
+
     const eventType = event.eventType || event.topic;
     const seq = event.sequenceNumber;
     const payload = event.payload || {};
@@ -535,10 +567,17 @@ export class BackendSyncService {
 
   /**
    * Evaluates the 2-hour offline operational grace period.
-   * If exceeded, transitions Security Authority into Degraded mode.
+   * Anchored to hardware monotonic timer and persistent clock rollback detection.
+   * If exceeded or tampered, transitions Security Authority into Degraded mode.
    * @returns {boolean} True if within grace period, false if expired.
    */
   checkGracePeriod() {
+    // 1. PersistentClock rollback check - fail-closed if boot-time clock rollback or anchor tampering detected
+    if (clock && clock.isUncertain) {
+      logger.warn('[BackendSyncService] Clock rollback detected or time anchor uncertain. Grace period denied.');
+      return false;
+    }
+
     let timestamp = this.lastSyncTimestamp;
     if (!timestamp && this.engine) {
       try {
@@ -550,12 +589,83 @@ export class BackendSyncService {
       } catch { /* ignore */ }
     }
     if (!timestamp) return false;
-    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(timestamp);
+
+    // 3. Monotonic elapsed duration check from process.hrtime.bigint()
+    let elapsedMonotonicMs = null;
+    if (this.lastSyncHrtime) {
+      const elapsedNs = process.hrtime.bigint() - this.lastSyncHrtime;
+      elapsedMonotonicMs = Number(elapsedNs / 1000000n);
+    }
+
+    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(timestamp, elapsedMonotonicMs);
     if (!isWithin && !securityFacade.isDegraded()) {
       logger.warn('[BackendSyncService] 2-hour offline operational grace period expired. Transitioning to degraded mode.');
       securityFacade.transitionToDegraded('GRACE_PERIOD_EXPIRED').catch(() => {});
     }
     return isWithin;
+  }
+
+  /**
+   * Computes authoritative offline grace lease anchored to backend lastSyncTimestamp.
+   * Defeats caller tampering, restart extensions, and OS wall-clock rollbacks.
+   * @returns {{ lastValidatedAt: string, cachedTime: number, expiresAt: number, remainingMs: number } | null}
+   */
+  getOfflineGraceLease() {
+    // 1. Clock rollback or uncertainty check - fail-closed
+    if (clock && clock.isUncertain) {
+      logger.warn('[BackendSyncService] Clock rollback or uncertain time anchor detected. Grace lease denied.');
+      return null;
+    }
+
+    let timestamp = this.lastSyncTimestamp;
+    if (!timestamp && this.engine) {
+      try {
+        const rows = this.engine.query("SELECT last_validated_at FROM cache_metadata WHERE entity_key = 'billing'");
+        if (rows && rows[0]?.last_validated_at) {
+          timestamp = rows[0].last_validated_at;
+          this.lastSyncTimestamp = timestamp;
+        }
+      } catch { /* ignore */ }
+    }
+    if (!timestamp) return null;
+
+    const cachedTime = new Date(timestamp).getTime();
+    if (isNaN(cachedTime)) return null;
+
+    // Fixed 2-hour TTL constant (7,200,000ms) from FreshnessEvaluator
+    const maxGraceMs = FreshnessEvaluator.TTL_POLICIES.subscription_grace * 1000;
+    const absoluteExpiresAt = cachedTime + maxGraceMs;
+
+    const currentClockTime = clock ? clock.now() : Date.now();
+
+    // Rollback detection: current time cannot precede the backend's validation timestamp
+    if (currentClockTime < cachedTime) {
+      logger.warn('[BackendSyncService] System time is earlier than authoritative sync timestamp. Grace lease denied.');
+      return null;
+    }
+
+    // Hardware monotonic check
+    if (this.lastSyncHrtime) {
+      const elapsedNs = process.hrtime.bigint() - this.lastSyncHrtime;
+      const elapsedMs = Number(elapsedNs / 1000000n);
+      if (elapsedMs >= maxGraceMs) {
+        logger.warn('[BackendSyncService] Hardware monotonic timer exceeded 2-hour grace period.');
+        return null;
+      }
+    }
+
+    const remainingMs = absoluteExpiresAt - currentClockTime;
+    if (remainingMs <= 0) {
+      logger.warn('[BackendSyncService] 2-hour operational grace period expired based on sync timestamp.');
+      return null;
+    }
+
+    return {
+      lastValidatedAt: timestamp,
+      cachedTime,
+      expiresAt: absoluteExpiresAt,
+      remainingMs
+    };
   }
 
   /**
@@ -667,6 +777,7 @@ export class BackendSyncService {
     }
 
     this.lastSyncTimestamp = new Date().toISOString();
+    this.lastSyncHrtime = process.hrtime.bigint();
   }
 
   /**

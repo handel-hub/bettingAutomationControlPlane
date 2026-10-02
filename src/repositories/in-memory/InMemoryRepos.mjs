@@ -238,7 +238,7 @@ export class InMemoryConfigRepo extends IAutomationConfigRepository {
         timeouts: {
           resultTimeoutMs: 30000,
           navigationTimeoutMs: 10000,
-          loginTimeoutMs: 15000,
+          loginTimeoutMs: 25000,
           decisionFreshnessTTLMs: 3000,
           reconciliationTimeoutMs: 120000
         },

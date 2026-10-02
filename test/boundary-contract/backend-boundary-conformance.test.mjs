@@ -264,10 +264,35 @@ test('ACP ↔ Backend Boundary Contract Conformance', async (t) => {
       eventId: 'evt-5',
       eventType: 'ACCOUNT_STATUS_CHANGED',
       sequenceNumber: 5,
+      server_epoch: 1,
       payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
     });
     assert.strictEqual(syncService.lastObservedSequence, 5);
     assert.strictEqual(reconciliationTriggered, true, 'Monotonic gap (1 -> 5) must trigger authoritative state reconciliation');
+
+    // Frame 4: Server restart / Epoch increment (Epoch 2 with reset sequence 1)
+    reconciliationTriggered = false;
+    await syncService.handleServerEvent({
+      eventId: 'evt-epoch2-1',
+      eventType: 'ACCOUNT_STATUS_CHANGED',
+      sequenceNumber: 1,
+      server_epoch: 2,
+      payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
+    });
+    assert.strictEqual(syncService.lastObservedEpoch, 2, 'Epoch must update to 2');
+    assert.strictEqual(syncService.lastObservedSequence, 1, 'Sequence must reset cleanly to 1 under new epoch');
+    assert.strictEqual(reconciliationTriggered, true, 'Epoch change triggers authoritative snapshot reconciliation');
+
+    // Frame 5: Stale frame from prior epoch (Epoch 1) must be dropped
+    await syncService.handleServerEvent({
+      eventId: 'evt-old-epoch',
+      eventType: 'ACCOUNT_STATUS_CHANGED',
+      sequenceNumber: 99,
+      server_epoch: 1,
+      payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
+    });
+    assert.strictEqual(syncService.lastObservedEpoch, 2, 'Epoch remains 2');
+    assert.strictEqual(syncService.lastObservedSequence, 1, 'Stale epoch frame was dropped and did not update sequence');
 
     // Restore original method
     syncService.pullAuthoritativeSnapshot = originalPull;

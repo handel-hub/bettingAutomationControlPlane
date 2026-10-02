@@ -132,9 +132,10 @@ export class BackendClient {
    * @param {string} path 
    * @param {Object} data 
    * @param {number} [maxRetries=3]
+   * @param {Record<string, string>} [extraHeaders={}]
    * @returns {Promise<{ envelope?: any; data: any }>}
    */
-  async _postWithRetry(path, data, maxRetries = 3) {
+  async _postWithRetry(path, data, maxRetries = 3, extraHeaders = {}) {
     const url = `${this.endpoint}${path}`;
     const requestEnvelope = envelopeValidator.createRequest(data, this.machineIdentity, this.getSessionContext());
 
@@ -146,7 +147,8 @@ export class BackendClient {
           headers: { 
             'Content-Type': 'application/json',
             ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {}),
-            ...(this.machineId ? { 'x-machine-id': this.machineId } : {})
+            ...(this.machineId ? { 'x-machine-id': this.machineId } : {}),
+            ...extraHeaders
           },
           body: JSON.stringify(requestEnvelope)
         });
@@ -557,13 +559,18 @@ export class BackendClient {
    * @param {string} planId 
    * @param {string} [billingInterval='monthly'] 
    * @param {string} [returnUrl] 
+   * @param {string} [idempotencyKey]
    * @returns {Promise<any>}
    */
-  async initiateCheckout(planId, billingInterval = 'monthly', returnUrl = undefined) {
+  async initiateCheckout(planId, billingInterval = 'monthly', returnUrl = undefined, idempotencyKey = undefined) {
+    const key = idempotencyKey || `chk_${crypto.randomUUID()}`;
     const { data } = await this._postWithRetry('/api/v1/billing/checkout', {
       planId,
       billingInterval,
-      returnUrl
+      returnUrl,
+      idempotencyKey: key
+    }, 3, {
+      'Idempotency-Key': key
     });
     return data;
   }

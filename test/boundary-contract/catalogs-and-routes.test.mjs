@@ -47,7 +47,7 @@ test('Boundary Contract: Catalogs, Routes & WebSocket Heartbeat', async (t) => {
     assert.ok(Array.isArray(data.slaveModes));
   });
 
-  await t.test('POST /api/v1/notifications/:id/read and POST /read-all function and broadcast deltas', async () => {
+  await t.test('POST /api/v1/notifications/:id/read, POST /read-all, and DELETE /clear-all function and broadcast deltas', async () => {
     const ws = new WebSocket(wsUrl);
     await new Promise((resolve) => ws.on('open', resolve));
 
@@ -77,11 +77,20 @@ test('Boundary Contract: Catalogs, Routes & WebSocket Heartbeat', async (t) => {
     });
     assert.equal(readAllRes.status, 200);
 
+    // 3. DELETE /clear-all
+    const clearAllRes = await fetch(`${baseUrl}/api/v1/notifications/clear-all`, {
+      method: 'DELETE'
+    });
+    assert.equal(clearAllRes.status, 200);
+    const clearData = await clearAllRes.json();
+    assert.equal(clearData.success, true);
+
     await new Promise((r) => setTimeout(r, 200));
     ws.terminate();
 
     assert.ok(deltas.some(d => d.type === 'NOTIFICATION_READ' && d.id === 'notif-1'));
     assert.ok(deltas.some(d => d.type === 'ALL_READ'));
+    assert.ok(deltas.some(d => d.type === 'NOTIFICATIONS_CLEARED'));
   });
 
   await t.test('POST /api/v1/settings/intent handles UPDATE_PRESENTATION', async () => {
