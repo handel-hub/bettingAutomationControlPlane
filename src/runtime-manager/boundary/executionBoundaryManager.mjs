@@ -343,7 +343,9 @@ export class ExecutionBoundaryManager extends EventEmitter {
    */
   stopCluster(timeoutMs = 5000, options = {}) {
     const opts = typeof options === 'string' ? { traceId: options } : (options || {});
-    return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, opts);
+    // Disarm watchdog immediately to prevent teardown latency from triggering false quarantine
+    this.watchdog.stop();
+    return this.dispatchEnvelope(ExecutionMessageType.STOP_CLUSTER, { timeoutMs }, { ...opts, timeoutMs });
   }
 
   /**

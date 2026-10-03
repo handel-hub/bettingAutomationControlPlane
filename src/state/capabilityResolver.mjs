@@ -23,7 +23,7 @@ export class CapabilityResolver {
     totalConfiguredAccounts = 0
   }) {
     const isRunning = lifecycle === 'RUNNING';
-    const isStopped = lifecycle === 'STOPPED';
+    const isStopped = lifecycle === 'STOPPED' || (lifecycle === 'ERROR_DEGRADED' && activeBrowsers === 0);
     const hasActiveBrowsers = activeBrowsers > 0;
     const hasPendingAction = globalActionPending !== null;
 

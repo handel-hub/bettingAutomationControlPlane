@@ -46,12 +46,20 @@ runtimeManager.on('runtimeExited', (pid) => {
   try {
     const store = getSharedStateStore();
     const currentState = store.lifecycle.getState();
+
+    // If a new runtime is already active or starting, ignore stale exit from older terminated process
+    const isNewRuntimeActive = runtimeManager.activeRuntimes.size > 0 || runtimeManager.currentStartingPid !== null;
+    if (currentState.desiredState === 'RUNNING' && isNewRuntimeActive && !runtimeManager.activeRuntimes.has(pid)) {
+      logger.info({ pid }, '[RuntimeManager] Stale runtimeExited event ignored; active/starting runtime unaffected');
+      return;
+    }
+
     const exitReason = `PROCESS_EXIT_PID_${pid}`;
     const targetObserved = currentState.desiredState === 'RUNNING' ? 'ABORTED' : 'STOPPED';
 
     store.lifecycle.setObservedState(targetObserved, exitReason);
     store.accounts.resetObservedStates(exitReason);
-    workspaceAggregator.setLifecycle('STOPPED', exitReason);
+    workspaceAggregator.setLifecycle(targetObserved, exitReason);
     workspaceAggregator.setFleetReadiness(null);
 
     // Broadcast deltas to connected clients
@@ -179,8 +187,26 @@ executionBoundaryManager.on('browserStatus', (payload) => {
 executionBoundaryManager.on('quarantineRequired', (data) => {
   logger.warn({ data }, '[ExecutionBoundary] Quarantine required by watchdog. Quarantining runtime.');
   runtimeManager.quarantineExecution('WATCHDOG_HEARTBEAT_DEAD');
-  securityFacade.transitionToDegraded('EXECUTION_HEARTBEAT_TIMEOUT');
-  workspaceAggregator.setLifecycle('ERROR_DEGRADED', 'Execution heartbeat lost: runtime quarantined');
+  
+  // Decouple local worker process stall from global security authority license revocation
+  const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true';
+  if (!isDev) {
+    securityFacade.transitionToDegraded('EXECUTION_HEARTBEAT_TIMEOUT');
+  }
+
+  // Cleanly settle execution plane state to STOPPED so operator can restart without ACP restart
+  workspaceAggregator.setLifecycle('STOPPED', 'Execution heartbeat lost: runtime quarantined');
+  try {
+    const store = getSharedStateStore();
+    store.lifecycle.setDesiredState('STOPPED', 'WATCHDOG_QUARANTINE');
+    store.lifecycle.setObservedState('STOPPED', 'WATCHDOG_QUARANTINE');
+  } catch {}
+
+  wsServer.broadcast('automation:delta', {
+    type: 'LIFECYCLE_CHANGED',
+    lifecycle: 'STOPPED',
+    message: 'Worker process unresponsive: execution halted cleanly'
+  });
 });
 
 executionBoundaryManager.on('livenessDegraded', (data) => {

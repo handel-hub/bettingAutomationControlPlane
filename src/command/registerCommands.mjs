@@ -19,6 +19,19 @@ export function registerDefaultCommandHandlers() {
   // Execution category - Guarded strictly: Execution Plane is disabled in degraded mode
   commandRouter.register('Execution', 'START_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] START_AUTOMATION executing');
+
+    const isDev = (process.env.ACP_DEV_MODE === 'true' || 
+                   process.env.NODE_ENV === 'development' || 
+                   process.argv.includes('--dev')) && 
+                  process.env.ACP_FORCE_DEGRADED !== 'true' && 
+                  process.env.NODE_ENV !== 'production';
+
+    // Development mode self-healing: automatically restore operational status if transiently degraded
+    if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync())) {
+      logger.info('[Command] Development mode self-healing: re-asserting dev session before START_AUTOMATION');
+      await securityFacade.initDevSession();
+    }
+
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
     }
@@ -34,6 +47,12 @@ export function registerDefaultCommandHandlers() {
         runtimeManager.activeRuntimes.size > 0
       ) {
         throw new Error('[LF-701] Execution Denied: Automation is already running or initializing');
+      }
+
+      // If prior run was quarantined or aborted, settle cleanly to STOPPED before starting anew
+      if (currentLifecycle.observedState === 'ERROR_DEGRADED' || currentLifecycle.observedState === 'ABORTED') {
+        store.lifecycle.setObservedState('STOPPED', 'PRE_START_RESET');
+        workspaceAggregator.setLifecycle('STOPPED');
       }
 
       // 1. Record Desired State = RUNNING
@@ -87,14 +106,27 @@ export function registerDefaultCommandHandlers() {
         logger.warn({ err: stopErr.message }, '[Command] Graceful stopCluster timed out or failed. Enforcing force-kill fallback.');
         runtimeManager.terminateAll();
       } finally {
-        // Enforce physical process termination
-        if (runtimeManager.activeRuntimes.size > 0) {
-          runtimeManager.terminateAll();
+        // Enforce physical process termination and await OS death on Windows
+        runtimeManager.terminateAll();
+        if (typeof runtimeManager.terminateAllAndWait === 'function') {
+          await runtimeManager.terminateAllAndWait(2500);
         }
         executionBoundaryManager.stopServer();
+
         // 3. Update Observed State = STOPPED
         store.lifecycle.setObservedState('STOPPED', 'STOP_COMPLETED');
         workspaceAggregator.setLifecycle('STOPPED');
+
+        // 4. Dev mode self-healing: clear any lingering revocation
+        const isDev = (process.env.ACP_DEV_MODE === 'true' || 
+                       process.env.NODE_ENV === 'development' || 
+                       process.argv.includes('--dev')) && 
+                      process.env.ACP_FORCE_DEGRADED !== 'true' && 
+                      process.env.NODE_ENV !== 'production';
+        if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync())) {
+          logger.info('[Command] Re-asserting Local Developer Operational Mode after automation stop');
+          await securityFacade.initDevSession();
+        }
       }
 
       return { stopped: true };
