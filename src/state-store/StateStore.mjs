@@ -375,6 +375,7 @@ export class StateStore {
       getAll: () => this.accountsContainer.getAll(),
       getBalance: (id) => this.accountsContainer.getBalance(id),
       updateBalance: (id, bal, sym) => this.accountsContainer.updateBalance(id, bal, sym),
+      getRawPassword: (id) => this.accountsAdapter.getRawPassword(this.userId, id),
       upsert: (account, expectedRevision) => {
         return this.consistencyGroups.executeGroupTransaction('accounts', expectedRevision, (nextRev) => {
           const targetAccount = {

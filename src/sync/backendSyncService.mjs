@@ -852,6 +852,10 @@ export class BackendSyncService {
         result = await this.client.createBettingAccount(payload);
         break;
 
+      case 'UPDATE_ACCOUNT_CREDENTIALS':
+        result = await this.client.updateBettingAccount(payload.accountId, payload);
+        break;
+
       case 'UPDATE_GLOBAL_CONFIG':
         result = await this.client.updateGlobalConfig(payload.category, payload.values);
         break;

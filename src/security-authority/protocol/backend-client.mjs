@@ -435,6 +435,28 @@ export class BackendClient {
   }
 
   /**
+   * Updates an existing betting account (including credentials) on Backend.
+   * @param {string} accountId 
+   * @param {Object} updates 
+   * @returns {Promise<any>}
+   */
+  async updateBettingAccount(accountId, updates) {
+    const url = `${this.endpoint}/api/v1/accounts/${encodeURIComponent(accountId)}`;
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
+      },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      throw new ProtocolError(`HTTP_${res.status}`, `Failed to update betting account ${accountId}: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  /**
    * Executes an action on a betting account.
    * @param {string} accountId 
    * @param {string} actionType 

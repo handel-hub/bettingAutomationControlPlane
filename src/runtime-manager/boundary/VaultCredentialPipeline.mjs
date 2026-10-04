@@ -25,10 +25,14 @@ export class VaultCredentialPipeline {
    */
   storeCredential(accountId, plaintextPassword) {
     if (!accountId || typeof accountId !== 'string') {
-      throw new TypeError('accountId must be a non-empty string');
+      return;
     }
     if (!plaintextPassword || typeof plaintextPassword !== 'string') {
-      throw new TypeError('plaintextPassword must be a non-empty string');
+      return;
+    }
+    const isMasked = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+    if (isMasked(plaintextPassword)) {
+      return;
     }
 
     this._vault.set(accountId, {
@@ -45,8 +49,10 @@ export class VaultCredentialPipeline {
    * @returns {string}
    */
   decryptCredential(accountId, fallbackPassword = null) {
+    const isMasked = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+
     const entry = this._vault.get(accountId);
-    if (entry && entry.plaintext) {
+    if (entry && entry.plaintext && !isMasked(entry.plaintext)) {
       return entry.plaintext;
     }
     if (entry && entry.encryptedPassword) {
@@ -55,20 +61,31 @@ export class VaultCredentialPipeline {
         const decryptedBuf = this.native.decryptAead(entry.encryptedPassword, aad);
         const plaintext = decryptedBuf.toString('utf8');
         decryptedBuf.fill(0);
-        return plaintext;
+        if (plaintext && !isMasked(plaintext)) {
+          entry.plaintext = plaintext;
+          return plaintext;
+        }
       } catch { /* ignore */ }
     }
 
-    // Check authoritative SQLite State Store
+    // Check authoritative SQLite State Store directly via getRawPassword
     try {
       const store = getSharedStateStore();
+      const rawPassword = store.accounts.getRawPassword(accountId);
+      if (rawPassword && !isMasked(rawPassword)) {
+        this.storeCredential(accountId, rawPassword);
+        return rawPassword;
+      }
+      // Also check memory container as second fallback
       const account = store.accounts.getById(accountId);
-      if (account && account.accountPassword && account.accountPassword !== '[PROTECTED]') {
+      if (account && account.accountPassword && !isMasked(account.accountPassword)) {
+        this.storeCredential(accountId, account.accountPassword);
         return account.accountPassword;
       }
     } catch { /* ignore */ }
 
-    if (fallbackPassword && fallbackPassword !== '[PROTECTED]') {
+    if (fallbackPassword && !isMasked(fallbackPassword)) {
+      this.storeCredential(accountId, fallbackPassword);
       return fallbackPassword;
     }
     return '';

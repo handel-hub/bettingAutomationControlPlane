@@ -7,6 +7,7 @@ import { backendSyncService } from '../../sync/backendSyncService.mjs';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
 import { RevisionConflictError } from '../../state-store/types/errors.mjs';
+import { vaultCredentialPipeline } from '../../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 
 export const accountsRouter = Router();
 
@@ -45,6 +46,9 @@ accountsRouter.post('/', async (req, res) => {
         accountPassword,
         tags
       });
+      if (accountPassword) {
+        vaultCredentialPipeline.storeCredential(created.id, accountPassword);
+      }
       const sanitized = sanitizeAccountForExport(created);
       wsServer.broadcast('accounts:delta', {
         type: 'ACCOUNT_CREATED',
@@ -91,7 +95,16 @@ accountsRouter.patch('/:id', async (req, res) => {
       expectedRevision = Number(bodyRevision);
     }
 
+    if (updates.accountPassword) {
+      vaultCredentialPipeline.storeCredential(accountId, updates.accountPassword);
+    }
     const updated = await repositoryFactory.getAccountsRepo().update(accountId, updates, expectedRevision);
+    try {
+      await backendSyncService.syncMutation('UPDATE_ACCOUNT_CREDENTIALS', {
+        accountId,
+        ...updates
+      });
+    } catch { /* ignore */ }
     backendSyncService.saveLocalCache();
     const sanitized = sanitizeAccountForExport(updated);
     wsServer.broadcast('accounts:delta', {

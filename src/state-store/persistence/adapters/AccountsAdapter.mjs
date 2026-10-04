@@ -94,18 +94,30 @@ export class AccountsAdapter {
       account.accountPassword === '[PROTECTED]' ||
       account.accountPassword.includes('***') ||
       account.accountPassword.includes('•••');
-    const passwordToStore = isMaskedPassword ? '' : account.accountPassword;
+    const incomingPassword = isMaskedPassword ? '' : account.accountPassword;
 
     // Evict any stale row matching the unique constraint (user_id, platform_id, account_username)
     // with a different account_id to prevent SQLite UNIQUE constraint failure during sync
     const existingByUsername = this.engine.prepare(`
-      SELECT account_id FROM accounts_metadata_cache
+      SELECT account_id, account_password FROM accounts_metadata_cache
       WHERE user_id = ? AND platform_id = ? AND account_username = ?
     `).get(userId, platformId, account.accountUsername);
+
+    let preservedPassword = '';
+    if (existingByUsername && existingByUsername.account_password) {
+      const isExistingMasked = existingByUsername.account_password === '[PROTECTED]' ||
+        existingByUsername.account_password.includes('***') ||
+        existingByUsername.account_password.includes('•••');
+      if (!isExistingMasked && existingByUsername.account_password !== '') {
+        preservedPassword = existingByUsername.account_password;
+      }
+    }
 
     if (existingByUsername && existingByUsername.account_id !== account.id) {
       this.engine.prepare('DELETE FROM accounts_metadata_cache WHERE account_id = ?').run(existingByUsername.account_id);
     }
+
+    const passwordToStore = incomingPassword || preservedPassword || '';
 
     this.engine.prepare(`
       INSERT INTO accounts_metadata_cache (
@@ -235,5 +247,29 @@ export class AccountsAdapter {
    */
   deleteAllForUser(userId) {
     this.engine.prepare('DELETE FROM accounts_metadata_cache WHERE user_id = ?').run(userId);
+  }
+
+  /**
+   * Directly queries the unscrubbed, raw account_password from SQLite.
+   * Bypasses all public view projections and SanitizerGate.
+   * @param {string} userId
+   * @param {string} accountId
+   * @returns {string}
+   */
+  getRawPassword(userId, accountId) {
+    if (!accountId) return '';
+    try {
+      const row = this.engine.prepare(`
+        SELECT account_password FROM accounts_metadata_cache
+        WHERE user_id = ? AND account_id = ?
+      `).get(userId, accountId);
+      if (row && row.account_password) {
+        const isMasked = row.account_password === '[PROTECTED]' ||
+          row.account_password.includes('***') ||
+          row.account_password.includes('•••');
+        return isMasked ? '' : row.account_password;
+      }
+    } catch { /* ignore */ }
+    return '';
   }
 }

@@ -8,6 +8,7 @@ import { runtimeManager } from '../runtime-manager/runtime-manager.mjs';
 import { executionBoundaryManager } from '../runtime-manager/boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
 import { ExecutionPayloadBuilder } from '../runtime-manager/boundary/ExecutionPayloadBuilder.mjs';
+import { vaultCredentialPipeline } from '../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 import { getSharedStateStore } from '../state-store/sharedStateStore.mjs';
 import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 
@@ -268,6 +269,9 @@ export function registerDefaultCommandHandlers() {
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
     logger.info({ traceId: cmd.traceId, platform: cmd.payload?.platformDisplayName, payload: SanitizerGate.sanitize(cmd.payload) }, '[Command] REGISTER_ACCOUNT executing');
     let created = await repositoryFactory.getAccountsRepo().create(cmd.payload);
+    if (cmd.payload?.accountPassword) {
+      vaultCredentialPipeline.storeCredential(created.id, cmd.payload.accountPassword);
+    }
     try {
       const store = getSharedStateStore();
       store.accounts.upsert(created);
@@ -286,6 +290,9 @@ export function registerDefaultCommandHandlers() {
           created = { ...created, id: syncResult.id };
           store.accounts.upsert(created);
         } catch { /* ignore */ }
+        if (cmd.payload?.accountPassword) {
+          vaultCredentialPipeline.storeCredential(syncResult.id, cmd.payload.accountPassword);
+        }
         workspaceAggregator.unstageAccount(oldId);
         workspaceAggregator.stageAccount(created.id);
       }

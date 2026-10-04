@@ -44,13 +44,33 @@ export class AccountsContainer {
    * @param {number} [revision]
    */
   hydrate(accountsList, revision = null) {
+    const existingAccounts = new Map(this._accounts);
     this._accounts.clear();
     if (Array.isArray(accountsList)) {
       for (const raw of accountsList) {
-        const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
-        const rawPassword = !isMaskedPassword(raw.accountPassword) 
-          ? raw.accountPassword 
-          : (!isMaskedPassword(raw.account_password) ? raw.account_password : '[PROTECTED]');
+        const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+        
+        let existing = existingAccounts.get(raw.id);
+        if (!existing && raw.accountUsername) {
+          const rawPlat = (raw.platformDisplayName || raw.platformId || '').toLowerCase();
+          const rawUser = raw.accountUsername.toLowerCase();
+          for (const ea of existingAccounts.values()) {
+            const eaPlat = (ea.platformDisplayName || ea.platformId || '').toLowerCase();
+            if (eaPlat === rawPlat && ea.accountUsername.toLowerCase() === rawUser) {
+              existing = ea;
+              break;
+            }
+          }
+        }
+
+        let rawPassword = '[PROTECTED]';
+        if (!isMaskedPassword(raw.accountPassword)) {
+          rawPassword = raw.accountPassword;
+        } else if (!isMaskedPassword(raw.account_password)) {
+          rawPassword = raw.account_password;
+        } else if (existing && !isMaskedPassword(existing.accountPassword)) {
+          rawPassword = existing.accountPassword;
+        }
 
         const sanitized = {
           ...SanitizerGate.sanitize(raw),
@@ -134,16 +154,19 @@ export class AccountsContainer {
     const platform = accountData.platformDisplayName || accountData.platformId;
     const existing = this.findByPlatformAndUsername(platform, accountData.accountUsername);
     if (existing && existing.id !== accountData.id) {
-      throw new ValidationError(`Account with platform '${platform}' and username '${accountData.accountUsername}' already exists.`);
+      this._accounts.delete(existing.id);
+      this._balances.delete(existing.id);
     }
 
     const now = new Date().toISOString();
     const sanitized = SanitizerGate.sanitize(accountData);
 
-    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+    const existingById = accountData.id ? this._accounts.get(accountData.id) : null;
+    const existingRecord = existing || existingById;
     const rawPassword = !isMaskedPassword(accountData.accountPassword)
       ? accountData.accountPassword
-      : (existing?.accountPassword || '[PROTECTED]');
+      : (existingRecord?.accountPassword && !isMaskedPassword(existingRecord.accountPassword) ? existingRecord.accountPassword : '[PROTECTED]');
 
     const record = {
       id: sanitized.id || crypto.randomUUID(),
