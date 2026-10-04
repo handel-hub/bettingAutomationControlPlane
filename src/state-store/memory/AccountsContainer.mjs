@@ -154,8 +154,7 @@ export class AccountsContainer {
     const platform = accountData.platformDisplayName || accountData.platformId;
     const existing = this.findByPlatformAndUsername(platform, accountData.accountUsername);
     if (existing && existing.id !== accountData.id) {
-      this._accounts.delete(existing.id);
-      this._balances.delete(existing.id);
+      throw new ValidationError(`Account with platform '${platform}' and username '${accountData.accountUsername}' already exists.`);
     }
 
     const now = new Date().toISOString();

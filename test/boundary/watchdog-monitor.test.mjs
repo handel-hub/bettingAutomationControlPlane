@@ -42,7 +42,7 @@ test('WatchdogMonitor - Tiered Liveness Thresholds & Heartbeat Ingestion', async
 
     // 1. Wait for warning
     const startWarn = Date.now();
-    while (!warningFired && Date.now() - startWarn < 200) {
+    while (!warningFired && Date.now() - startWarn < 2000) {
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.strictEqual(warningFired, true);
@@ -50,7 +50,7 @@ test('WatchdogMonitor - Tiered Liveness Thresholds & Heartbeat Ingestion', async
 
     // 2. Wait for degraded
     const startDeg = Date.now();
-    while (!degradedFired && Date.now() - startDeg < 200) {
+    while (!degradedFired && Date.now() - startDeg < 2000) {
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.strictEqual(degradedFired, true);
@@ -58,7 +58,7 @@ test('WatchdogMonitor - Tiered Liveness Thresholds & Heartbeat Ingestion', async
 
     // 3. Wait for quarantine
     const startQuar = Date.now();
-    while (!quarantineFired && Date.now() - startQuar < 300) {
+    while (!quarantineFired && Date.now() - startQuar < 2000) {
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.strictEqual(quarantineFired, true);

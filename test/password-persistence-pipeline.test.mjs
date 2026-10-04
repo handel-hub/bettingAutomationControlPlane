@@ -74,15 +74,15 @@ test('Password Persistence & Credential Pipeline Invariants', async (t) => {
 
     assert.equal(store.accounts.getRawPassword(localId), 'SuperSecretLocalPassword!');
 
-    // Backend sync returns authoritative Postgres UUID for the same (platform, username)
+    // Backend sync returns authoritative Postgres UUID for the same (platform, username) via replaceAll (snapshot)
     const backendId = 'pg_uuid_999';
-    store.accounts.upsert({
+    store.accounts.replaceAll([{
       id: backendId,
       name: 'SportyBet Runner',
       platformDisplayName: 'SportyBet',
       accountUsername: '08012345678',
       accountPassword: '********'
-    });
+    }]);
 
     // The new ID must have inherited the preserved password
     assert.equal(
