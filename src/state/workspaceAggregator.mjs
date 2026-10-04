@@ -134,9 +134,32 @@ export class WorkspaceAggregator {
       };
     }));
 
+    let isAuthorized = true;
+    let authorizationReason = undefined;
+    let hasActiveRuntime = false;
+
+    try {
+      const { securityFacade } = await import('../security-authority/facade.mjs');
+      const { CAPABILITY } = await import('../security-authority/authorization/capabilities.mjs');
+      const { runtimeManager } = await import('../runtime-manager/runtime-manager.mjs');
+
+      const authCheck = securityFacade.authorize(CAPABILITY.AUTOMATION_START);
+      isAuthorized = authCheck.status === 'OPERATIONAL';
+      hasActiveRuntime = runtimeManager.activeRuntimes.size > 0 || runtimeManager.currentStartingPid !== null;
+      if (!isAuthorized) {
+        authorizationReason = securityFacade.isDegraded()
+          ? 'Control Plane in Degraded Mode (Backend Offline)'
+          : (authCheck.message || 'Operation prohibited by Security Authority');
+      }
+    } catch {
+      // Fallback for isolated test harness environments
+    }
+
     const capabilities = CapabilityResolver.resolve({
       lifecycle: this.lifecycle,
-      isAuthorized: true,
+      isAuthorized,
+      authorizationReason,
+      hasActiveRuntime,
       activeBrowsers,
       maxCapacity,
       globalActionPending,

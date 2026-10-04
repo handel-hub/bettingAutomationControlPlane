@@ -2,6 +2,7 @@
 import { Command } from '../../command/command.mjs';
 import { commandRouter } from '../../command/commandRouter.mjs';
 import { securityFacade } from '../../security-authority/facade.mjs';
+import { logger } from '../../shared/logging.mjs';
 
 /**
  * Creates and routes a Command from an HTTP request.
@@ -23,12 +24,20 @@ export async function executeCommand({ req, res, category, type, target = null, 
                      process.argv.includes('--dev')) && 
                     process.env.ACP_FORCE_DEGRADED !== 'true' && 
                     process.env.NODE_ENV !== 'production';
-      if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync())) {
+      if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync() || !securityFacade.isOperational())) {
+        logger.info({ traceId: req.traceId }, '[CommandAdapter] Development mode self-healing: ensuring operational session for START_AUTOMATION');
         await securityFacade.initDevSession();
       }
     }
     const authResult = securityFacade.authorize(capability);
     if (authResult.status !== 'OPERATIONAL') {
+      logger.warn({
+        traceId: req.traceId,
+        type,
+        capability,
+        securityState: securityFacade.getSystemState(),
+        reason: authResult.message
+      }, `[CommandAdapter] Access denied for command [${type}]: ${authResult.message}`);
       return res.status(403).json({
         success: false,
         code: 'CAP_001',

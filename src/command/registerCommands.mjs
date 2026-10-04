@@ -27,7 +27,7 @@ export function registerDefaultCommandHandlers() {
                   process.env.NODE_ENV !== 'production';
 
     // Development mode self-healing: automatically restore operational status if transiently degraded
-    if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync())) {
+    if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync() || !securityFacade.isOperational())) {
       logger.info('[Command] Development mode self-healing: re-asserting dev session before START_AUTOMATION');
       await securityFacade.initDevSession();
     }

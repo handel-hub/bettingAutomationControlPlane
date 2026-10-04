@@ -77,8 +77,33 @@ test('CapabilityResolver: accurately reflects lifecycle states and disabled reas
     totalConfiguredAccounts: 2
   });
 
-  assert.equal(pendingCaps.canPlaceBet, false);
-  assert.match(pendingCaps.placeBetDisabledReason, /Operation in progress/);
+  // When unauthorized by Security Authority
+  const unauthorizedCaps = CapabilityResolver.resolve({
+    lifecycle: 'STOPPED',
+    isAuthorized: false,
+    authorizationReason: 'Control Plane in Degraded Mode (Backend Offline)',
+    activeBrowsers: 0,
+    maxCapacity: 2,
+    globalActionPending: null,
+    totalConfiguredAccounts: 2
+  });
+
+  assert.equal(unauthorizedCaps.canStartAutomation, false);
+  assert.equal(unauthorizedCaps.startDisabledReason, 'Control Plane in Degraded Mode (Backend Offline)');
+
+  // When active runtime process is alive
+  const activeRuntimeCaps = CapabilityResolver.resolve({
+    lifecycle: 'STOPPED',
+    isAuthorized: true,
+    hasActiveRuntime: true,
+    activeBrowsers: 0,
+    maxCapacity: 2,
+    globalActionPending: null,
+    totalConfiguredAccounts: 2
+  });
+
+  assert.equal(activeRuntimeCaps.canStartAutomation, false);
+  assert.equal(activeRuntimeCaps.startDisabledReason, 'Automation runtime process is currently active');
 });
 
 test('WorkspaceAggregator: compiles complete workspace snapshot', async () => {

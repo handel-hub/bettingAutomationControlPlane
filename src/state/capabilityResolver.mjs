@@ -8,7 +8,9 @@ export class CapabilityResolver {
   /**
    * @param {object} params
    * @param {string} params.lifecycle - 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR_DEGRADED'
-   * @param {boolean} params.isAuthorized - Operator authorized and licensed
+   * @param {boolean} [params.isAuthorized=true] - Operator authorized and licensed
+   * @param {string} [params.authorizationReason] - Reason why authorization was denied
+   * @param {boolean} [params.hasActiveRuntime=false] - Whether an execution process is alive
    * @param {number} params.activeBrowsers - Count of live active browser processes
    * @param {number} params.maxCapacity - Max accounts allowed to spawn
    * @param {string | null} params.globalActionPending - In-flight operation
@@ -17,6 +19,8 @@ export class CapabilityResolver {
   static resolve({
     lifecycle = 'STOPPED',
     isAuthorized = true,
+    authorizationReason = undefined,
+    hasActiveRuntime = false,
     activeBrowsers = 0,
     maxCapacity = 2,
     globalActionPending = null,
@@ -28,7 +32,21 @@ export class CapabilityResolver {
     const hasPendingAction = globalActionPending !== null;
 
     // Start / Stop capabilities
-    const canStartAutomation = isAuthorized && isStopped && totalConfiguredAccounts > 0 && !hasPendingAction;
+    const canStartAutomation = isAuthorized && !hasActiveRuntime && isStopped && totalConfiguredAccounts > 0 && !hasPendingAction;
+    const startDisabledReason = !canStartAutomation
+      ? (!isAuthorized
+          ? (authorizationReason || 'Operation prohibited by Security Authority')
+          : hasActiveRuntime
+            ? 'Automation runtime process is currently active'
+            : !isStopped
+              ? (isRunning ? 'Automation is already running' : 'Automation is currently transitioning')
+              : totalConfiguredAccounts === 0
+                ? 'At least one account must be configured'
+                : hasPendingAction
+                  ? 'Operation in progress'
+                  : undefined)
+      : undefined;
+
     const canStopAutomation = (isRunning || lifecycle === 'STARTING') && !hasPendingAction;
     const stopDisabledReason = !canStopAutomation 
       ? (isStopped ? 'Automation is already stopped' : hasPendingAction ? 'Operation in progress' : undefined) 
@@ -69,6 +87,7 @@ export class CapabilityResolver {
 
     return {
       canStartAutomation,
+      startDisabledReason,
       canStopAutomation,
       stopDisabledReason,
       canPlaceBet,

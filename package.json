@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.mjs",
-    "dev": "node src/index.mjs",
+    "dev": "node src/index.mjs --dev",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "test:statestore": "node --test test/state-store/**/*.test.mjs",
     "test:boundary": "node --test --test-concurrency=1 test/boundary-contract/*.test.mjs",

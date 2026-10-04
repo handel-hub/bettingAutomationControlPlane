@@ -178,7 +178,7 @@ export class CommandRouter extends EventEmitter {
                            process.argv.includes('--dev')) && 
                           process.env.ACP_FORCE_DEGRADED !== 'true' && 
                           process.env.NODE_ENV !== 'production';
-            if (isDev && (sec.isDegraded?.() || sec.isSessionRevokedSync?.())) {
+            if (isDev && (sec.isDegraded?.() || sec.isSessionRevokedSync?.() || !sec.isOperational?.())) {
                 logger.info('[CommandRouter] Development mode self-healing: re-asserting dev session before capability check');
                 await sec.initDevSession();
             }
