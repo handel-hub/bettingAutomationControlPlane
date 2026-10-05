@@ -60,7 +60,7 @@ export function createDefaultGlobalConfig() {
         maxRecoveryAttempts: 3,
         recoveryBaseDelayMs: 1000
       },
-      keyboardTypingDelayMs: 40,
+      keyboardTypingDelayMs: 10,
       maxRecordedActions: 50,
       orderTimeoutMs: 8000,
       retryCount: 2,

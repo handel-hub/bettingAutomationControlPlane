@@ -60,7 +60,7 @@ export class ExecutionPayloadBuilder {
           ReconciliationTimeoutMs: Number(execution.reconciliationTimeoutMs || 120000)
         },
         Pacing: {
-          KeyboardTypingDelayMs: Number(execution.interPlatformDelayMs || 250),
+          KeyboardTypingDelayMs: Number(execution.keyboardTypingDelayMs ?? 10),
           PacingStrategy: execution.pacingStrategy || 'AGGRESSIVE'
         }
       },
