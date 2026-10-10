@@ -96,11 +96,19 @@ export class ApiServer {
    * @returns {Promise<number>}
    */
   async listen(port = 8000, host = '127.0.0.1') {
-    return new Promise((resolve) => {
-      this.server.listen(port, host, () => {
+    return new Promise((resolve, reject) => {
+      const onError = (err) => {
+        this.server.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        this.server.removeListener('error', onError);
         logger.info(`[ApiServer] Listening on HTTP & WebSocket ${host}:${port}`);
         resolve(port);
-      });
+      };
+
+      this.server.once('error', onError);
+      this.server.listen(port, host, onListening);
     });
   }
 

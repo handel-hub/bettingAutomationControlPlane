@@ -1,0 +1,619 @@
+{
+  "generatedAt": "2026-10-06T04:11:18.280Z",
+  "nodeVersion": "v24.19.0",
+  "v8Version": "13.6.233.17-node.51",
+  "platform": "win32-x64",
+  "summary": {
+    "totalTests": 31,
+    "totalDiscrepancies": 0,
+    "passRates": {
+      "esm": "31/31 (100.0%)",
+      "cjs": "31/31 (100.0%)",
+      "bytenode": "31/31 (100.0%)"
+    },
+    "timings": {},
+    "verdict": "FULL_PARITY_CERTIFIED"
+  },
+  "mechanisms": {
+    "M1-StorageEngine": {
+      "total": 5,
+      "passed": 0,
+      "failed": 5
+    },
+    "M2-AEADStorage": {
+      "total": 4,
+      "passed": 0,
+      "failed": 4
+    },
+    "M3-NativeCore": {
+      "total": 5,
+      "passed": 0,
+      "failed": 5
+    },
+    "M4-NamedPipeIPC": {
+      "total": 3,
+      "passed": 0,
+      "failed": 3
+    },
+    "M5-StateStore": {
+      "total": 3,
+      "passed": 0,
+      "failed": 3
+    },
+    "M6-HttpWsServer": {
+      "total": 4,
+      "passed": 0,
+      "failed": 4
+    },
+    "M7-SchemaMigrator": {
+      "total": 3,
+      "passed": 0,
+      "failed": 3
+    },
+    "M8-Lifecycle": {
+      "total": 4,
+      "passed": 0,
+      "failed": 4
+    }
+  },
+  "tests": [
+    {
+      "id": "M1-001",
+      "name": "better-sqlite3 in-memory open & PRAGMAs",
+      "mechanism": "M1-StorageEngine",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M1-002",
+      "name": "better-sqlite3 CRUD statement preparation",
+      "mechanism": "M1-StorageEngine",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M1-003",
+      "name": "better-sqlite3 atomic transaction commit",
+      "mechanism": "M1-StorageEngine",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M1-004",
+      "name": "better-sqlite3 transaction rollback on error",
+      "mechanism": "M1-StorageEngine",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M1-005",
+      "name": "better-sqlite3 file-backed persistence & quickCheck",
+      "mechanism": "M1-StorageEngine",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M2-001",
+      "name": "AEADStorageAdapter database init & migration",
+      "mechanism": "M2-AEADStorage",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M2-002",
+      "name": "AEADStorageAdapter encrypted state save & read",
+      "mechanism": "M2-AEADStorage",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M2-003",
+      "name": "AEADStorageAdapter nonce tracking & replay check",
+      "mechanism": "M2-AEADStorage",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M2-004",
+      "name": "AEADStorageAdapter tampering MAC verification error",
+      "mechanism": "M2-AEADStorage",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M3-001",
+      "name": "NativeCore initialization & machine identity check",
+      "mechanism": "M3-NativeCore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M3-002",
+      "name": "NativeCore raw AES-256-GCM AEAD encryption roundtrip",
+      "mechanism": "M3-NativeCore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M3-003",
+      "name": "NativeCore hardware-bound AEAD encrypt/decrypt with AAD",
+      "mechanism": "M3-NativeCore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M3-004",
+      "name": "NativeCore AAD tampering detection on decrypt",
+      "mechanism": "M3-NativeCore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M3-005",
+      "name": "NativeCore Ed25519 signature verification",
+      "mechanism": "M3-NativeCore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M4-001",
+      "name": "NativeCore named pipe server lifecycle",
+      "mechanism": "M4-NamedPipeIPC",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M4-002",
+      "name": "NativeCore named pipe security gate rejects un-spawned PIDs",
+      "mechanism": "M4-NamedPipeIPC",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M4-003",
+      "name": "NativeCore monotonic counter tracking",
+      "mechanism": "M4-NamedPipeIPC",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M5-001",
+      "name": "AccountsContainer OCC revision increment & duplicate prevention",
+      "mechanism": "M5-StateStore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M5-002",
+      "name": "SanitizerGate secret redaction immutability",
+      "mechanism": "M5-StateStore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M5-003",
+      "name": "StateStore full in-memory lifecycle & Prelude projection",
+      "mechanism": "M5-StateStore",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M6-001",
+      "name": "ApiServer start & listen on ephemeral port",
+      "mechanism": "M6-HttpWsServer",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M6-002",
+      "name": "Express HTTP ingress route dispatch",
+      "mechanism": "M6-HttpWsServer",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M6-003",
+      "name": "WebSocket stream connection & broadcast delivery",
+      "mechanism": "M6-HttpWsServer",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M6-004",
+      "name": "ApiServer clean teardown & port release",
+      "mechanism": "M6-HttpWsServer",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M7-001",
+      "name": "SchemaMigrator initial baseline detection",
+      "mechanism": "M7-SchemaMigrator",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M7-002",
+      "name": "SchemaMigrator sequential migration execution",
+      "mechanism": "M7-SchemaMigrator",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M7-003",
+      "name": "SchemaMigrator idempotency on second run",
+      "mechanism": "M7-SchemaMigrator",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M8-001",
+      "name": "SecurityFacade initialization & state engine readiness",
+      "mechanism": "M8-Lifecycle",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M8-002",
+      "name": "Ingress developer token generation & retrieval",
+      "mechanism": "M8-Lifecycle",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M8-003",
+      "name": "Command router registration & default handler dispatch",
+      "mechanism": "M8-Lifecycle",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    },
+    {
+      "id": "M8-004",
+      "name": "Shared StateStore initialization & default account seeding",
+      "mechanism": "M8-Lifecycle",
+      "esm": {
+        "durationMs": -1,
+        "error": null
+      },
+      "cjs": {
+        "durationMs": -1,
+        "error": null
+      },
+      "bytenode": {
+        "durationMs": -1,
+        "error": null
+      },
+      "semanticEquivalence": true
+    }
+  ]
+}

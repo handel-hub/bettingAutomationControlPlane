@@ -126,6 +126,10 @@ class WsStreamer {
       }
     });
 
+    this.wss.on('error', (err) => {
+      logger.error({ err: err.message, code: err.code }, '[WebSocket] WebSocketServer error');
+    });
+
     this.wss.on('connection', async (ws, req) => {
       // CSWSH Defense: Validate Origin
       const origin = req.headers['origin'];

@@ -74,3 +74,11 @@ src/security-authority/test/databases
 
 # Ingress Dev Token
 .acp-dev-token
+
+# Packaging & Compatibility Lab temporary/compiled outputs
+.build_tmp/
+.tmp-compat-lab/
+*.jsc
+acp-bytenode-compat-lab/runners/cjs/
+acp-bytenode-compat-lab/runners/bytenode/
+

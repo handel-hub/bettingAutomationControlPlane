@@ -350,7 +350,11 @@ async function bootstrap() {
     logger.info(`[ControlPlane] Ready for Next.js console connections at http://${host}:${port}`);
     logger.info(`[ControlPlane] WebSocket stream active at ws://${host}:${port}/ws/v1/events`);
   } catch (err) {
-    logger.fatal({ err: err.message, stack: err.stack }, '[ControlPlane] Fatal startup error');
+    if (err.code === 'EADDRINUSE') {
+      logger.fatal(`[ControlPlane] Port ${err.port || 8000} on ${err.address || '127.0.0.1'} is already in use by another running process (such as an existing Control Plane dev instance). Either terminate the running process or start with an alternative port using PORT=<port> (e.g. PORT=8001).`);
+    } else {
+      logger.fatal({ err: err.message, stack: err.stack }, '[ControlPlane] Fatal startup error');
+    }
     process.exit(1);
   }
 }

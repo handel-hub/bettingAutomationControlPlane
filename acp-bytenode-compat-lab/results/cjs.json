@@ -1,0 +1,413 @@
+{
+  "suite": "ACP Compatibility Laboratory (CJS)",
+  "environment": {
+    "timestamp": "2026-10-06T04:11:17.515Z",
+    "node": {
+      "version": "v24.19.0",
+      "major": 24,
+      "abi": "137"
+    },
+    "v8": {
+      "version": "13.6.233.17-node.51"
+    },
+    "platform": {
+      "os": "win32",
+      "arch": "x64"
+    }
+  },
+  "summary": {
+    "total": 31,
+    "passed": 31,
+    "failed": 0,
+    "successRate": 100
+  },
+  "results": [
+    {
+      "id": "M1-001",
+      "name": "better-sqlite3 in-memory open & PRAGMAs",
+      "mechanism": "M1-StorageEngine",
+      "pass": true,
+      "elapsedMs": 5,
+      "data": {
+        "quickCheck": true,
+        "version": 0
+      },
+      "error": null
+    },
+    {
+      "id": "M1-002",
+      "name": "better-sqlite3 CRUD statement preparation",
+      "mechanism": "M1-StorageEngine",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "initial": 42.5,
+        "updated": 50,
+        "total": 2
+      },
+      "error": null
+    },
+    {
+      "id": "M1-003",
+      "name": "better-sqlite3 atomic transaction commit",
+      "mechanism": "M1-StorageEngine",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "sum": 300
+      },
+      "error": null
+    },
+    {
+      "id": "M1-004",
+      "name": "better-sqlite3 transaction rollback on error",
+      "mechanism": "M1-StorageEngine",
+      "pass": true,
+      "elapsedMs": 0,
+      "data": {
+        "rollbackSuccess": true,
+        "remainingCount": 0
+      },
+      "error": null
+    },
+    {
+      "id": "M1-005",
+      "name": "better-sqlite3 file-backed persistence & quickCheck",
+      "mechanism": "M1-StorageEngine",
+      "pass": true,
+      "elapsedMs": 21,
+      "data": {
+        "filePersisted": true,
+        "value": "pong",
+        "quickCheck": true
+      },
+      "error": null
+    },
+    {
+      "id": "M2-001",
+      "name": "AEADStorageAdapter database init & migration",
+      "mechanism": "M2-AEADStorage",
+      "pass": true,
+      "elapsedMs": 18,
+      "data": {
+        "initialized": true
+      },
+      "error": null
+    },
+    {
+      "id": "M2-002",
+      "name": "AEADStorageAdapter encrypted state save & read",
+      "mechanism": "M2-AEADStorage",
+      "pass": true,
+      "elapsedMs": 22,
+      "data": {
+        "saved": true,
+        "sessionId": "sess_test_123",
+        "version": 1
+      },
+      "error": null
+    },
+    {
+      "id": "M2-003",
+      "name": "AEADStorageAdapter nonce tracking & replay check",
+      "mechanism": "M2-AEADStorage",
+      "pass": true,
+      "elapsedMs": 14,
+      "data": {
+        "nonceRegistered": true
+      },
+      "error": null
+    },
+    {
+      "id": "M2-004",
+      "name": "AEADStorageAdapter tampering MAC verification error",
+      "mechanism": "M2-AEADStorage",
+      "pass": true,
+      "elapsedMs": 12,
+      "data": {
+        "tamperDetected": true
+      },
+      "error": null
+    },
+    {
+      "id": "M3-001",
+      "name": "NativeCore initialization & machine identity check",
+      "mechanism": "M3-NativeCore",
+      "pass": true,
+      "elapsedMs": 5,
+      "data": {
+        "initialized": true,
+        "verified": true
+      },
+      "error": null
+    },
+    {
+      "id": "M3-002",
+      "name": "NativeCore raw AES-256-GCM AEAD encryption roundtrip",
+      "mechanism": "M3-NativeCore",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "roundtripVerified": true,
+        "cipherLength": 60
+      },
+      "error": null
+    },
+    {
+      "id": "M3-003",
+      "name": "NativeCore hardware-bound AEAD encrypt/decrypt with AAD",
+      "mechanism": "M3-NativeCore",
+      "pass": true,
+      "elapsedMs": 4,
+      "data": {
+        "hardwareAeadVerified": true
+      },
+      "error": null
+    },
+    {
+      "id": "M3-004",
+      "name": "NativeCore AAD tampering detection on decrypt",
+      "mechanism": "M3-NativeCore",
+      "pass": true,
+      "elapsedMs": 4,
+      "data": {
+        "tamperRejected": true
+      },
+      "error": null
+    },
+    {
+      "id": "M3-005",
+      "name": "NativeCore Ed25519 signature verification",
+      "mechanism": "M3-NativeCore",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "signatureVerified": true
+      },
+      "error": null
+    },
+    {
+      "id": "M4-001",
+      "name": "NativeCore named pipe server lifecycle",
+      "mechanism": "M4-NamedPipeIPC",
+      "pass": true,
+      "elapsedMs": 3,
+      "data": {
+        "lifecycleClean": true
+      },
+      "error": null
+    },
+    {
+      "id": "M4-002",
+      "name": "NativeCore named pipe security gate rejects un-spawned PIDs",
+      "mechanism": "M4-NamedPipeIPC",
+      "pass": true,
+      "elapsedMs": 79,
+      "data": {
+        "connectionRejectedAsExpected": true,
+        "exitCode": 1
+      },
+      "error": null
+    },
+    {
+      "id": "M4-003",
+      "name": "NativeCore monotonic counter tracking",
+      "mechanism": "M4-NamedPipeIPC",
+      "pass": true,
+      "elapsedMs": 5,
+      "data": {
+        "initial": 1,
+        "incremented": 2,
+        "current": 2
+      },
+      "error": null
+    },
+    {
+      "id": "M5-001",
+      "name": "AccountsContainer OCC revision increment & duplicate prevention",
+      "mechanism": "M5-StateStore",
+      "pass": true,
+      "elapsedMs": 2,
+      "data": {
+        "upsertOk": true,
+        "revision": 2,
+        "occVerified": true
+      },
+      "error": null
+    },
+    {
+      "id": "M5-002",
+      "name": "SanitizerGate secret redaction immutability",
+      "mechanism": "M5-StateStore",
+      "pass": true,
+      "elapsedMs": 0,
+      "data": {
+        "redacted": true,
+        "protectedValue": "[PROTECTED]"
+      },
+      "error": null
+    },
+    {
+      "id": "M5-003",
+      "name": "StateStore full in-memory lifecycle & Prelude projection",
+      "mechanism": "M5-StateStore",
+      "pass": true,
+      "elapsedMs": 9,
+      "data": {
+        "protocol": {
+          "protocolVersion": "1.0.0",
+          "serverTime": "2026-10-06T04:11:17.341Z",
+          "acpInstanceId": "acp-local-node-01",
+          "environment": "production"
+        },
+        "accountPresent": true,
+        "passwordSafelyRedacted": true
+      },
+      "error": null
+    },
+    {
+      "id": "M6-001",
+      "name": "ApiServer start & listen on ephemeral port",
+      "mechanism": "M6-HttpWsServer",
+      "pass": true,
+      "elapsedMs": 16,
+      "data": {
+        "boundPort": 55348,
+        "tokenAvailable": true
+      },
+      "error": null
+    },
+    {
+      "id": "M6-002",
+      "name": "Express HTTP ingress route dispatch",
+      "mechanism": "M6-HttpWsServer",
+      "pass": true,
+      "elapsedMs": 17,
+      "data": {
+        "httpStatus": 200,
+        "receivedBytes": 126
+      },
+      "error": null
+    },
+    {
+      "id": "M6-003",
+      "name": "WebSocket stream connection & broadcast delivery",
+      "mechanism": "M6-HttpWsServer",
+      "pass": true,
+      "elapsedMs": 68,
+      "data": {
+        "wsReceived": true
+      },
+      "error": null
+    },
+    {
+      "id": "M6-004",
+      "name": "ApiServer clean teardown & port release",
+      "mechanism": "M6-HttpWsServer",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "closed": true
+      },
+      "error": null
+    },
+    {
+      "id": "M7-001",
+      "name": "SchemaMigrator initial baseline detection",
+      "mechanism": "M7-SchemaMigrator",
+      "pass": true,
+      "elapsedMs": 1,
+      "data": {
+        "initialVersion": 0
+      },
+      "error": null
+    },
+    {
+      "id": "M7-002",
+      "name": "SchemaMigrator sequential migration execution",
+      "mechanism": "M7-SchemaMigrator",
+      "pass": true,
+      "elapsedMs": 2,
+      "data": {
+        "migratedVersion": 4,
+        "tablesCreated": [
+          "cache_metadata",
+          "accounts_metadata_cache",
+          "global_automation_config"
+        ]
+      },
+      "error": null
+    },
+    {
+      "id": "M7-003",
+      "name": "SchemaMigrator idempotency on second run",
+      "mechanism": "M7-SchemaMigrator",
+      "pass": true,
+      "elapsedMs": 0,
+      "data": {
+        "idempotent": true,
+        "version": 4
+      },
+      "error": null
+    },
+    {
+      "id": "M8-001",
+      "name": "SecurityFacade initialization & state engine readiness",
+      "mechanism": "M8-Lifecycle",
+      "pass": true,
+      "elapsedMs": 66,
+      "data": {
+        "initialized": true,
+        "degradedState": true
+      },
+      "error": null
+    },
+    {
+      "id": "M8-002",
+      "name": "Ingress developer token generation & retrieval",
+      "mechanism": "M8-Lifecycle",
+      "pass": true,
+      "elapsedMs": 0,
+      "data": {
+        "tokenLength": 36,
+        "tokenFormatValid": true
+      },
+      "error": null
+    },
+    {
+      "id": "M8-003",
+      "name": "Command router registration & default handler dispatch",
+      "mechanism": "M8-Lifecycle",
+      "pass": true,
+      "elapsedMs": 2,
+      "data": {
+        "commandHandled": true,
+        "result": {
+          "success": true,
+          "results": [
+            {
+              "status": "OK",
+              "systemState": "SECURITY_STATE_READY",
+              "lifecycle": "STOPPED",
+              "activeBrowsers": 0,
+              "fleetReadiness": null
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "id": "M8-004",
+      "name": "Shared StateStore initialization & default account seeding",
+      "mechanism": "M8-Lifecycle",
+      "pass": true,
+      "elapsedMs": 0,
+      "data": {
+        "seededCount": 2,
+        "lifecycleReady": true
+      },
+      "error": null
+    }
+  ]
+}
