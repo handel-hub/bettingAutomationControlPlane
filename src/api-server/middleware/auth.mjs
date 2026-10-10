@@ -7,48 +7,52 @@ import { logger } from '../../shared/logging.mjs';
 
 export const authConfig = {
   activeToken: process.env.ACP_AUTH_TOKEN || null,
-  requireAuth: process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true'
+  requireAuth: process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true' || Boolean(process.env.ACP_AUTH_TOKEN)
 };
 
 /**
- * Initializes or loads the local development token.
- * Writes to .acp-dev-token for local frontend console discovery.
+ * Initializes or loads the local IPC authentication token.
+ * Writes to .acp-ipc-token with 0o600 permissions so the local Frontend console
+ * can authenticate across all execution environments.
  * @returns {string}
  */
-export function initDevToken() {
+export function initIpcToken() {
   if (authConfig.activeToken) {
+    authConfig.requireAuth = process.env.ACP_AUTH_REQUIRED !== 'false';
     return authConfig.activeToken;
   }
 
-  const isProduction = process.env.NODE_ENV === 'production';
-  // Load stable token from disk if exists in dev mode, otherwise generate
-  const tokenPath = path.join(process.cwd(), '.acp-dev-token');
+  const ipcTokenPath = path.join(process.cwd(), '.acp-ipc-token');
   let savedToken = null;
-  if (!isProduction && !process.env.ACP_AUTH_TOKEN && fs.existsSync(tokenPath)) {
+
+  if (!process.env.ACP_AUTH_TOKEN && fs.existsSync(ipcTokenPath)) {
     try {
-      savedToken = fs.readFileSync(tokenPath, 'utf8').trim();
+      const val = fs.readFileSync(ipcTokenPath, 'utf8').trim();
+      if (val.length >= 16) {
+        savedToken = val;
+      }
     } catch {}
   }
 
-  const generated = process.env.ACP_AUTH_TOKEN || savedToken || `dev_${crypto.randomBytes(16).toString('hex')}`;
+  const generated = process.env.ACP_AUTH_TOKEN || savedToken || `ipc_${crypto.randomBytes(32).toString('hex')}`;
   authConfig.activeToken = generated;
   authConfig.requireAuth = process.env.ACP_AUTH_REQUIRED !== 'false';
 
-  if (!isProduction) {
-    try {
-      if (!savedToken) {
-        fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
-        logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Ephemeral dev token provisioned');
-      } else {
-        logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Persisted dev token loaded');
-      }
-    } catch (err) {
-      logger.warn({ err: err.message }, '[Auth] Could not write .acp-dev-token file');
-    }
+  try {
+    fs.writeFileSync(ipcTokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+    logger.info(
+      { tokenFile: '.acp-ipc-token', persisted: Boolean(savedToken), requireAuth: authConfig.requireAuth },
+      '[Auth] Local IPC authentication token ready'
+    );
+  } catch (err) {
+    logger.warn({ err: err.message }, '[Auth] Could not write .acp-ipc-token file');
   }
 
   return generated;
 }
+
+export const initDevToken = initIpcToken;
+
 
 /**
  * Validates whether a token string is valid against the active token.

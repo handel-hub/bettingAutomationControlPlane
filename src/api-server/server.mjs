@@ -13,6 +13,7 @@ import { systemRouter } from './routes/systemRoutes.mjs';
 import { supportRouter } from './routes/supportRoutes.mjs';
 import { platformsRouter } from './routes/platformsRoutes.mjs';
 import { preludeRouter } from './routes/preludeRoute.mjs';
+import { authRouter } from './routes/authRoutes.mjs';
 import { wsServer, isAllowedOrigin } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
 import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
@@ -74,7 +75,8 @@ export class ApiServer {
       next();
     });
 
-    // Mount 7 Domain Routers
+    // Mount Domain Routers
+    this.app.use('/api/v1/auth', authRouter);
     this.app.use('/api/v1/automation', automationRouter);
     this.app.use('/api/v1/accounts', accountsRouter);
     this.app.use('/api/v1/billing', billingRouter);

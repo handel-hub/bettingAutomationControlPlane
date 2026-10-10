@@ -10,7 +10,7 @@ import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { DEFAULT_STRATEGY_CATALOG } from '../../state-store/types/contracts.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
 import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
-import { securityFacade } from '../../security-authority/facade.mjs';
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
 
 /**
  * Verifies if an Origin header is permitted to connect to the Control Plane WebSocket.
@@ -163,19 +163,7 @@ class WsStreamer {
         const accountsView = await repositoryFactory.getAccountsRepo().list({}, { offset: 0, limit: 50 });
         const notificationsData = await repositoryFactory.getNotificationsRepo().list({ unreadOnly: false, severity: 'ALL' });
         
-        const secState = securityFacade.getSystemState();
-        let computedLifecycleState = 'Authorized';
-        if (billingSnapshot?.status === 'Payment_Required' || billingSnapshot?.status === 'Past_Due') {
-          computedLifecycleState = 'Payment_Required';
-        } else if (securityFacade.isDegraded()) {
-          computedLifecycleState = 'Degraded';
-        } else if (secState === 'OFFLINE_GRACE') {
-          computedLifecycleState = 'Offline_Grace';
-        } else if (secState === 'UNINITIALIZED' || secState === 'INITIALIZING' || secState === 'SECURITY_STATE_READY' || secState === 'UNAUTHENTICATED' || secState === 'AUTHENTICATING') {
-          computedLifecycleState = 'Awaiting_Auth';
-        } else if (secState === 'REVOKED' || secState === 'COMPROMISED') {
-          computedLifecycleState = 'Revoked';
-        }
+        const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
 
         const runtimeState = {
           lifecycleState: computedLifecycleState,
@@ -246,8 +234,10 @@ class WsStreamer {
           if (parsed && (parsed.topic === 'system:resync' || parsed.type === 'RESYNC')) {
             const store = getSharedStateStore();
             const automationSnapshot = await workspaceAggregator.getSnapshot();
+            const billingSnapshot = store.billing.getSnapshot();
+            const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
             const runtimeState = {
-              lifecycleState: 'Authorized',
+              lifecycleState: computedLifecycleState,
               automationLifecycle: workspaceAggregator.lifecycle,
               automationMessage: workspaceAggregator.lifecycleMessage,
               automationCapabilities: automationSnapshot.capabilities,
