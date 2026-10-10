@@ -146,17 +146,16 @@ export class DecisionEngine {
    * @returns {import('./authorization/capabilities.mjs').Capability[]}
    */
   getCurrentCapabilities() {
-    // Per Canonical Specification §48, non-security configuration modifications
-    // (pricing, risk, rebet, proxy, timeouts) are non-entitlement-gated and permitted.
-    // Emergency stop is also a non-entitlement-gated safety invariant.
-    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP];
+    // Safety invariant: Emergency stop is always permitted.
+    const safetyCaps = [CAPABILITY.AUTOMATION_STOP];
 
     if (this.inMemoryState?.state !== SecurityState.OPERATIONAL && this.inMemoryState?.state !== SecurityState.OFFLINE_GRACE) {
-      return baseCaps;
+      return safetyCaps;
     }
     if (this.inMemoryState.authorization?.status !== 'VALID') {
-      return baseCaps;
+      return safetyCaps;
     }
+    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
     const caps = Array.from(new Set([...baseCaps, ...(this.inMemoryState.authorization.capability_set || [])]));
     if (typeof this.activeExecutionChecker === 'function') {
       try {

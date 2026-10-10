@@ -240,41 +240,56 @@ export class BackendSyncService {
       logger.warn({ err: err.message }, '[BackendSyncService] Machine registration returned notice (may already be registered)');
     }
 
-    // 5. Authenticate session if credentials provided or available in env
-    const email = credentials?.email || process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-    const password = credentials?.password || process.env.OPERATOR_PASSWORD || 'Password123!';
+    // 5. Authenticate session ONLY if explicit credentials provided or configured in env
+    const email = credentials?.email || process.env.OPERATOR_EMAIL || null;
+    const password = credentials?.password || process.env.OPERATOR_PASSWORD || null;
 
+    this.isConnected = true;
     let authRes = null;
-    try {
-      authRes = await this.client.initAuth({ email, password });
-      this.lastAuthResult = authRes;
-      logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
-      console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
-    } catch (err) {
-      logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; proceeding with public/local capability scope');
-      console.warn(`⚠ [ControlPlane] Cloud Backend login failed for "${email}": ${err.message}`);
+
+    if (email && password) {
+      try {
+        authRes = await this.client.initAuth({ email, password });
+        this.lastAuthResult = authRes;
+        if (clock) {
+          await clock.updateAnchor(Date.now()).catch(() => {});
+        }
+        logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
+        console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
+      } catch (err) {
+        this.lastAuthResult = null;
+        logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; operator must authenticate via /api/v1/auth/login');
+        console.warn(`⚠ [ControlPlane] Cloud Backend login failed for "${email}": ${err.message}`);
+      }
+    } else {
+      this.lastAuthResult = null;
+      logger.info('[BackendSyncService] No startup credentials provided; awaiting interactive operator authentication.');
     }
 
-    // 6. Pull authoritative snapshot and hydrate in-memory repositories & state store
-    try {
-      await this.pullAuthoritativeSnapshot();
-      this.isConnected = true;
-      this.isHydrated = true;
+    // 6. If authenticated, pull authoritative snapshot and hydrate in-memory repositories & state store
+    if (authRes && authRes.sessionId) {
+      try {
+        await this.pullAuthoritativeSnapshot();
+        this.isHydrated = true;
 
-      // 7. Flush pending outbox mutations now that we are connected
-      await this.flushOutbox();
+        // 7. Flush pending outbox mutations now that we are connected and authenticated
+        await this.flushOutbox();
 
-      // 8. Save encrypted cache for future offline cold boot & test fixture compatibility
-      this.saveLocalCache();
-      logger.info('[BackendSyncService] Authoritative state hydrated and local cache updated.');
+        // 8. Save encrypted cache for future offline cold boot
+        this.saveLocalCache();
+        logger.info('[BackendSyncService] Authoritative state hydrated and local cache updated.');
 
-      // 9. Establish Server-to-ACP Event Stream WebSocket connection
-      if (this.enableWebSocket && this.client.sessionId) {
-        this.connectWebSocket();
+        // 9. Establish Server-to-ACP Event Stream WebSocket connection
+        if (this.enableWebSocket && this.client.sessionId) {
+          this.connectWebSocket();
+        }
+      } catch (err) {
+        logger.error({ err: err.message }, '[BackendSyncService] Error pulling snapshot from backend; falling back to cache');
+        this.loadLocalCache();
       }
-    } catch (err) {
-      logger.error({ err: err.message }, '[BackendSyncService] Error pulling snapshot from backend; falling back to cache');
-      this.loadLocalCache();
+    } else {
+      // Pull public reference catalogs (platforms & plans) even before login
+      await this.pullPublicCatalogs();
     }
 
     return {
@@ -282,6 +297,125 @@ export class BackendSyncService {
       isHydrated: this.isHydrated,
       session: this.lastAuthResult
     };
+  }
+
+  /**
+   * Pulls public reference catalogs (platforms & plans) without requiring an authenticated session.
+   */
+  async pullPublicCatalogs() {
+    const catalogsRepo = repositoryFactory.getCatalogsRepo();
+    try {
+      let currentPlatformEtag = undefined;
+      let currentPlansEtag = undefined;
+      try {
+        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+        const store = getSharedStateStore();
+        currentPlatformEtag = store.metadataAdapter?.get('platform_registry')?.etag;
+        currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
+      } catch { /* ignore */ }
+
+      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
+      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
+        const platforms = platformRes.registry.platforms || platformRes.registry;
+        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+      }
+
+      const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
+      if (!plansRes.notModified && plansRes.catalog && catalogsRepo) {
+        const plans = plansRes.catalog.plans || plansRes.catalog;
+        catalogsRepo.hydratePlans(plans, plansRes.etag);
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch public catalog snapshots');
+    }
+  }
+
+  /**
+   * Interactive operator login flow: registers machine if needed, authenticates with Backend,
+   * establishes SecurityFacade session, pulls authoritative snapshot, and connects WebSocket.
+   * @param {{ email: string, password: string }} credentials
+   */
+  async authenticateOperator({ email, password }) {
+    if (!this.machineIdentity.publicKeyHex) {
+      await this.machineIdentity.initialize();
+    }
+    try {
+      const desc = this.machineIdentity.getDescriptor();
+      const selfSig = this.machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
+      await this.client.registerMachine(desc.machineKeyPub, `inst_${desc.hardwareId}`, selfSig, desc);
+    } catch { /* ignore if already registered */ }
+
+    const authRes = await this.client.initAuth({ email, password });
+    this.lastAuthResult = authRes;
+    this.isConnected = true;
+
+    if (clock) {
+      await clock.updateAnchor(Date.now()).catch(() => {});
+    }
+
+    const securityResult = await securityFacade.establishSession(authRes);
+    await this.pullAuthoritativeSnapshot();
+    this.isHydrated = true;
+    await this.flushOutbox();
+    this.saveLocalCache();
+
+    if (this.enableWebSocket && this.client.sessionId) {
+      this.connectWebSocket();
+    }
+
+    return { authRes, securityResult };
+  }
+
+  /**
+   * Interactive operator registration flow: registers operator on Backend, establishes session,
+   * and hydrates initial state.
+   * @param {{ email: string, password: string, name?: string }} params
+   */
+  async registerOperator({ email, password, name }) {
+    if (!this.machineIdentity.publicKeyHex) {
+      await this.machineIdentity.initialize();
+    }
+    try {
+      const desc = this.machineIdentity.getDescriptor();
+      const selfSig = this.machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
+      await this.client.registerMachine(desc.machineKeyPub, `inst_${desc.hardwareId}`, selfSig, desc);
+    } catch { /* ignore if already registered */ }
+
+    const authRes = await this.client.registerOperator({ email, password, name });
+    this.lastAuthResult = authRes;
+    this.isConnected = true;
+
+    if (clock) {
+      await clock.updateAnchor(Date.now()).catch(() => {});
+    }
+
+    const securityResult = await securityFacade.establishSession(authRes);
+    await this.pullAuthoritativeSnapshot();
+    this.isHydrated = true;
+
+    if (this.enableWebSocket && this.client.sessionId) {
+      this.connectWebSocket();
+    }
+
+    return { authRes, securityResult };
+  }
+
+  /**
+   * Logs out current operator session, scrubs local user-scoped cache, and disconnects event stream.
+   */
+  async logoutOperator() {
+    this.disconnectWebSocket();
+    this.client.setSession(null, this.client.machineId);
+    this.lastAuthResult = null;
+    this.lastSyncTimestamp = null;
+    this.lastSyncHrtime = null;
+    await securityFacade.logout().catch(() => {});
+    await securityFacade.transitionToUnauthenticated().catch(() => {});
+    try {
+      const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+      const store = getSharedStateStore();
+      store.onLogout();
+    } catch { /* ignore */ }
   }
 
   /**
@@ -711,11 +845,14 @@ export class BackendSyncService {
     const configRepo = repositoryFactory.getConfigRepo();
     const accountsRepo = repositoryFactory.getAccountsRepo();
     const billingRepo = repositoryFactory.getBillingRepo();
-    const catalogsRepo = repositoryFactory.getCatalogsRepo();
+    let anyAuthDomainSucceeded = false;
 
     // 1. Fetch automation configuration and accounts snapshot
     try {
       const autoSnapshot = await this.client.getAutomationSnapshot();
+      if (autoSnapshot) {
+        anyAuthDomainSucceeded = true;
+      }
       if (autoSnapshot?.globalConfig) {
         configRepo.hydrate(autoSnapshot.globalConfig);
       }
@@ -730,6 +867,7 @@ export class BackendSyncService {
     try {
       const accountsRes = await this.client.getBettingAccounts({ limit: 1000 });
       if (Array.isArray(accountsRes?.viewportAccounts)) {
+        anyAuthDomainSucceeded = true;
         accountsRepo.hydrate(accountsRes.viewportAccounts);
       }
     } catch (err) {
@@ -740,6 +878,7 @@ export class BackendSyncService {
     try {
       const billingRes = await this.client.getBillingSnapshot();
       if (billingRes) {
+        anyAuthDomainSucceeded = true;
         const sub = billingRes.subscription || (billingRes.status ? billingRes : null);
         const invs = billingRes.invoices || [];
         if (typeof billingRepo.hydrate === 'function') {
@@ -751,33 +890,15 @@ export class BackendSyncService {
     }
 
     // 4. Fetch platform registry and plans catalog with conditional ETag revalidation
-    try {
-      let currentPlatformEtag = undefined;
-      let currentPlansEtag = undefined;
-      try {
-        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
-        const store = getSharedStateStore();
-        currentPlatformEtag = store.metadataAdapter?.get('platform_registry')?.etag;
-        currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
-      } catch { /* ignore */ }
+    await this.pullPublicCatalogs();
 
-      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
-      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
-        const platforms = platformRes.registry.platforms || platformRes.registry;
-        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+    if (anyAuthDomainSucceeded) {
+      this.lastSyncTimestamp = new Date().toISOString();
+      this.lastSyncHrtime = process.hrtime.bigint();
+      if (clock) {
+        await clock.updateAnchor(Date.now()).catch(() => {});
       }
-
-      const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
-      if (!plansRes.notModified && plansRes.catalog && catalogsRepo) {
-        const plans = plansRes.catalog.plans || plansRes.catalog;
-        catalogsRepo.hydratePlans(plans, plansRes.etag);
-      }
-    } catch (err) {
-      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch catalog snapshots directly');
     }
-
-    this.lastSyncTimestamp = new Date().toISOString();
-    this.lastSyncHrtime = process.hrtime.bigint();
   }
 
   /**

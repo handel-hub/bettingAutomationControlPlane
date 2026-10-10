@@ -204,6 +204,48 @@ export const Transitions = [
     nextState: SecurityState.AUTHENTICATING
   },
   {
+    currentState: SecurityState.LOGGED_OUT,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.AUTH_FAILED,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.AUTHZ_FAILURE,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.EXPIRED,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.AUTHENTICATED,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.OPERATIONAL,
+    event: TransitionEvent.LOGIN_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.AUTHENTICATING
+  },
+  {
+    currentState: SecurityState.AUTHENTICATED,
+    event: TransitionEvent.LOGOUT_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.LOGGING_OUT
+  },
+  {
     currentState: SecurityState.OPERATIONAL,
     event: TransitionEvent.LOGOUT_INTENT,
     guard: (state, payload) => true,
