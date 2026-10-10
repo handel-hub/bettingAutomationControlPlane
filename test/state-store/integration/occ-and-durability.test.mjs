@@ -9,6 +9,7 @@ import { ApiServer } from '../../../src/api-server/server.mjs';
 import { commandRouter } from '../../../src/command/commandRouter.mjs';
 import { repositoryFactory } from '../../../src/repositories/repositoryFactory.mjs';
 import { getSharedStateStore } from '../../../src/state-store/sharedStateStore.mjs';
+import { securityFacade } from '../../../src/security-authority/facade.mjs';
 
 describe('Tier 4 Hardening: OCC, Durability & Write-Through Integrity', () => {
   const testDbDir = path.join(process.cwd(), '.tmp-durability-test');
@@ -108,6 +109,13 @@ describe('Tier 4 Hardening: OCC, Durability & Write-Through Integrity', () => {
   });
 
   it('CAN-07 & CAN-08: PATCH /api/v1/accounts/:id rejects stale OCC revisions with HTTP 409 Conflict', async () => {
+    await securityFacade.initialize(':memory:');
+    await securityFacade.establishSession({
+      sessionId: 'sess_occ_test',
+      accountId: 'acc_occ_test',
+      capabilities: ['CAP_CONFIG_MODIFY', 'CAP_ACCOUNT_MANAGE']
+    });
+
     // Ensure command router handler is registered
     commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
       return repositoryFactory.getAccountsRepo().create(cmd.payload);

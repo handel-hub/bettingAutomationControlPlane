@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { BackendSyncService } from '../../src/sync/backendSyncService.mjs';
 import { BackendClient } from '../../src/security-authority/protocol/backend-client.mjs';
+import { CanonicalSerializer } from '../../src/security-authority/protocol/canonical-serializer.mjs';
 import { repositoryFactory } from '../../src/repositories/repositoryFactory.mjs';
 import { securityFacade } from '../../src/security-authority/facade.mjs';
 import { SecurityState } from '../../src/security-authority/state-machine/states.mjs';
@@ -19,6 +20,21 @@ test('Priority 2: Cloud Backend Synchronizer Integration Suite', async (t) => {
   let serverPort;
   let mockServerOnline = true;
   const capturedCalls = [];
+
+  const { publicKey: backendPubKey, privateKey: backendPrivKey } = crypto.generateKeyPairSync('ed25519');
+  process.env.PINNED_BACKEND_PUBKEY_HEX = backendPubKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+  const buildSignedEnvelope = (payloadObj) => {
+    const envelope = {
+      version: 2,
+      timestamp: new Date().toISOString(),
+      server_epoch: 1,
+      payload: payloadObj,
+      generation: 1
+    };
+    const msg = Buffer.concat([Buffer.from('CONTROL_PLANE_V1'), CanonicalSerializer.serializeBackendResponse(envelope)]);
+    const sigHex = crypto.sign(null, msg, backendPrivKey).toString('hex');
+    return { ...envelope, ...payloadObj, signatures: { '1': sigHex } };
+  };
 
   // 1. Setup Mock Cloud Backend Server
   await new Promise((resolve) => {
@@ -40,11 +56,13 @@ test('Priority 2: Cloud Backend Synchronizer Integration Suite', async (t) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'ok' }));
         } else if (req.url === '/api/v1/machines/register') {
+          const resp = buildSignedEnvelope({ machineId: 'mach_p2_001', status: 'REGISTERED' });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ machineId: 'mach_p2_001', status: 'REGISTERED' }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/auth/init') {
+          const resp = buildSignedEnvelope({ sessionId: 'sess_p2_valid', sessionGeneration: 1 });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ sessionId: 'sess_p2_valid', sessionGeneration: 1 }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/automation/snapshot') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -190,7 +208,12 @@ test('Priority 2: Cloud Backend Synchronizer Integration Suite', async (t) => {
 
     // Initialize Security Authority with valid baseline
     await securityFacade.initialize(':memory:');
-    await securityFacade.initDevSession();
+    await securityFacade.establishSession({
+      sessionId: 'test-sess-grace-001',
+      accountId: 'usr_grace_test',
+      capabilities: Object.values(CAPABILITY),
+      license: { status: 'VALID' }
+    });
 
     // Client pointing to an unreachable port (offline)
     const offlineClient = new BackendClient('http://127.0.0.1:59999', mockIdentity);
