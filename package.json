@@ -6,7 +6,7 @@
     "start": "node src/index.mjs",
     "start:compiled": "node dist/runner.cjs",
     "start:dist": "node dist/runner.cjs",
-    "dev": "node src/index.mjs --dev",
+    "dev": "node src/index.mjs",
     "build": "node scripts/build-dev.mjs",
     "build:clean": "node scripts/build-dev.mjs --clean",
     "build:test": "node scripts/build-dev.mjs --test",
