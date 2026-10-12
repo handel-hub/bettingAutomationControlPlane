@@ -1,4 +1,6 @@
 // @ts-check
+import crypto from 'crypto';
+import os from 'os';
 
 const CANONICAL_PLATFORM_NAMES = {
   sportybet: 'SportyBet',
@@ -9,6 +11,70 @@ const CANONICAL_PLATFORM_NAMES = {
   bet365: 'Bet365',
   pinnacle: 'Pinnacle'
 };
+
+/** @type {Buffer | null} */
+let cachedLocalVaultKey = null;
+
+function getLocalVaultKey() {
+  if (cachedLocalVaultKey) return cachedLocalVaultKey;
+  let userPart = 'acp_local';
+  try {
+    userPart = os.userInfo().username || 'acp_local';
+  } catch { /* ignore */ }
+  const seed = process.env.ACP_LOCAL_VAULT_SECRET ||
+    process.env.ACP_IPC_TOKEN ||
+    `acp-vault-v1:${os.hostname()}:${userPart}:${os.platform()}:${os.arch()}`;
+  cachedLocalVaultKey = crypto.scryptSync(seed, 'acp_sqlite_accounts_salt_v1', 32);
+  return cachedLocalVaultKey;
+}
+
+/**
+ * Encrypts a plaintext password with AES-256-GCM for SQLite storage at rest.
+ * @param {string} plain
+ * @returns {string}
+ */
+export function encryptLocalPassword(plain) {
+  if (!plain || plain === '[PROTECTED]' || plain.includes('***') || plain.includes('•••')) {
+    return '';
+  }
+  if (plain.startsWith('enc:v1:')) {
+    return plain;
+  }
+  const key = getLocalVaultKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+/**
+ * Decrypts an AES-256-GCM encrypted password from SQLite storage.
+ * @param {string} stored
+ * @returns {string}
+ */
+export function decryptLocalPassword(stored) {
+  if (!stored || stored === '[PROTECTED]' || stored.includes('***') || stored.includes('•••')) {
+    return '';
+  }
+  if (!stored.startsWith('enc:v1:')) {
+    return stored;
+  }
+  try {
+    const parts = stored.split(':');
+    if (parts.length !== 5) return '';
+    const iv = Buffer.from(parts[2], 'hex');
+    const tag = Buffer.from(parts[3], 'hex');
+    const ciphertext = Buffer.from(parts[4], 'hex');
+    const key = getLocalVaultKey();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch {
+    return '';
+  }
+}
 
 function formatPlatformDisplayName(rawPlatform, fallback) {
   if (!rawPlatform) return fallback || 'Unknown';
@@ -51,30 +117,33 @@ export class AccountsAdapter {
       ORDER BY last_updated DESC
     `).all(userId);
 
-    return rows.map(r => ({
-      id: r.id,
-      userId: r.userId,
-      name: r.name,
-      platformId: r.platformId,
-      platformDisplayName: formatPlatformDisplayName(r.platformDisplayName || r.platformId, r.name),
-      accountUsername: r.accountUsername,
-      accountPassword: r.accountPassword || '[PROTECTED]',
-      lastKnownBalance: r.lastKnownBalance,
-      currencySymbol: r.currencySymbol,
-      backendState: r.backendState,
-      desiredState: r.desiredState || 'STOPPED',
-      observedState: r.observedState || 'STOPPED',
-      executionStatusReason: r.executionStatusReason || null,
-      presentationCategory: r.presentationCategory,
-      statusDescription: r.statusDescription,
-      isSelectable: true,
-      availableActions: r.availableActionsJson ? JSON.parse(r.availableActionsJson) : ['ACTIVATE', 'DEACTIVATE', 'DELETE'],
-      pendingOperation: null,
-      tags: JSON.parse(r.tagsJson || '[]'),
-      effectiveConfig: r.effectiveConfigJson ? JSON.parse(r.effectiveConfigJson) : null,
-      lastUpdated: r.lastUpdated,
-      lastSynchronization: r.lastSynchronization
-    }));
+    return rows.map(r => {
+      const decryptedPwd = decryptLocalPassword(r.accountPassword);
+      return {
+        id: r.id,
+        userId: r.userId,
+        name: r.name,
+        platformId: r.platformId,
+        platformDisplayName: formatPlatformDisplayName(r.platformDisplayName || r.platformId, r.name),
+        accountUsername: r.accountUsername,
+        accountPassword: decryptedPwd || '[PROTECTED]',
+        lastKnownBalance: r.lastKnownBalance,
+        currencySymbol: r.currencySymbol,
+        backendState: r.backendState,
+        desiredState: r.desiredState || 'STOPPED',
+        observedState: r.observedState || 'STOPPED',
+        executionStatusReason: r.executionStatusReason || null,
+        presentationCategory: r.presentationCategory,
+        statusDescription: r.statusDescription,
+        isSelectable: true,
+        availableActions: r.availableActionsJson ? JSON.parse(r.availableActionsJson) : ['ACTIVATE', 'DEACTIVATE', 'DELETE'],
+        pendingOperation: null,
+        tags: JSON.parse(r.tagsJson || '[]'),
+        effectiveConfig: r.effectiveConfigJson ? JSON.parse(r.effectiveConfigJson) : null,
+        lastUpdated: r.lastUpdated,
+        lastSynchronization: r.lastSynchronization
+      };
+    });
   }
 
   /**
@@ -94,7 +163,7 @@ export class AccountsAdapter {
       account.accountPassword === '[PROTECTED]' ||
       account.accountPassword.includes('***') ||
       account.accountPassword.includes('•••');
-    const incomingPassword = isMaskedPassword ? '' : account.accountPassword;
+    const incomingPassword = isMaskedPassword ? '' : encryptLocalPassword(account.accountPassword);
 
     // Evict any stale row matching the unique constraint (user_id, platform_id, account_username)
     // with a different account_id to prevent SQLite UNIQUE constraint failure during sync
@@ -109,7 +178,7 @@ export class AccountsAdapter {
         existingByUsername.account_password.includes('***') ||
         existingByUsername.account_password.includes('•••');
       if (!isExistingMasked && existingByUsername.account_password !== '') {
-        preservedPassword = existingByUsername.account_password;
+        preservedPassword = encryptLocalPassword(existingByUsername.account_password);
       }
     }
 
@@ -250,7 +319,7 @@ export class AccountsAdapter {
   }
 
   /**
-   * Directly queries the unscrubbed, raw account_password from SQLite.
+   * Directly queries and decrypts the account_password from SQLite for VaultCredentialPipeline.
    * Bypasses all public view projections and SanitizerGate.
    * @param {string} userId
    * @param {string} accountId
@@ -264,10 +333,7 @@ export class AccountsAdapter {
         WHERE user_id = ? AND account_id = ?
       `).get(userId, accountId);
       if (row && row.account_password) {
-        const isMasked = row.account_password === '[PROTECTED]' ||
-          row.account_password.includes('***') ||
-          row.account_password.includes('•••');
-        return isMasked ? '' : row.account_password;
+        return decryptLocalPassword(row.account_password);
       }
     } catch { /* ignore */ }
     return '';
