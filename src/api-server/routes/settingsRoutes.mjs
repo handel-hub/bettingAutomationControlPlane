@@ -24,10 +24,11 @@ settingsRouter.post('/intent', async (req, res) => {
     });
   }
 
-  // Check if intent requires Step-Up
+  // Check if intent requires Step-Up (including disabling MFA)
   const STEP_UP_REQUIRED = ['DELETE_ACCOUNT', 'UPDATE_PASSWORD', 'CHANGE_PASSWORD', 'CHANGE_EMAIL'];
-  if (STEP_UP_REQUIRED.includes(type)) {
-    const providedSecret = stepUpSecret || (type === 'UPDATE_PASSWORD' || type === 'CHANGE_PASSWORD' ? payload?.currentPassword : null);
+  const requiresStepUp = STEP_UP_REQUIRED.includes(type) || (type === 'CONFIGURE_MFA' && payload?.enabled === false);
+  if (requiresStepUp) {
+    const providedSecret = stepUpSecret || payload?.currentPassword || null;
     if (!providedSecret) {
       return res.status(200).json({
         requestId,

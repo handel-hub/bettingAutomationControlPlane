@@ -86,10 +86,17 @@ export class SecurityFacade {
     if (expandedCaps.has('CAP_BET_PLACE')) expandedCaps.add('CAP_TACTICAL_BET');
     if (expandedCaps.has('CAP_CONFIG_MODIFY')) expandedCaps.add('CAP_ACCOUNT_MANAGE');
 
-    const isLicenseValid = licenseData.status === 'VALID' && expandedCaps.size > 0;
+    const requiresSignatureCheck = Boolean(licenseData.signature) || process.env.NODE_ENV === 'production';
+    const hasValidSignature = requiresSignatureCheck
+      ? this.validateLicenseIntegrity(licenseData)
+      : true;
+
+    const isLicenseValid = licenseData.status === 'VALID' && hasValidSignature && expandedCaps.size > 0;
 
     const authorizationData = {
-      status: isLicenseValid ? 'VALID' : (licenseData.status || 'PAYMENT_REQUIRED'),
+      status: isLicenseValid
+        ? 'VALID'
+        : (!hasValidSignature ? 'LICENSE_SIGNATURE_INVALID' : (licenseData.status || 'PAYMENT_REQUIRED')),
       capability_set: isLicenseValid ? Array.from(expandedCaps) : []
     };
 
@@ -143,7 +150,9 @@ export class SecurityFacade {
         NativeCore.setRevokedSync(false);
         return {
           status: "AUTHENTICATED",
-          message: `Active subscription/license required (${licenseData.status || 'PAYMENT_REQUIRED'})`
+          message: !hasValidSignature
+            ? 'License cryptographic signature verification failed'
+            : `Active subscription/license required (${licenseData.status || 'PAYMENT_REQUIRED'})`
         };
       }
 
@@ -171,6 +180,9 @@ export class SecurityFacade {
   async authenticate(credentials) {
     if (credentials && credentials.sessionId) {
       return this.establishSession(credentials);
+    }
+    if (process.env.NODE_ENV === 'production') {
+      return { status: "DENIED", message: "Unverified local session fabrication is forbidden in production" };
     }
     const sessionData = {
       sessionId: `sess_${Date.now()}`,
@@ -228,7 +240,7 @@ export class SecurityFacade {
   }
 
   /**
-   * Revokes the current session explicitly.
+   * Revokes the current session explicitly and persists the cleared state to disk.
    */
   async logout() {
     await engineInstance.dispatch(TransitionEvent.LOGOUT_INTENT, {});
@@ -237,6 +249,27 @@ export class SecurityFacade {
       engineInstance.inMemoryState.session = null;
       engineInstance.inMemoryState.authorization = null;
       engineInstance.inMemoryState.license = null;
+      try {
+        const row = await StorageAdapter.getSecurityStateRow();
+        if (row) {
+          const committed = await StorageAdapter.commitTransitionWithOCC(
+            row.state_version,
+            {
+              ...engineInstance.inMemoryState,
+              state: SecurityState.LOGGED_OUT,
+              session: null,
+              authorization: null,
+              license: null
+            },
+            TransitionEvent.LOGOUT_SEQUENCE_COMPLETE
+          );
+          if (committed) {
+            engineInstance.inMemoryState.state_version = row.state_version + 1;
+          }
+        }
+      } catch {
+        // Ignore storage error during logout cleanup
+      }
     }
   }
 
@@ -251,6 +284,28 @@ export class SecurityFacade {
     if (s === SecurityState.SECURITY_STATE_READY || s === SecurityState.AUTH_FAILED || s === SecurityState.LOGGED_OUT) {
       if (engineInstance.inMemoryState) {
         engineInstance.inMemoryState.state = SecurityState.UNAUTHENTICATED;
+        engineInstance.inMemoryState.session = null;
+        engineInstance.inMemoryState.authorization = null;
+        try {
+          const row = await StorageAdapter.getSecurityStateRow();
+          if (row && row.state !== SecurityState.UNAUTHENTICATED) {
+            const committed = await StorageAdapter.commitTransitionWithOCC(
+              row.state_version,
+              {
+                ...engineInstance.inMemoryState,
+                state: SecurityState.UNAUTHENTICATED,
+                session: null,
+                authorization: null
+              },
+              'TRANSITION_TO_UNAUTHENTICATED'
+            );
+            if (committed) {
+              engineInstance.inMemoryState.state_version = row.state_version + 1;
+            }
+          }
+        } catch {
+          // Ignore storage error
+        }
       }
     }
   }
@@ -390,9 +445,19 @@ export class SecurityFacade {
   isCommandPermitted(commandType) {
     const s = this.getSystemState();
     
-    // In REVOKED state, hard lockdown: only emergency containment stops and view status are permitted
-    if (s === SecurityState.REVOKED || this.isSessionRevokedSync()) {
-      return commandType === 'EMERGENCY_STOP' || commandType === 'STOP_AUTOMATION' || commandType === 'VIEW_STATUS';
+    // In REVOKED, COMPROMISED, or TAMPER_SUSPECTED state, hard lockdown: only emergency containment stops and view status are permitted
+    if (
+      s === SecurityState.REVOKED ||
+      s === SecurityState.COMPROMISED ||
+      s === SecurityState.TAMPER_SUSPECTED ||
+      this.isSessionRevokedSync()
+    ) {
+      return (
+        commandType === 'EMERGENCY_STOP' ||
+        commandType === 'STOP_AUTOMATION' ||
+        commandType === 'VIEW_STATUS' ||
+        commandType === 'GET_HEALTH'
+      );
     }
 
     if (this.isDegraded()) {

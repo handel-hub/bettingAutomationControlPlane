@@ -155,7 +155,10 @@ export class DecisionEngine {
     if (this.inMemoryState.authorization?.status !== 'VALID') {
       return safetyCaps;
     }
-    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
+    const strictCaps = Boolean(/** @type {any} */ (this.inMemoryState).license?.strictCapabilities);
+    const baseCaps = strictCaps
+      ? [CAPABILITY.AUTOMATION_STOP]
+      : [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
     const caps = Array.from(new Set([...baseCaps, ...(this.inMemoryState.authorization.capability_set || [])]));
     if (typeof this.activeExecutionChecker === 'function') {
       try {

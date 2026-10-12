@@ -180,7 +180,6 @@ export class BackendClient {
           '/api/v1/sessions/logout',
           '/api/v1/accounts',
           '/api/v1/billing/checkout',
-          '/api/v1/billing/checkout/verify',
           '/api/v1/billing/subscription/cancel',
           '/api/v1/billing/subscription/resume',
           '/api/v1/settings/intent',

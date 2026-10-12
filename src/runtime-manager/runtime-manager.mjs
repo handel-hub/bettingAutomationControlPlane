@@ -21,6 +21,7 @@ import { securityFacade } from '../security-authority/facade.mjs';
 import { executionBoundaryManager } from './boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
 import { logger } from '../shared/logging.mjs';
+import { resolveExecutionScriptHash } from '../security-authority/execution/execution-integrity.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -406,6 +407,8 @@ export class RuntimeManager extends EventEmitter {
       }
     }
 
+    const resolvedSha256 = resolveExecutionScriptHash(targetScript, expectedSha256);
+
     let pid;
     try {
       pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
@@ -439,7 +442,7 @@ export class RuntimeManager extends EventEmitter {
         } else {
           logger.info({ pid: exitedPid }, '[RuntimeManager] Cleanly reaped exit of already-terminated or stale process');
         }
-      }, targetScript, expectedSha256);
+      }, targetScript, resolvedSha256);
     } finally {
       if (appRootModified) {
         delete process.env.APP_ROOT;

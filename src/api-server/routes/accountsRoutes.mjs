@@ -260,6 +260,18 @@ accountsRouter.post('/bulk-action', async (req, res) => {
             }
           }
         }
+
+        const actionMap = {
+          BULK_DELETE: 'DELETE_ACCOUNT',
+          BULK_ACTIVATE: 'ACTIVATE_ACCOUNT',
+          BULK_DEACTIVATE: 'DEACTIVATE_ACCOUNT'
+        };
+        const mappedAction = actionMap[type];
+        if (mappedAction) {
+          for (const id of accountIds) {
+            await backendSyncService.syncMutation('ACCOUNT_ACTION', { accountId: id, action: mappedAction }).catch(() => {});
+          }
+        }
       }
 
       wsServer.broadcast('accounts:delta', { type: 'BULK_OPERATION_RESULT', result });

@@ -14,6 +14,10 @@ import { NativeCore } from '../native/security-core.mjs';
 export const AEADStorageAdapter = {
   /** @type {import('sqlite').Database | null} */
   _db: null,
+  /** @type {string | null} */
+  _dbPath: null,
+  /** @type {number} */
+  _minValidStateVersion: 0,
 
   async initDatabase(dbPath) {
     if (!dbPath) throw new Error("Database path required");
@@ -25,6 +29,9 @@ export const AEADStorageAdapter = {
 
     // Initialize Rust crypto layer (generates/fetches root key)
     NativeCore.init();
+
+    this._dbPath = dbPath;
+    this._minValidStateVersion = 0;
 
     this._db = await open({
       filename: dbPath,
@@ -136,6 +143,23 @@ export const AEADStorageAdapter = {
 
     if (!row) return null;
 
+    if (this._minValidStateVersion > 0 && row.state_version < this._minValidStateVersion) {
+      console.error(`[AEADStorageAdapter] CRITICAL: State version rollback detected! Row version: ${row.state_version}, Minimum valid version: ${this._minValidStateVersion}`);
+      throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+    }
+
+    if (this._minValidStateVersion > 0) {
+      try {
+        const anchoredVersion = Number(NativeCore.getTransitionIntent());
+        if (Number.isFinite(anchoredVersion) && anchoredVersion > 0 && row.state_version < anchoredVersion) {
+          console.error(`[AEADStorageAdapter] CRITICAL: DPAPI hardware anchor rollback detected! Row version: ${row.state_version}, Anchored version: ${anchoredVersion}`);
+          throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+        }
+      } catch (err) {
+        if (err.message?.includes('SECURITY_STATE_UNCERTAIN')) throw err;
+      }
+    }
+
     let data;
     try {
       data = this._decryptPayload('singleton', row.state_version, row.backend_generation, row.encrypted_blob);
@@ -149,6 +173,10 @@ export const AEADStorageAdapter = {
     if (data.session_generation && row.backend_generation !== data.session_generation) {
        console.error(`[AEADStorageAdapter] CRITICAL: Backend generation mismatch! Row: ${row.backend_generation}, Payload: ${data.session_generation}`);
        throw new Error("SECURITY_STATE_UNCERTAIN: Backend generation rollback detected.");
+    }
+
+    if (row.state_version > this._minValidStateVersion) {
+      this._minValidStateVersion = row.state_version;
     }
     
     // Inject the fast-query columns into the returned data object for business logic
@@ -206,12 +234,16 @@ export const AEADStorageAdapter = {
           [nextVersion, backendGen, serverEpoch, highestTime, graceSig, encryptedBlob]
         );
         if (insertResult.changes > 0) {
+          this._minValidStateVersion = nextVersion;
+          try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
           return true;
         }
       }
       return false; // OCC conflict
     }
 
+    this._minValidStateVersion = nextVersion;
+    try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
     return true;
   },
 

@@ -193,14 +193,15 @@ test('Phase 9: Production-Parity & Dev-Mode Elimination Verification Suite (TV-0
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(resp));
           } else if (req.url === '/api/v1/billing/checkout/verify') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
+            const resp = buildSignedEnvelope({
               verified: true,
               status: 'Authorized',
               planId: payload.planId || 'PRO',
               capabilities: Object.values(CAPABILITY),
               license: { status: 'VALID', planId: payload.planId || 'PRO' }
-            }));
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(resp));
           } else if (req.url === '/api/v1/settings/intent') {
             // Backend step-up verification: reject 'valid_secret', accept only 'RealOperatorPass!123'
             if (payload.stepUpSecret !== 'RealOperatorPass!123') {

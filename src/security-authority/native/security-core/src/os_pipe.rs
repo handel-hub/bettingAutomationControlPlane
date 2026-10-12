@@ -150,6 +150,7 @@ pub fn start_secure_pipe_server(
                 let pid_success = unsafe { GetNamedPipeClientProcessId(handle, &mut client_pid) };
                 
                 if pid_success.is_err() || !os_process::is_valid_pid(client_pid) {
+                    #[cfg(debug_assertions)]
                     eprintln!("[NativePipe] Connection rejected: client_pid {} is invalid or unknown", client_pid);
                     unsafe {
                         let _ = DisconnectNamedPipe(handle);
@@ -160,6 +161,7 @@ pub fn start_secure_pipe_server(
 
                 let session_key_opt = os_process::get_session_key(client_pid);
                 if session_key_opt.is_none() {
+                    #[cfg(debug_assertions)]
                     eprintln!("[NativePipe] Connection rejected: no session key for client_pid {}", client_pid);
                     unsafe {
                         let _ = DisconnectNamedPipe(handle);
@@ -168,7 +170,6 @@ pub fn start_secure_pipe_server(
                     continue;
                 }
                 let session_key = session_key_opt.unwrap();
-                eprintln!("[NativePipe] Client PID {} connected, awaiting HMAC...", client_pid);
 
                 let mut id_lock = NEXT_CONN_ID.lock().unwrap();
                 let conn_id = *id_lock;
@@ -187,7 +188,6 @@ pub fn start_secure_pipe_server(
                     // 1. Wait for HMAC with 2000ms timeout
                     loop {
                         if start.elapsed() > Duration::from_millis(2000) {
-                            eprintln!("[NativePipe] Timeout waiting for HMAC from PID {}", client_pid);
                             break;
                         }
                         
@@ -216,12 +216,9 @@ pub fn start_secure_pipe_server(
                                 mac.update(&msg);
                                 
                                 let is_match = mac.verify_slice(&hmac_buf).is_ok();
-                                eprintln!("[NativePipe] Received 32-byte HMAC from PID {}. Match: {}", client_pid, is_match);
                                 if is_match {
                                     authenticated = true;
                                 }
-                            } else {
-                                eprintln!("[NativePipe] ReadFile for HMAC failed or read {} bytes", bytes_read);
                             }
                             break;
                         }
@@ -229,7 +226,6 @@ pub fn start_secure_pipe_server(
                     }
 
                     if !authenticated {
-                        eprintln!("[NativePipe] Authentication failed for PID {}, disconnecting", client_pid);
                         unsafe {
                             let _ = DisconnectNamedPipe(handle);
                             let _ = CloseHandle(handle);

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "enforceInProduction": true,
+  "allowAutoComputeInDev": true,
+  "defaultSha256": "2100180d02858d828840efdfbd6daec53b2e7d42b069124d5a4d1b2c0985911d",
+  "updatedAt": "2026-10-12T10:10:15.827Z",
+  "targets": {
+    "../bettingAutomation/src/worker/index.mjs": {
+      "sha256": "2100180d02858d828840efdfbd6daec53b2e7d42b069124d5a4d1b2c0985911d",
+      "updatedAt": "2026-10-12T10:10:15.775Z"
+    },
+    "../bettingAutomation/launcher/index.mjs": {
+      "sha256": "de7ce69a3aeacde12b42e32ff879695f950832d44d0863417d7ae4e13e685ff8",
+      "updatedAt": "2026-10-12T10:10:15.823Z"
+    },
+    "test/fixtures/mock-orchestrated-worker.mjs": {
+      "sha256": "787e1e0e05994456ac123674bb35e79aef4f7e587b511d9bd6935449ba1134fd",
+      "updatedAt": "2026-10-12T10:10:15.827Z"
+    }
+  }
+}

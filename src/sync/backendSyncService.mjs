@@ -114,6 +114,41 @@ export class BackendSyncService {
   }
 
   /**
+   * Encrypts an outbox mutation payload using NativeCore AEAD before SQLite persistence.
+   * @private
+   * @param {any} payload
+   * @returns {string}
+   */
+  _encryptOutboxPayload(payload) {
+    const jsonStr = JSON.stringify(payload);
+    try {
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const encrypted = NativeCore.encryptAead(Buffer.from(jsonStr, 'utf8'), aad);
+      return `enc:v1:${Buffer.from(encrypted).toString('base64')}`;
+    } catch {
+      return jsonStr;
+    }
+  }
+
+  /**
+   * Decrypts an outbox mutation payload loaded from SQLite persistence.
+   * @private
+   * @param {string} rawPayload
+   * @returns {any}
+   */
+  _decryptOutboxPayload(rawPayload) {
+    if (typeof rawPayload === 'string' && rawPayload.startsWith('enc:v1:')) {
+      const cipherBuf = Buffer.from(rawPayload.slice('enc:v1:'.length), 'base64');
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const plainBuf = NativeCore.decryptAead(cipherBuf, aad);
+      const str = Buffer.from(plainBuf).toString('utf8');
+      plainBuf.fill(0);
+      return JSON.parse(str);
+    }
+    return JSON.parse(rawPayload);
+  }
+
+  /**
    * Hydrates pending outbox entries from persistence.
    * @private
    */
@@ -128,17 +163,19 @@ export class BackendSyncService {
       const existingIds = new Set(this.outbox.map(i => i.id));
       for (const row of rows) {
         if (!existingIds.has(row.id)) {
-          this.outbox.push({
-            id: row.id,
-            mutationType: row.mutation_type,
-            payload: JSON.parse(row.payload_json),
-            attempts: row.attempts,
-            status: row.status,
-            createdAt: row.created_at,
-            nextRetryAt: row.next_retry_at,
-            lastError: row.last_error
-          });
-          existingIds.add(row.id);
+          try {
+            this.outbox.push({
+              id: row.id,
+              mutationType: row.mutation_type,
+              payload: this._decryptOutboxPayload(row.payload_json),
+              attempts: row.attempts,
+              status: row.status,
+              createdAt: row.created_at,
+              nextRetryAt: row.next_retry_at,
+              lastError: row.last_error
+            });
+            existingIds.add(row.id);
+          } catch { /* ignore corrupted outbox entry */ }
         }
       }
     } catch { /* ignore */ }
@@ -166,10 +203,11 @@ export class BackendSyncService {
 
     if (this.engine) {
       try {
+        const serializedPayload = this._encryptOutboxPayload(item.payload);
         this.engine.run(`
           INSERT INTO sync_outbox (id, mutation_type, payload_json, attempts, status, last_error, created_at, next_retry_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `, [item.id, item.mutationType, JSON.stringify(item.payload), item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
+        `, [item.id, item.mutationType, serializedPayload, item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
       } catch { /* ignore */ }
     }
 
@@ -417,13 +455,31 @@ export class BackendSyncService {
    */
   async logoutOperator() {
     this.disconnectWebSocket();
+    if (this.client?.sessionId && typeof this.client.logout === 'function') {
+      await this.client.logout().catch(() => {});
+    }
+    await securityFacade.logout().catch(() => {});
+    await securityFacade.transitionToUnauthenticated().catch(() => {});
     this.client.setSession(null, this.client.machineId);
     this.lastAuthResult = null;
     this.lastGraceToken = null;
     this.lastSyncTimestamp = null;
     this.lastSyncHrtime = null;
-    await securityFacade.logout().catch(() => {});
-    await securityFacade.transitionToUnauthenticated().catch(() => {});
+    this.outbox = [];
+    if (this.engine) {
+      try {
+        this.engine.run('DELETE FROM sync_outbox');
+      } catch { /* ignore */ }
+    }
+    if (this.cacheFilePath && fs.existsSync(this.cacheFilePath)) {
+      try {
+        fs.unlinkSync(this.cacheFilePath);
+      } catch { /* ignore */ }
+    }
+    try {
+      const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+      vaultCredentialPipeline.clear();
+    } catch { /* ignore */ }
     try {
       const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
       const store = getSharedStateStore();
@@ -620,8 +676,12 @@ export class BackendSyncService {
         break;
       }
 
-      case 'SUBSCRIPTION_STATUS_CHANGED': {
-        if (payload.subscription) {
+      case 'SUBSCRIPTION_STATUS_CHANGED':
+      case 'subscription:expired': {
+        if (eventType === 'subscription:expired') {
+          await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Payment_Required' });
+        } else if (payload.subscription) {
           const sub = payload.subscription;
           const normalizedStatus = sub.status === 'ACTIVE' ? 'Active' : (sub.status === 'PAST_DUE' ? 'Past_Due' : (sub.status === 'CANCELLED' ? 'Cancelled' : sub.status));
           const normalizedSub = {
@@ -632,7 +692,8 @@ export class BackendSyncService {
           await repositoryFactory.getBillingRepo().updateSubscription(normalizedSub);
           if (normalizedStatus === 'Active') {
             wsServer.broadcast('app:state', { state: 'Authorized' });
-          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required') {
+          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required' || normalizedStatus === 'EXPIRED' || normalizedStatus === 'Expired') {
+            await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
             wsServer.broadcast('app:state', { state: 'Payment_Required' });
           }
         }
@@ -697,10 +758,9 @@ export class BackendSyncService {
 
       case 'FORCE_LOGOUT': {
         logger.warn('[BackendSyncService] Backend issued FORCE_LOGOUT. Invalidating session context.');
+        await this.logoutOperator().catch(() => {});
         this.client.setSession(null, null);
-        await securityFacade.logout().catch(() => {});
         wsServer.broadcast('app:state', 'Unauthenticated');
-        this.disconnectWebSocket();
         break;
       }
 
@@ -1202,6 +1262,23 @@ export class BackendSyncService {
         logger.info({ type }, '[BackendSyncService] Resource already exists on Backend; ignoring duplicate');
         this.saveLocalCache();
         return { exists: true, duplicated: true };
+      }
+
+      // Fail-fast on authoritative Backend policy/entitlement/validation rejections (do not enqueue in retry outbox)
+      const policyRejectCodes = new Set([
+        'ENTITLEMENT_LIMIT_REACHED',
+        'BE_PERM_ENTITLEMENT_EXCEEDED',
+        'BE_PERM_LICENSE_EXPIRED',
+        'BE_PERM_FORBIDDEN',
+        'BE_VAL_SCHEMA_VIOLATION',
+        'BE_VAL_INVALID_UUID',
+        'HTTP_403',
+        'HTTP_400'
+      ]);
+      if (policyRejectCodes.has(err.code) || err.status === 403 || err.status === 400) {
+        err.isPolicyRejection = true;
+        logger.warn({ type, code: err.code, err: err.message }, '[BackendSyncService] Authoritative Backend policy rejection; failing fast without outbox retry');
+        throw err;
       }
 
       logger.warn({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation directly to Backend; enqueuing in retry outbox');

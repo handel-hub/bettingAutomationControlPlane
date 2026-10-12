@@ -297,6 +297,18 @@ export function registerDefaultCommandHandlers() {
         workspaceAggregator.stageAccount(created.id);
       }
     } catch (err) {
+      if (err?.isPolicyRejection) {
+        try {
+          await repositoryFactory.getAccountsRepo().delete(created.id);
+        } catch { /* ignore */ }
+        try {
+          const store = getSharedStateStore();
+          store.accounts.delete(created.id);
+        } catch { /* ignore */ }
+        vaultCredentialPipeline.evictCredential(created.id);
+        workspaceAggregator.unstageAccount(created.id);
+        throw err;
+      }
       logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for REGISTER_ACCOUNT');
     }
     return created;
