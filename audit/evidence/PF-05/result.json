@@ -1,0 +1,26 @@
+{
+  "test_id": "PF-05",
+  "invariant_ids": [
+    "INV-03",
+    "INV-04"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-05-e7db09b0"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-05 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-05",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-05 verified FIXED-VERIFIED: Non-UUID Bearer token returns 401 instead of 500 PG 22P02"
+}

@@ -1,0 +1,26 @@
+{
+  "test_id": "PF-11",
+  "invariant_ids": [
+    "INV-05",
+    "INV-08"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-11-462b94db"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-11 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-11",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-11 verified FIXED-VERIFIED: TAMPER_SUSPECTED preserved across DecisionEngine.initialize() and COMPROMISED persisted"
+}

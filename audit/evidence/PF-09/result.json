@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-09",
+  "invariant_ids": [
+    "INV-11"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-09-281b3a35"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-09 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-09",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-09 verified FIXED-VERIFIED: Control Plane binds to 127.0.0.1 and rejects Origin: null and non-localhost LAN origins"
+}

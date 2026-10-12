@@ -1,0 +1,25 @@
+{
+  "test_id": "ENT-02",
+  "invariant_ids": [
+    "INV-03",
+    "INV-04"
+  ],
+  "campaign": "TIER1_ENT",
+  "correlation_ids": [
+    "83191031-cc96-4fb8-b35d-69e68f91676f"
+  ],
+  "control_result": {
+    "passed": true,
+    "permittedPlatform": "SportyBet"
+  },
+  "attack_result": {
+    "attemptedPlatform": "Bet9ja (sportybet)",
+    "bypassSucceeded": true,
+    "createdAccountId": "4be162a4-31f4-44d0-a071-c3d0d3487550"
+  },
+  "side_effects": {
+    "unauthorizedPlatformPersistedInDb": true
+  },
+  "status": "EXECUTED-FAIL",
+  "notes": "FINDING RT-F02: createBettingAccount uses normalizedPlatform.includes(normAllowed), allowing Starter tier operators to register unpermitted bookmakers by embedding \"sportybet\" in platformDisplayName."
+}

@@ -1,0 +1,24 @@
+{
+  "test_id": "FAULT-04",
+  "invariant_ids": [
+    "INV-04",
+    "INV-08",
+    "INV-12"
+  ],
+  "campaign": "PHASE5_FAULT_RECOVERY",
+  "correlation_ids": [
+    "fault04-cp-revoke"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "commandPermittedAfterRevoke": false,
+    "state": "REVOKED"
+  },
+  "side_effects": {
+    "executionAllowedWhileRevoked": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Control Plane revokeLicense() transitioned to REVOKED, set native FFI kill-switch, and blocked START_AUTOMATION."
+}

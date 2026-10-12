@@ -1,0 +1,23 @@
+{
+  "test_id": "LOCAL-SURFACE-01",
+  "invariant_ids": [
+    "INV-11"
+  ],
+  "campaign": "TIER2_LOCAL_SURFACE",
+  "correlation_ids": [
+    "local-origin-gate"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "nullOriginRejected": true,
+    "evilOriginRejected": true,
+    "lanOriginRejected": true
+  },
+  "side_effects": {
+    "crossOriginSocketAccepted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Control Plane CORS/WebSocket origin validator rejected null, external web, and LAN origins."
+}

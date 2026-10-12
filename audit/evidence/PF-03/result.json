@@ -1,0 +1,26 @@
+{
+  "test_id": "PF-03",
+  "invariant_ids": [
+    "INV-01",
+    "INV-04"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-03-764e6fb5"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-03 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-03",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-03 verified FIXED-VERIFIED: maxAccounts camelCase/snake_case limit enforcement and empty capabilities array rejection"
+}

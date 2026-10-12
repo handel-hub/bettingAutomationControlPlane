@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-12",
+  "invariant_ids": [
+    "INV-05"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-12-20032587"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-12 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-12",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-12 verified FIXED-VERIFIED: PersistentClock increments state_version by +1 instead of Date.now()"
+}

@@ -1,0 +1,23 @@
+{
+  "test_id": "TRANSPORT-01",
+  "invariant_ids": [
+    "INV-06",
+    "INV-09"
+  ],
+  "campaign": "TIER2_TRANSPORT",
+  "correlation_ids": [
+    "nonce-trans01-cb2c533d-1895-46c0-9ac6-99eee304215a"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "tamperedHttpStatus": 401,
+    "legitimateRetryHttpStatus": 200
+  },
+  "side_effects": {
+    "nonceBurnedByInvalidSignature": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Tampered signature rejected with 401 before useNonce(), preserving nonce for legitimate signed request."
+}

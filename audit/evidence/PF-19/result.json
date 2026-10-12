@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-19",
+  "invariant_ids": [
+    "INV-10"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-19-2d92f8cd"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-19 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-19",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-19 verified FIXED-VERIFIED: Execution Plane SessionManager encrypts cookies & DOMStorage at rest with AES-256-GCM"
+}

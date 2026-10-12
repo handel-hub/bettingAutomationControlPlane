@@ -1,0 +1,22 @@
+{
+  "test_id": "DOS-01",
+  "invariant_ids": [
+    "INV-07",
+    "INV-11"
+  ],
+  "campaign": "TIER3_ABUSE_DOS",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "oversizedTelemetryHttpStatus": 413
+  },
+  "side_effects": {
+    "unboundedBatchInserted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Oversized telemetry heartbeat (>100KB) rejected with HTTP 413."
+}

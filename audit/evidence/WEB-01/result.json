@@ -1,0 +1,22 @@
+{
+  "test_id": "WEB-01",
+  "invariant_ids": [
+    "INV-09",
+    "INV-11"
+  ],
+  "campaign": "TIER3_WEB",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "javascriptReturnUrlHttpStatus": 400
+  },
+  "side_effects": {
+    "unsafeRedirectUrlIssued": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "javascript: returnUrl rejected with HTTP 400 INVALID_RETURN_URL."
+}

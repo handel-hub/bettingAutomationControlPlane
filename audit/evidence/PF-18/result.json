@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-18",
+  "invariant_ids": [
+    "INV-12"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-18-5417c5c2"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-18 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-18",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-18 verified FIXED-VERIFIED: SecureIpcClient drops invalid execution envelopes without emitting raw message fallback"
+}

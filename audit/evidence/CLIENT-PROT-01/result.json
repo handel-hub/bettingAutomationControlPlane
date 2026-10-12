@@ -1,0 +1,21 @@
+{
+  "test_id": "CLIENT-PROT-01",
+  "invariant_ids": [
+    "INV-10"
+  ],
+  "campaign": "TIER2_CLIENT_PROTECTION",
+  "correlation_ids": [
+    "sanitizer-gate"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "exportedPasswordField": "[PROTECTED]"
+  },
+  "side_effects": {
+    "secretLeakedInProjection": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "SanitizerGate replaced plaintext password with [PROTECTED]; AccountsAdapter vault key sealed via DPAPI."
+}

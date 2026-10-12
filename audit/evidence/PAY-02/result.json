@@ -1,0 +1,23 @@
+{
+  "test_id": "PAY-02",
+  "invariant_ids": [
+    "INV-01",
+    "INV-02",
+    "INV-06"
+  ],
+  "campaign": "TIER1_PAY",
+  "correlation_ids": [
+    "b190183c-f691-43cc-ad96-11c58e2d75a7"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "concurrentSingleRedemptionEnforcedAll3Runs": true
+  },
+  "side_effects": {
+    "duplicateInvoicesCreated": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Concurrent applyPaymentSuccess calls serialized via FOR UPDATE across 3 barrier runs; exactly 1 succeeded per reference."
+}

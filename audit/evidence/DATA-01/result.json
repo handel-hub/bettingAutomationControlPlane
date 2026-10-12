@@ -1,0 +1,22 @@
+{
+  "test_id": "DATA-01",
+  "invariant_ids": [
+    "INV-03",
+    "INV-10"
+  ],
+  "campaign": "TIER3_DATA",
+  "correlation_ids": [
+    "malformed-bearer"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "malformedBearerHttpStatus": 401
+  },
+  "side_effects": {
+    "unhandledDatabaseError500": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Malformed non-UUID Bearer token rejected cleanly with HTTP 401."
+}

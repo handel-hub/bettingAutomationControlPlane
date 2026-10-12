@@ -1,0 +1,23 @@
+{
+  "test_id": "UPDATE-01",
+  "invariant_ids": [
+    "INV-03",
+    "INV-12"
+  ],
+  "campaign": "TIER2_UPDATE",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "epHashMatchesManifest": true,
+    "unprivilegedUpdateHttpStatus": 403
+  },
+  "side_effects": {
+    "unauthorizedUpdateTriggered": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "EP script hash matched config/execution-integrity.json and unprivileged /restart-and-update rejected with HTTP 403."
+}

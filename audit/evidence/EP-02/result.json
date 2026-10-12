@@ -1,0 +1,23 @@
+{
+  "test_id": "EP-02",
+  "invariant_ids": [
+    "INV-10",
+    "INV-12"
+  ],
+  "campaign": "TIER2_EP",
+  "correlation_ids": [
+    "ep-session-manager"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "traversalConfinedToSessionsDir": true,
+    "encryptedAtRest": true
+  },
+  "side_effects": {
+    "plaintextCookiesOnDisk": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "SessionManager encrypted cookies with AES-256-GCM (v=2) and stripped path traversal segments from username."
+}

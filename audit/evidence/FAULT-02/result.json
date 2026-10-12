@@ -1,0 +1,22 @@
+{
+  "test_id": "FAULT-02",
+  "invariant_ids": [
+    "INV-05",
+    "INV-08"
+  ],
+  "campaign": "PHASE5_FAULT_RECOVERY",
+  "correlation_ids": [
+    "fault02-tamper-lockdown"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "stateAfterRestart": "TAMPER_SUSPECTED"
+  },
+  "side_effects": {
+    "authorityRestoredOnReboot": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "TAMPER_SUSPECTED lockdown state survived cold-boot DecisionEngine.initialize() without resetting to READY."
+}

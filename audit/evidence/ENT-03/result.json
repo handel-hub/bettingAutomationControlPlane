@@ -1,0 +1,22 @@
+{
+  "test_id": "ENT-03",
+  "invariant_ids": [
+    "INV-03",
+    "INV-05"
+  ],
+  "campaign": "TIER1_ENT",
+  "correlation_ids": [
+    "98d2bbbf-829f-4512-8051-27e9b207e8b9"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "forgedSelfSignatureRejected": true
+  },
+  "side_effects": {
+    "machineHijacked": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Forged machine selfSignature rejected with 403 Invalid self-signature."
+}

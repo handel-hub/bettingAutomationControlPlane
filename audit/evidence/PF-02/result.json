@@ -1,0 +1,26 @@
+{
+  "test_id": "PF-02",
+  "invariant_ids": [
+    "INV-04",
+    "INV-07"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-02-a1b55211"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-02 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-02",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-02 verified FIXED-VERIFIED: executeAccountAction/executeBulkAction enforce active license and reject unknown actionType with 400"
+}

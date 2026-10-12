@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-16",
+  "invariant_ids": [
+    "INV-12"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-16-9d38ddb0"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-16 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-16",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-16 verified FIXED-VERIFIED: Packaged runner enforces integrity hash without runtime ENFORCE_INTEGRITY=false bypass"
+}

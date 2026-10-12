@@ -1,0 +1,23 @@
+{
+  "test_id": "AUTH-03",
+  "invariant_ids": [
+    "INV-05",
+    "INV-06"
+  ],
+  "campaign": "TIER1_AUTH",
+  "correlation_ids": [
+    "auth03-078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true,
+    "firstUseHttpStatus": 200
+  },
+  "attack_result": {
+    "replayRejectedAll3Iterations": true
+  },
+  "side_effects": {
+    "duplicateNonceAccepted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Single-use nonce replay rejected across 3 consecutive iterations."
+}

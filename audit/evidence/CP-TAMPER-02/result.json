@@ -1,0 +1,22 @@
+{
+  "test_id": "CP-TAMPER-02",
+  "invariant_ids": [
+    "INV-03",
+    "INV-04"
+  ],
+  "campaign": "TIER1_CP_TAMPER",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "backendHttpStatusWhenLicenseExpired": 403
+  },
+  "side_effects": {
+    "accountCreatedWithoutValidServerLicense": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Direct/modified CP call to POST /api/v1/accounts rejected with HTTP 403 by Backend when server-side license is expired."
+}
