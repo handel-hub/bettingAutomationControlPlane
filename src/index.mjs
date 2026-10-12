@@ -4,7 +4,7 @@ import { apiServer } from './api-server/server.mjs';
 import { commandRouter } from './command/commandRouter.mjs';
 import { securityFacade } from './security-authority/facade.mjs';
 import { operationTracker } from './state/operationTracker.mjs';
-import { wsServer } from './api-server/websocket/wsServer.mjs';
+import { wsServer, resolveSystemIPv4Addresses } from './api-server/websocket/wsServer.mjs';
 import { logger } from './shared/logging.mjs';
 import { repositoryFactory } from './repositories/repositoryFactory.mjs';
 import { backendSyncService } from './sync/backendSyncService.mjs';
@@ -316,13 +316,18 @@ async function bootstrap() {
       await handleOfflineOrError(`Backend sync error: ${syncErr.message}`);
     }
 
-    // 6. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready
+    // 6. Start API & WebSocket Server on 0.0.0.0 (all IPv4 interfaces: loopback + LAN/mobile) ONLY AFTER State and Backend are Ready
     const port = Number(process.env.PORT) || 8000;
-    const host = process.env.HOST || '127.0.0.1';
+    const host = process.env.HOST || '0.0.0.0';
     await apiServer.listen(port, host);
 
-    logger.info(`[ControlPlane] Ready for Next.js console connections at http://${host}:${port}`);
-    logger.info(`[ControlPlane] WebSocket stream active at ws://${host}:${port}/ws/v1/events`);
+    logger.info(`[ControlPlane] Ready for Next.js console connections at http://localhost:${port}`);
+    for (const ip of resolveSystemIPv4Addresses()) {
+      if (ip !== '127.0.0.1') {
+        logger.info(`[ControlPlane] LAN / Mobile access active at http://${ip}:${port} (WS: ws://${ip}:${port}/ws/v1/events)`);
+      }
+    }
+    logger.info(`[ControlPlane] WebSocket stream active at ws://localhost:${port}/ws/v1/events`);
   } catch (err) {
     if (err.code === 'EADDRINUSE') {
       logger.fatal(`[ControlPlane] Port ${err.port || 8000} on ${err.address || '127.0.0.1'} is already in use by another running process (such as an existing Control Plane dev instance). Either terminate the running process or start with an alternative port using PORT=<port> (e.g. PORT=8001).`);
