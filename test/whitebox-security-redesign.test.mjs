@@ -238,4 +238,103 @@ test('White-Box Security & Stability Redesign Invariants (Control Plane)', async
       /SECURITY_STATE_UNCERTAIN: State version rollback detected/
     );
   });
+
+  await t.test('T-REG-06..T-REG-09: Post-Audit Adversarial Regression Suite (F-07 through F-17)', async () => {
+    // T-REG-06 (F-10): Cold-boot whole-database file replacement detected via DPAPI high-water anchor
+    const tempDbFile = path.join(os.tmpdir(), `acp_rollback_reg_${process.pid}_${Date.now()}.db`);
+    const backupDbFile = `${tempDbFile}.bak`;
+    try {
+      await StorageAdapter.initDatabase(tempDbFile);
+      await StorageAdapter.commitTransitionWithOCC(0, {
+        state: SecurityState.SECURITY_STATE_READY,
+        state_version: 0
+      }, 'BOOT');
+
+      // Snapshot v1 DB file on disk
+      fs.copyFileSync(tempDbFile, backupDbFile);
+
+      // Advance DB to v2
+      await StorageAdapter.commitTransitionWithOCC(1, {
+        state: SecurityState.OPERATIONAL,
+        state_version: 1
+      }, 'PROMOTE');
+      const v2Row = await StorageAdapter.getSecurityStateRow();
+      assert.strictEqual(v2Row.state_version, 2);
+
+      // Simulate cold restart + attacker replacing DB file with v1 backup
+      await StorageAdapter._db.close();
+      fs.copyFileSync(backupDbFile, tempDbFile);
+
+      await StorageAdapter.initDatabase(tempDbFile);
+      await assert.rejects(
+        async () => {
+          await StorageAdapter.getSecurityStateRow();
+        },
+        /SECURITY_STATE_UNCERTAIN: State version rollback detected/
+      );
+    } finally {
+      try { await StorageAdapter._db?.close(); } catch {}
+      try { fs.unlinkSync(tempDbFile); } catch {}
+      try { fs.unlinkSync(backupDbFile); } catch {}
+      await StorageAdapter.initDatabase(':memory:');
+    }
+
+    // T-REG-07 (F-11, F-12): PersistentClock monotonic state_version increment & TAMPER_SUSPECTED lockdown persistence across restart
+    const { PersistentClock } = await import('../src/security-authority/time/persistent-clock.mjs');
+    await StorageAdapter.initDatabase(':memory:');
+    const clock = new PersistentClock(StorageAdapter);
+    await clock.initialize();
+    await clock.updateAnchor(Date.now() + 1000);
+    const anchorRow = await StorageAdapter._db.get('SELECT state_version FROM secure_state WHERE key = ?', ['time_anchor']);
+    assert.strictEqual(Number(anchorRow.state_version), 2, 'T-REG-07: PersistentClock must increment state_version by +1 (not Date.now())');
+
+    // Simulate TAMPER_SUSPECTED persisted in security state and verify it survives engineInstance.initialize()
+    await StorageAdapter.commitTransitionWithOCC(0, {
+      state: SecurityState.TAMPER_SUSPECTED,
+      state_version: 0
+    }, 'CLOCK_ROLLBACK_LOCKDOWN');
+    await engineInstance.initialize();
+    assert.strictEqual(engineInstance.inMemoryState.state, SecurityState.TAMPER_SUSPECTED, 'T-REG-07: TAMPER_SUSPECTED must survive engineInstance.initialize()');
+
+    // T-REG-08 (F-09) & T-REG-09 (F-07, F-17): Origin validation, License expiry/accountId binding, and PipeTransport 10MB cap
+    const { isAllowedOrigin } = await import('../src/api-server/websocket/wsServer.mjs');
+    assert.strictEqual(isAllowedOrigin('null'), false, 'T-REG-08: Origin: null must be rejected by default');
+    assert.strictEqual(isAllowedOrigin('http://192.168.99.88:3000'), false, 'T-REG-08: Arbitrary LAN origin must be rejected by default');
+    assert.strictEqual(isAllowedOrigin('http://localhost:3000'), true, 'T-REG-08: Localhost origin must be permitted');
+
+    const { licenseManager } = await import('../src/security-authority/licensing/license-manager.mjs');
+    assert.strictEqual(
+      licenseManager.validateLicenseIntegrity({
+        status: 'VALID',
+        accountId: 'acc-victim',
+        expiresAt: new Date(Date.now() - 60000).toISOString(),
+        signature: 'VALID_SIG'
+      }),
+      false,
+      'T-REG-09: Expired license payload must be rejected by validateLicenseIntegrity'
+    );
+    assert.strictEqual(
+      licenseManager.validateLicenseIntegrity(
+        {
+          status: 'VALID',
+          accountId: 'acc-victim',
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          signature: 'VALID_SIG'
+        },
+        undefined,
+        { accountId: 'acc-attacker' }
+      ),
+      false,
+      'T-REG-09: Cross-account license replay must be rejected by validateLicenseIntegrity'
+    );
+
+    const { PipeTransport } = await import('../src/runtime-manager/boundary/pipeTransport.mjs');
+    const pt = new PipeTransport({ customAdapter: { startServer() {}, stopServer() {}, writePipe() { return true; } } });
+    pt._onConnect(42);
+    let droppedError = null;
+    pt.on('error', (err) => { droppedError = err; });
+    pt._onData(42, 'x'.repeat(10 * 1024 * 1024 + 64));
+    assert.ok(droppedError, 'T-REG-09: Oversized >10MB IPC frame must emit error');
+    assert.strictEqual(pt.activeConnections.has(42), false, 'T-REG-09: Oversized IPC connection must be disconnected');
+  });
 });

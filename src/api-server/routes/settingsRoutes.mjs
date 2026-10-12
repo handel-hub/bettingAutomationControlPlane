@@ -16,6 +16,15 @@ settingsRouter.post('/intent', async (req, res) => {
   const { type, payload = {}, stepUpSecret } = req.body || {};
   const requestId = `req_${Date.now()}`;
 
+  const { securityFacade } = await import('../../security-authority/facade.mjs');
+  if (!securityFacade.isCommandPermitted('SETTINGS_INTENT')) {
+    return res.status(403).json({
+      requestId,
+      status: 'REJECTED',
+      message: `Settings modification prohibited in security state ${securityFacade.getSystemState()}`
+    });
+  }
+
   if (!type) {
     return res.status(400).json({
       requestId,

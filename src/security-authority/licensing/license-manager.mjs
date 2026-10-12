@@ -11,10 +11,23 @@ export class LicenseManager {
    * 
    * @param {Object} licensePayload 
    * @param {string} [serverTrustPubHex] 
+   * @param {Object} [expectedContext]
+   * @param {string} [expectedContext.accountId]
    * @returns {boolean}
    */
-  validateLicenseIntegrity(licensePayload, serverTrustPubHex) {
+  validateLicenseIntegrity(licensePayload, serverTrustPubHex, expectedContext = {}) {
     if (!licensePayload || !licensePayload.signature) return false;
+
+    if (licensePayload.expiresAt) {
+      const expMs = new Date(licensePayload.expiresAt).getTime();
+      if (!Number.isNaN(expMs) && Date.now() >= expMs) {
+        return false;
+      }
+    }
+
+    if (expectedContext?.accountId && licensePayload.accountId && licensePayload.accountId !== expectedContext.accountId) {
+      return false;
+    }
     
     const isProduction = process.env.NODE_ENV === 'production';
 
@@ -105,8 +118,15 @@ export class LicenseManager {
     if (license.expiration && license.expiration < now) {
       return false; // Expired
     }
-    return license.status === 'ACTIVE';
+    if (license.expiresAt) {
+      const expMs = new Date(license.expiresAt).getTime();
+      if (!Number.isNaN(expMs) && now >= expMs) {
+        return false;
+      }
+    }
+    return license.status === 'ACTIVE' || license.status === 'VALID';
   }
 }
 
 export const licenseManager = new LicenseManager();
+globalThis.__acpLicenseManagerCache = { licenseManager };

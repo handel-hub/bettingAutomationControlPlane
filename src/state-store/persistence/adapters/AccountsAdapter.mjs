@@ -1,6 +1,9 @@
 // @ts-check
 import crypto from 'crypto';
+import fs from 'fs';
 import os from 'os';
+import path from 'path';
+import { NativeCore } from '../../../security-authority/native/security-core.mjs';
 
 const CANONICAL_PLATFORM_NAMES = {
   sportybet: 'SportyBet',
@@ -12,24 +15,50 @@ const CANONICAL_PLATFORM_NAMES = {
   pinnacle: 'Pinnacle'
 };
 
+const LOCAL_PWD_AAD = Buffer.from('acp-local-account-pwd-v2', 'utf8');
+const VAULT_KEY_PATH = path.resolve('.security_authority', 'accounts_vault_key.bin');
+
 /** @type {Buffer | null} */
 let cachedLocalVaultKey = null;
 
 function getLocalVaultKey() {
   if (cachedLocalVaultKey) return cachedLocalVaultKey;
+  if (process.env.ACP_LOCAL_VAULT_SECRET) {
+    cachedLocalVaultKey = crypto.scryptSync(process.env.ACP_LOCAL_VAULT_SECRET, 'acp_sqlite_accounts_salt_v1', 32);
+    return cachedLocalVaultKey;
+  }
+  try {
+    if (NativeCore && typeof NativeCore.encryptAead === 'function' && typeof NativeCore.decryptAead === 'function') {
+      if (fs.existsSync(VAULT_KEY_PATH)) {
+        const cipherBuf = fs.readFileSync(VAULT_KEY_PATH);
+        const plainBuf = Buffer.from(NativeCore.decryptAead(cipherBuf, LOCAL_PWD_AAD));
+        if (plainBuf.length === 32) {
+          cachedLocalVaultKey = plainBuf;
+          return cachedLocalVaultKey;
+        }
+      }
+      const newKey = crypto.randomBytes(32);
+      const sealed = Buffer.from(NativeCore.encryptAead(newKey, LOCAL_PWD_AAD));
+      fs.mkdirSync(path.dirname(VAULT_KEY_PATH), { recursive: true });
+      fs.writeFileSync(VAULT_KEY_PATH, sealed);
+      cachedLocalVaultKey = newKey;
+      return cachedLocalVaultKey;
+    }
+  } catch {
+    // Fallback when NativeCore is not initialized
+  }
   let userPart = 'acp_local';
   try {
     userPart = os.userInfo().username || 'acp_local';
   } catch { /* ignore */ }
-  const seed = process.env.ACP_LOCAL_VAULT_SECRET ||
-    process.env.ACP_IPC_TOKEN ||
+  const seed = process.env.ACP_IPC_TOKEN ||
     `acp-vault-v1:${os.hostname()}:${userPart}:${os.platform()}:${os.arch()}`;
   cachedLocalVaultKey = crypto.scryptSync(seed, 'acp_sqlite_accounts_salt_v1', 32);
   return cachedLocalVaultKey;
 }
 
 /**
- * Encrypts a plaintext password with AES-256-GCM for SQLite storage at rest.
+ * Encrypts a plaintext password with DPAPI-sealed AES-256-GCM key for SQLite storage at rest.
  * @param {string} plain
  * @returns {string}
  */
@@ -49,7 +78,7 @@ export function encryptLocalPassword(plain) {
 }
 
 /**
- * Decrypts an AES-256-GCM encrypted password from SQLite storage.
+ * Decrypts a DPAPI-sealed AES-256-GCM encrypted password from SQLite storage.
  * @param {string} stored
  * @returns {string}
  */

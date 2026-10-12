@@ -78,6 +78,13 @@ accountsRouter.patch('/:id', async (req, res) => {
   try {
     const { securityFacade } = await import('../../security-authority/facade.mjs');
     const { CAPABILITY } = await import('../../security-authority/authorization/capabilities.mjs');
+    if (!securityFacade.isCommandPermitted('UPDATE_ACCOUNT_CREDENTIALS')) {
+      return res.status(403).json({
+        success: false,
+        code: 'SECURITY_STATE_DENIED',
+        error: `Command UPDATE_ACCOUNT_CREDENTIALS is not permitted in security state ${securityFacade.getSystemState()}`
+      });
+    }
     const authResult = securityFacade.authorize(CAPABILITY.ACCOUNT_MANAGE);
     if (authResult.status !== 'OPERATIONAL') {
       return res.status(403).json({

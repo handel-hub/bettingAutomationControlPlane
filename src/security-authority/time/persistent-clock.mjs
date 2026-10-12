@@ -89,12 +89,12 @@ export class PersistentClock {
 
       if (!this.storage || !this.storage._db) return;
 
-      const nextVersion = Date.now(); // We can just use timestamp as version for time_anchor
+      const existing = await this.storage._db.get('SELECT state_version FROM secure_state WHERE key = ?', ['time_anchor']);
+      const nextVersion = existing ? (Number(existing.state_version) + 1) : 1;
       const payload = { last_known_time: this.lastKnownTime };
       const encryptedBlob = this.storage._encryptPayload('time_anchor', nextVersion, 0, payload);
       
-      const exists = await this.storage._db.get('SELECT 1 FROM secure_state WHERE key = ?', ['time_anchor']);
-      if (exists) {
+      if (existing) {
         await this.storage._db.run(
           'UPDATE secure_state SET state_version = ?, backend_generation = 0, encrypted_blob = ? WHERE key = ?',
           [nextVersion, encryptedBlob, 'time_anchor']

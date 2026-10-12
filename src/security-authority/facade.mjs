@@ -88,7 +88,7 @@ export class SecurityFacade {
 
     const requiresSignatureCheck = Boolean(licenseData.signature) || process.env.NODE_ENV === 'production';
     const hasValidSignature = requiresSignatureCheck
-      ? this.validateLicenseIntegrity(licenseData)
+      ? this.validateLicenseIntegrity(licenseData, undefined, { accountId: authPayload.accountId })
       : true;
 
     const isLicenseValid = licenseData.status === 'VALID' && hasValidSignature && expandedCaps.size > 0;
@@ -601,11 +601,12 @@ export class SecurityFacade {
   /**
    * Validates the Ed25519 cryptographic signature of a license payload.
    * @param {Object} licensePayload 
-   * @param {string} serverTrustPubHex 
+   * @param {string} [serverTrustPubHex] 
+   * @param {Object} [expectedContext]
    * @returns {boolean}
    */
-  validateLicenseIntegrity(licensePayload, serverTrustPubHex) {
-    return licenseManager.validateLicenseIntegrity(licensePayload, serverTrustPubHex);
+  validateLicenseIntegrity(licensePayload, serverTrustPubHex, expectedContext = {}) {
+    return licenseManager.validateLicenseIntegrity(licensePayload, serverTrustPubHex, expectedContext);
   }
 
   /**

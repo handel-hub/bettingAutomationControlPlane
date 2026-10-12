@@ -18,6 +18,53 @@ export const AEADStorageAdapter = {
   _dbPath: null,
   /** @type {number} */
   _minValidStateVersion: 0,
+  /** @type {Map<string, number>} */
+  _pathMinVersions: new Map(),
+
+  _getAnchorsFilePath() {
+    const baseDir = process.env.APPDATA || process.cwd();
+    const secDir = path.join(baseDir, '.security_authority');
+    if (!fs.existsSync(secDir)) {
+      try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
+    }
+    return path.join(secDir, 'db_anchors.bin');
+  },
+
+  _loadPersistedPathAnchors() {
+    try {
+      const anchorFile = this._getAnchorsFilePath();
+      if (!fs.existsSync(anchorFile)) return;
+      const encrypted = fs.readFileSync(anchorFile);
+      const aad = Buffer.from('ACP_DB_PATH_ANCHORS_V1', 'utf8');
+      const plain = NativeCore.decryptAead(encrypted, aad);
+      const parsed = JSON.parse(plain.toString('utf8'));
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          const num = Number(v);
+          if (Number.isFinite(num) && num > (this._pathMinVersions.get(k) || 0)) {
+            this._pathMinVersions.set(k, num);
+          }
+        }
+      }
+    } catch {
+      // Ignore if anchor file not yet created or key rotated
+    }
+  },
+
+  _savePersistedPathAnchor(resolvedPath, version) {
+    if (!resolvedPath || resolvedPath === ':memory:') return;
+    this._pathMinVersions.set(resolvedPath, version);
+    try {
+      const anchorFile = this._getAnchorsFilePath();
+      const obj = Object.fromEntries(this._pathMinVersions.entries());
+      const plain = Buffer.from(JSON.stringify(obj), 'utf8');
+      const aad = Buffer.from('ACP_DB_PATH_ANCHORS_V1', 'utf8');
+      const encrypted = NativeCore.encryptAead(plain, aad);
+      fs.writeFileSync(anchorFile, encrypted);
+    } catch {
+      // Ignore write error in restricted environments
+    }
+  },
 
   async initDatabase(dbPath) {
     if (!dbPath) throw new Error("Database path required");
@@ -30,8 +77,22 @@ export const AEADStorageAdapter = {
     // Initialize Rust crypto layer (generates/fetches root key)
     NativeCore.init();
 
-    this._dbPath = dbPath;
-    this._minValidStateVersion = 0;
+    const resolvedPath = dbPath === ':memory:' ? ':memory:' : path.resolve(dbPath);
+    const fileExistedBeforeOpen = resolvedPath !== ':memory:' && fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).size > 0;
+
+    this._loadPersistedPathAnchors();
+    this._dbPath = resolvedPath;
+
+    if (!fileExistedBeforeOpen) {
+      // Fresh database creation: reset per-path watermark
+      this._minValidStateVersion = 0;
+      if (resolvedPath !== ':memory:') {
+        this._savePersistedPathAnchor(resolvedPath, 0);
+      }
+    } else {
+      // Existing database file (cold boot / reload): enforce persisted high-water version for this path
+      this._minValidStateVersion = this._pathMinVersions.get(resolvedPath) || 0;
+    }
 
     this._db = await open({
       filename: dbPath,
@@ -143,8 +204,20 @@ export const AEADStorageAdapter = {
 
     if (!row) return null;
 
-    if (this._minValidStateVersion > 0 && row.state_version < this._minValidStateVersion) {
-      console.error(`[AEADStorageAdapter] CRITICAL: State version rollback detected! Row version: ${row.state_version}, Minimum valid version: ${this._minValidStateVersion}`);
+    let data;
+    try {
+      data = this._decryptPayload('singleton', row.state_version, row.backend_generation, row.encrypted_blob);
+    } catch (err) {
+      // MAC failed! Cryptographically invalid or tampered row.
+      console.error("[AEADStorageAdapter] CRITICAL: Decryption/MAC verification failed for security state!");
+      throw new Error("SECURITY_STATE_UNCERTAIN: Database integrity verification failed.");
+    }
+
+    const pathAnchor = (this._dbPath && this._pathMinVersions.get(this._dbPath)) || 0;
+    const effectiveMinVersion = Math.max(this._minValidStateVersion, pathAnchor);
+
+    if (effectiveMinVersion > 0 && row.state_version < effectiveMinVersion) {
+      console.error(`[AEADStorageAdapter] CRITICAL: State version rollback detected! Row version: ${row.state_version}, Minimum valid version: ${effectiveMinVersion}`);
       throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
     }
 
@@ -159,15 +232,6 @@ export const AEADStorageAdapter = {
         if (err.message?.includes('SECURITY_STATE_UNCERTAIN')) throw err;
       }
     }
-
-    let data;
-    try {
-      data = this._decryptPayload('singleton', row.state_version, row.backend_generation, row.encrypted_blob);
-    } catch (err) {
-      // MAC failed! Cryptographically invalid or tampered row.
-      console.error("[AEADStorageAdapter] CRITICAL: Decryption/MAC verification failed for security state!");
-      throw new Error("SECURITY_STATE_UNCERTAIN: Database integrity verification failed.");
-    }
     
     // Validate backend-anchored generation for rollback detection
     if (data.session_generation && row.backend_generation !== data.session_generation) {
@@ -177,6 +241,9 @@ export const AEADStorageAdapter = {
 
     if (row.state_version > this._minValidStateVersion) {
       this._minValidStateVersion = row.state_version;
+      if (this._dbPath && this._dbPath !== ':memory:') {
+        this._savePersistedPathAnchor(this._dbPath, row.state_version);
+      }
     }
     
     // Inject the fast-query columns into the returned data object for business logic
@@ -235,6 +302,9 @@ export const AEADStorageAdapter = {
         );
         if (insertResult.changes > 0) {
           this._minValidStateVersion = nextVersion;
+          if (this._dbPath && this._dbPath !== ':memory:') {
+            this._savePersistedPathAnchor(this._dbPath, nextVersion);
+          }
           try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
           return true;
         }
@@ -243,6 +313,9 @@ export const AEADStorageAdapter = {
     }
 
     this._minValidStateVersion = nextVersion;
+    if (this._dbPath && this._dbPath !== ':memory:') {
+      this._savePersistedPathAnchor(this._dbPath, nextVersion);
+    }
     try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
     return true;
   },

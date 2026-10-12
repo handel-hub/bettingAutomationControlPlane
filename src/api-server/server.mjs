@@ -49,10 +49,12 @@ export class ApiServer {
     // CORS headers - validated origin check
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (origin && (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-      } else if (!origin) {
-        res.setHeader('Access-Control-Allow-Origin', '*');
+      if (origin) {
+        if (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+        } else {
+          return res.status(403).json({ error: 'Forbidden: Untrusted Origin' });
+        }
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature, X-ACP-Token');

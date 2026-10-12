@@ -55,12 +55,11 @@ export class DecisionEngine {
       machine: rawState.machine
     };
 
-    if (this.inMemoryState.state === SecurityState.REVOKED) {
-      NativeCore.setRevokedSync(true);
-      return;
-    }
-
-    if (this.inMemoryState.state === SecurityState.COMPROMISED) {
+    if (
+      this.inMemoryState.state === SecurityState.REVOKED ||
+      this.inMemoryState.state === SecurityState.COMPROMISED ||
+      this.inMemoryState.state === SecurityState.TAMPER_SUSPECTED
+    ) {
       NativeCore.setRevokedSync(true);
       return;
     }
@@ -83,6 +82,14 @@ export class DecisionEngine {
       const isMachineValid = NativeCore.verifyMachineIdentitySync();
       if (!isMachineValid) {
         this.inMemoryState.state = SecurityState.COMPROMISED;
+        try {
+          await StorageAdapter.commitTransitionWithOCC(
+            this.inMemoryState.state_version,
+            { ...this.inMemoryState, state: SecurityState.COMPROMISED },
+            TransitionEvent.IDENTITY_MISMATCH
+          );
+          this.inMemoryState.state_version += 1;
+        } catch { /* ignore */ }
         NativeCore.setRevokedSync(true);
         return;
       }

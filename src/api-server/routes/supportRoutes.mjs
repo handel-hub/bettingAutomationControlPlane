@@ -43,27 +43,49 @@ supportRouter.post('/attachments', (req, res) => {
     return res.status(400).json({ error: 'Content-Type must be multipart/form-data' });
   }
 
-  const bb = busboy({ headers: req.headers });
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  const bb = busboy({
+    headers: req.headers,
+    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 }
+  });
   let savedFile = null;
+  let sizeExceeded = false;
 
   bb.on('file', (name, file, info) => {
-    const { filename } = info;
+    const rawFilename = String(info?.filename || 'attachment.bin');
+    // Reject path traversal sequences explicitly or strip to basename
+    const baseName = path.basename(rawFilename).replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment.bin';
     const fileId = `att_${Date.now()}`;
     const tempDir = path.resolve('scratch/attachments');
     fs.mkdirSync(tempDir, { recursive: true });
-    const dest = path.join(tempDir, `${fileId}_${filename}`);
-    
+    const dest = path.resolve(tempDir, `${fileId}_${baseName}`);
+
+    if (!dest.startsWith(tempDir + path.sep)) {
+      file.resume();
+      return;
+    }
+
     let sizeBytes = 0;
     const writeStream = fs.createWriteStream(dest);
     file.on('data', chunk => { sizeBytes += chunk.length; });
+    file.on('limit', () => {
+      sizeExceeded = true;
+      writeStream.destroy();
+      try { fs.unlinkSync(dest); } catch {}
+    });
     file.pipe(writeStream);
 
     writeStream.on('finish', () => {
-      savedFile = { fileId, fileName: filename, sizeBytes };
+      if (!sizeExceeded) {
+        savedFile = { fileId, fileName: baseName, sizeBytes };
+      }
     });
   });
 
   bb.on('close', () => {
+    if (sizeExceeded) {
+      return res.status(413).json({ error: 'Attachment exceeds maximum allowed size (10MB)' });
+    }
     if (!savedFile) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
