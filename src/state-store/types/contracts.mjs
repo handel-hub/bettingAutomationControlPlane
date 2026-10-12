@@ -101,23 +101,23 @@ export function createDefaultGlobalConfig() {
 export function createDefaultSubscriptionSnapshot(userId = 'usr_default') {
   return {
     userId,
-    currentPlan: 'Starter',
-    currentPlanId: 'starter',
-    price: 5000,
+    currentPlan: 'None',
+    currentPlanId: null,
+    price: 0,
     currency: 'NGN',
     currencySymbol: '₦',
-    status: 'Active',
+    status: 'Payment_Required',
     billingInterval: 'Monthly',
-    renewalDate: new Date(Date.now() + 30 * 86400000).toISOString(),
+    renewalDate: null,
     expirationDate: null,
     entitlements: {
-      maxAccounts: 3,
-      maxConcurrentBrowsers: 2,
-      allowedPlatformIds: ['sportybet', 'bet9ja', 'betking', '1xbet'],
+      maxAccounts: 0,
+      maxConcurrentBrowsers: 0,
+      allowedPlatformIds: [],
       stealthAntidetectEnabled: false,
       priorityScanning: false
     },
-    availableActions: ['CHANGE_PLAN', 'CANCEL_SUBSCRIPTION', 'UPDATE_PAYMENT'],
+    availableActions: ['SUBSCRIBE', 'CHANGE_PLAN', 'UPDATE_PAYMENT'],
     notices: []
   };
 }

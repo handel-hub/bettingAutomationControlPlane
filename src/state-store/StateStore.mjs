@@ -291,6 +291,14 @@ export class StateStore {
   }
 
   /**
+   * Convenience alias for getPreludeSnapshot.
+   * @param {object} [runtimeState]
+   */
+  getPrelude(runtimeState = {}) {
+    return this.getPreludeSnapshot(runtimeState);
+  }
+
+  /**
    * Returns the canonical AutomationWorkspaceSnapshot.
    * @param {object} [runtimeState]
    */

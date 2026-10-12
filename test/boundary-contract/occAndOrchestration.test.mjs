@@ -8,8 +8,17 @@ import { executionBoundaryManager } from '../../src/runtime-manager/boundary/ind
 import { commandRouter } from '../../src/command/commandRouter.mjs';
 import { Command } from '../../src/command/command.mjs';
 import { registerDefaultCommandHandlers } from '../../src/index.mjs';
+import { securityFacade } from '../../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../../src/security-authority/authorization/capabilities.mjs';
 
 test('Phase 5 & 6: OCC SQLite Repositories & Orchestration Engine Wiring', async (t) => {
+  await securityFacade.initialize(':memory:');
+  await securityFacade.establishSession({
+    sessionId: 'test-sess-occ-001',
+    accountId: 'usr_occ_test',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  });
   const store = new StateStore({ dbPath: ':memory:', userId: 'usr_occ_test' });
   store.initialize();
   setSharedStateStore(store);

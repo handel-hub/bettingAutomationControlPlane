@@ -1,6 +1,6 @@
 // @ts-check
 import { Command } from '../../command/command.mjs';
-import { commandRouter } from '../../command/commandRouter.mjs';
+import { commandRouter, COMMAND_CAPABILITY_MAP } from '../../command/commandRouter.mjs';
 import { securityFacade } from '../../security-authority/facade.mjs';
 import { logger } from '../../shared/logging.mjs';
 
@@ -17,24 +17,14 @@ import { logger } from '../../shared/logging.mjs';
  * @param {Function} [params.onSuccess]
  */
 export async function executeCommand({ req, res, category, type, target = null, payload = {}, capability = null, onSuccess = null }) {
-  if (capability) {
-    if (type === 'START_AUTOMATION') {
-      const isDev = (process.env.ACP_DEV_MODE === 'true' || 
-                     process.env.NODE_ENV === 'development' || 
-                     process.argv.includes('--dev')) && 
-                    process.env.ACP_FORCE_DEGRADED !== 'true' && 
-                    process.env.NODE_ENV !== 'production';
-      if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync() || !securityFacade.isOperational())) {
-        logger.info({ traceId: req.traceId }, '[CommandAdapter] Development mode self-healing: ensuring operational session for START_AUTOMATION');
-        await securityFacade.initDevSession();
-      }
-    }
-    const authResult = securityFacade.authorize(capability);
+  const effectiveCapability = capability || COMMAND_CAPABILITY_MAP[type] || null;
+  if (effectiveCapability) {
+    const authResult = securityFacade.authorize(/** @type {any} */ (effectiveCapability));
     if (authResult.status !== 'OPERATIONAL') {
       logger.warn({
         traceId: req.traceId,
         type,
-        capability,
+        capability: effectiveCapability,
         securityState: securityFacade.getSystemState(),
         reason: authResult.message
       }, `[CommandAdapter] Access denied for command [${type}]: ${authResult.message}`);

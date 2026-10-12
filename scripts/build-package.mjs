@@ -140,6 +140,24 @@ async function buildBundleWithEsbuild(esbuildInfo, packageJson) {
     throw new Error(`esbuild bundle output not found at: ${tempBundle}`);
   }
 
+  // Build-time static forbidden-symbol scanner (WI-16)
+  const bundleSource = readFileSync(tempBundle, "utf8");
+  const forbiddenSymbols = [
+    "async initDevSession",
+    "dev-session-001",
+    "DEFAULT_DEV_BACKEND_PUBKEY_HEX",
+    ".acp-dev-token",
+    "'valid_secret'",
+    "\"valid_secret\"",
+  ];
+  for (const sym of forbiddenSymbols) {
+    if (bundleSource.includes(sym)) {
+      throw new Error(
+        `[Build:Fatal] Forbidden development-mode symbol "${sym}" detected in compiled bundle (${relative(ROOT, tempBundle)}).`
+      );
+    }
+  }
+
   const durationMs = Date.now() - started;
   const bundleSize = statSync(tempBundle).size;
   log(`  -> Bundled to ${relative(ROOT, tempBundle)} (${formatBytes(bundleSize)}) in ${durationMs}ms`);
@@ -221,7 +239,7 @@ if (!fs.existsSync(bytecodePath)) {
 const bytecodeBuffer = fs.readFileSync(bytecodePath);
 const actualSha256 = crypto.createHash('sha256').update(bytecodeBuffer).digest('hex');
 if (EXPECTED_SHA256 && actualSha256 !== EXPECTED_SHA256) {
-  if (process.env.ENFORCE_INTEGRITY === 'true') {
+  if (process.env.ENFORCE_INTEGRITY !== 'false') {
     console.error('[ByteNode:Fatal] Bytecode integrity verification failed!');
     console.error('Expected SHA-256: ' + EXPECTED_SHA256);
     console.error('Actual SHA-256:   ' + actualSha256);

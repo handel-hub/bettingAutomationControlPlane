@@ -4,9 +4,18 @@ import assert from 'node:assert/strict';
 import { ApiServer } from '../../src/api-server/server.mjs';
 import { commandRouter } from '../../src/command/commandRouter.mjs';
 import { repositoryFactory } from '../../src/repositories/repositoryFactory.mjs';
+import { securityFacade } from '../../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../../src/security-authority/authorization/capabilities.mjs';
 import { WebSocket } from 'ws';
 
 test('Boundary Contract: Zero-Secret Masking Boundary', async (t) => {
+  await securityFacade.initialize(':memory:');
+  await securityFacade.establishSession({
+    sessionId: 'test-sess-zero-secret-001',
+    accountId: 'operator@betting.local',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  });
   // Ensure command handler is registered
   commandRouter.register('Persistence', 'REGISTER_ACCOUNT', async (cmd) => {
     return repositoryFactory.getAccountsRepo().create(cmd.payload);

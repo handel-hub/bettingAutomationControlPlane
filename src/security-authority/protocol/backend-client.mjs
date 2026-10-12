@@ -175,12 +175,32 @@ export class BackendClient {
           throw new ProtocolError(code, message, { ...errObj, retryable: true });
         }
 
-        // 2. Cryptographic Validation Pipeline if response is wrapped in an envelope
-        if (json.signatures && typeof json.signatures === 'object') {
-          if (!envelopeValidator.validateEnvelope(json)) {
-            throw new ProtocolError(Errors.ErrInvalidSignature, "Backend response failed cryptographic signature or freshness checks.");
+        // 2. Mandatory Cryptographic Validation Pipeline for protocol authority endpoints & signed envelopes
+        const UNSIGNED_EXEMPT_PATHS = new Set([
+          '/api/v1/sessions/logout',
+          '/api/v1/accounts',
+          '/api/v1/billing/checkout',
+          '/api/v1/billing/checkout/verify',
+          '/api/v1/billing/subscription/cancel',
+          '/api/v1/billing/subscription/resume',
+          '/api/v1/settings/intent',
+          '/api/v1/support/diagnostics'
+        ]);
+        const requiresSignedEnvelope =
+          !UNSIGNED_EXEMPT_PATHS.has(path) &&
+          !path.startsWith('/api/v1/accounts/') &&
+          !path.startsWith('/api/v1/automation/') &&
+          !path.startsWith('/api/v1/transfers/');
+
+        if (requiresSignedEnvelope || (json.signatures && typeof json.signatures === 'object')) {
+          if (!json.signatures || typeof json.signatures !== 'object' || !envelopeValidator.validateEnvelope(json)) {
+            throw new ProtocolError(
+              Errors.ErrInvalidSignature,
+              `Backend response on ${path} failed mandatory Ed25519 signature or freshness verification.`
+            );
           }
         }
+
 
         // 3. Extract payload: decode base64 or read JSON object directly
         let decodedPayload = json.payload !== undefined ? json.payload : json;
@@ -308,6 +328,43 @@ export class BackendClient {
     const { data, envelope } = await this._postWithRetry('/api/v1/auth/init', {
       email: credentials.email,
       password: credentials.password,
+      machineId: this.machineId,
+      protocolVersion: 2,
+      clientNonce: nonce
+    });
+
+    if (data.sessionId) {
+      this.sessionId = data.sessionId;
+    }
+    if (data.sessionGeneration) {
+      this.clientGeneration = data.sessionGeneration;
+    }
+
+    return {
+      sessionId: data.sessionId,
+      accountId: data.accountId,
+      sessionGeneration: data.sessionGeneration,
+      nonceValidated: data.nonceValidated,
+      license: data.license,
+      capabilities: data.capabilities,
+      signatures: envelope?.signatures
+    };
+  }
+
+  /**
+   * Registers a new operator account with the Backend and initializes an authenticated session.
+   * @param {Object} credentials
+   * @param {string} credentials.email
+   * @param {string} credentials.password
+   * @param {string} [credentials.name]
+   * @param {string} [clientNonce]
+   */
+  async registerOperator(credentials, clientNonce) {
+    const nonce = clientNonce || crypto.randomBytes(16).toString('hex');
+    const { data, envelope } = await this._postWithRetry('/api/v1/auth/register', {
+      email: credentials.email,
+      password: credentials.password,
+      name: credentials.name,
       machineId: this.machineId,
       protocolVersion: 2,
       clientNonce: nonce

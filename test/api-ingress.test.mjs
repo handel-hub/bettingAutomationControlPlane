@@ -4,10 +4,20 @@ import assert from 'node:assert/strict';
 import { ApiServer } from '../src/api-server/server.mjs';
 import { commandRouter } from '../src/command/commandRouter.mjs';
 import { securityFacade } from '../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../src/security-authority/authorization/capabilities.mjs';
+import { getSharedStateStore } from '../src/state-store/sharedStateStore.mjs';
 import { WebSocket } from 'ws';
 
 test('API Ingress & WebSocket Integration', async (t) => {
-  await securityFacade.initDevSession();
+  await securityFacade.establishSession({
+    sessionId: 'test-sess-ingress-001',
+    accountId: 'operator@betting.local',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  });
+
+  const store = getSharedStateStore();
+  store._seedDefaultAccounts();
 
   // Register handlers in commandRouter
   commandRouter.register('Execution', 'START_AUTOMATION', async () => ({ started: true }));

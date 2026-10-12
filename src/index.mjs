@@ -1,16 +1,17 @@
 // @ts-check
+import './shared/loadEnv.mjs';
 import { apiServer } from './api-server/server.mjs';
 import { commandRouter } from './command/commandRouter.mjs';
 import { securityFacade } from './security-authority/facade.mjs';
 import { operationTracker } from './state/operationTracker.mjs';
-import { wsServer } from './api-server/websocket/wsServer.mjs';
+import { wsServer, resolveSystemIPv4Addresses } from './api-server/websocket/wsServer.mjs';
 import { logger } from './shared/logging.mjs';
 import { repositoryFactory } from './repositories/repositoryFactory.mjs';
 import { backendSyncService } from './sync/backendSyncService.mjs';
 import { runtimeManager } from './runtime-manager/runtime-manager.mjs';
 import { executionBoundaryManager } from './runtime-manager/boundary/index.mjs';
 import { workspaceAggregator } from './state/workspaceAggregator.mjs';
-import { initDevToken } from './api-server/middleware/auth.mjs';
+import { initIpcToken } from './api-server/middleware/auth.mjs';
 import { getSharedStateStore } from './state-store/sharedStateStore.mjs';
 export { registerDefaultCommandHandlers } from './command/registerCommands.mjs';
 import { registerDefaultCommandHandlers } from './command/registerCommands.mjs';
@@ -187,12 +188,6 @@ executionBoundaryManager.on('browserStatus', (payload) => {
 executionBoundaryManager.on('quarantineRequired', (data) => {
   logger.warn({ data }, '[ExecutionBoundary] Quarantine required by watchdog. Quarantining runtime.');
   runtimeManager.quarantineExecution('WATCHDOG_HEARTBEAT_DEAD');
-  
-  // Decouple local worker process stall from global security authority license revocation
-  const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true';
-  if (!isDev) {
-    securityFacade.transitionToDegraded('EXECUTION_HEARTBEAT_TIMEOUT');
-  }
 
   // Cleanly settle execution plane state to STOPPED so operator can restart without ACP restart
   workspaceAggregator.setLifecycle('STOPPED', 'Execution heartbeat lost: runtime quarantined');
@@ -262,8 +257,8 @@ async function bootstrap() {
     // Wire dynamic execution check for Security Authority capability evaluation
     securityFacade.setActiveExecutionChecker(() => runtimeManager.activeRuntimes.size > 0);
 
-    // 2. Initialize Ingress Token for Local Dev & Console Interop
-    initDevToken();
+    // 2. Initialize Ingress Token for Local Console Interop
+    initIpcToken();
     logger.info('[SecurityAuthority] Ingress access token active');
 
     // 3. Register Commands
@@ -272,13 +267,6 @@ async function bootstrap() {
     // 4. Initialize Shared StateStore & Wire SQLite Engine to BackendSyncService
     const store = getSharedStateStore();
     backendSyncService.setEngine(store.engine);
-
-    const isExplicitDev = process.env.ACP_DEV_MODE === 'true' || 
-                          process.env.NODE_ENV === 'development' || 
-                          process.argv.includes('--dev');
-    const isDev = isExplicitDev && 
-                  process.env.ACP_FORCE_DEGRADED !== 'true' && 
-                  process.env.NODE_ENV !== 'production';
 
     // Anti-tamper grace lease handler: strictly anchored to authoritative backend snapshot
     const handleOfflineOrError = async (contextMsg) => {
@@ -308,47 +296,38 @@ async function bootstrap() {
     try {
       const syncResult = await backendSyncService.initialize();
       if (!syncResult.isConnected) {
-        if (isDev) {
-          logger.info('[ControlPlane] Cloud Backend offline in development mode.');
-          logger.info('[ControlPlane] Activating Local Developer Operational Mode (Full Capabilities & Standby Lifecycle).');
-          await securityFacade.initDevSession();
-          store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
-          store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
-          workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
-        } else {
-          await handleOfflineOrError('Cloud Backend offline');
-        }
+        await handleOfflineOrError('Cloud Backend offline');
       } else {
-        logger.info('[ControlPlane] Backend synchronization pipeline connected & operational');
+        logger.info('[ControlPlane] Backend synchronization pipeline connected');
         if (syncResult.session) {
-          await securityFacade.establishSession(syncResult.session);
-        } else if (isDev) {
-          logger.warn('[ControlPlane] Backend connected but failed to issue authoritative operator session. Activating Local Developer Operational Mode.');
-          await securityFacade.initDevSession();
-          store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
-          store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
-          workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
+          const authStatus = await securityFacade.establishSession(syncResult.session);
+          store.lifecycle.setDesiredState('STOPPED', 'SESSION_ESTABLISHED');
+          store.lifecycle.setObservedState('STOPPED', 'SESSION_ESTABLISHED');
+          workspaceAggregator.setLifecycle('STOPPED', authStatus.status === 'OPERATIONAL' ? 'Ready' : (authStatus.message || 'Authenticated'));
+        } else {
+          await securityFacade.transitionToUnauthenticated();
+          store.lifecycle.setDesiredState('STOPPED', 'AWAITING_AUTHENTICATION');
+          store.lifecycle.setObservedState('STOPPED', 'AWAITING_AUTHENTICATION');
+          workspaceAggregator.setLifecycle('STOPPED', 'Authentication required');
+          logger.info('[ControlPlane] Backend connected; awaiting operator authentication via /api/v1/auth/login.');
         }
       }
     } catch (syncErr) {
-      if (isDev) {
-        logger.info({ err: syncErr.message }, '[ControlPlane] Backend sync unavailable in development mode. Activating Local Developer Operational Mode.');
-        await securityFacade.initDevSession();
-        store.lifecycle.setDesiredState('STOPPED', 'DEV_MODE_READY');
-        store.lifecycle.setObservedState('STOPPED', 'DEV_MODE_READY');
-        workspaceAggregator.setLifecycle('STOPPED', 'Local Dev Mode Ready');
-      } else {
-        await handleOfflineOrError(`Backend sync error: ${syncErr.message}`);
-      }
+      await handleOfflineOrError(`Backend sync error: ${syncErr.message}`);
     }
 
-    // 6. Start API & WebSocket Server on Loopback ONLY AFTER State and Backend are Ready
+    // 6. Start API & WebSocket Server on 0.0.0.0 (all IPv4 interfaces: loopback + LAN/mobile) ONLY AFTER State and Backend are Ready
     const port = Number(process.env.PORT) || 8000;
-    const host = process.env.HOST || '127.0.0.1';
+    const host = process.env.HOST || '0.0.0.0';
     await apiServer.listen(port, host);
 
-    logger.info(`[ControlPlane] Ready for Next.js console connections at http://${host}:${port}`);
-    logger.info(`[ControlPlane] WebSocket stream active at ws://${host}:${port}/ws/v1/events`);
+    logger.info(`[ControlPlane] Ready for Next.js console connections at http://localhost:${port}`);
+    for (const ip of resolveSystemIPv4Addresses()) {
+      if (ip !== '127.0.0.1') {
+        logger.info(`[ControlPlane] LAN / Mobile access active at http://${ip}:${port} (WS: ws://${ip}:${port}/ws/v1/events)`);
+      }
+    }
+    logger.info(`[ControlPlane] WebSocket stream active at ws://localhost:${port}/ws/v1/events`);
   } catch (err) {
     if (err.code === 'EADDRINUSE') {
       logger.fatal(`[ControlPlane] Port ${err.port || 8000} on ${err.address || '127.0.0.1'} is already in use by another running process (such as an existing Control Plane dev instance). Either terminate the running process or start with an alternative port using PORT=<port> (e.g. PORT=8001).`);

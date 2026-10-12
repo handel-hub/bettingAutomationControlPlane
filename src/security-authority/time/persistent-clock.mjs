@@ -14,7 +14,7 @@ export class PersistentClock {
     this.bootWallclock = Date.now();
     this.bootHrtime = process.hrtime.bigint();
     this.lastKnownTime = 0;
-    this.isUncertain = false;
+    this.isUncertain = true;
   }
 
   /**
@@ -25,6 +25,9 @@ export class PersistentClock {
     if (!this.storage._db) {
       throw new Error("Storage not initialized");
     }
+
+    this.bootWallclock = Date.now();
+    this.bootHrtime = process.hrtime.bigint();
 
     const row = await this.storage._db.get(
       'SELECT state_version, backend_generation, encrypted_blob FROM secure_state WHERE key = ?',
@@ -40,6 +43,8 @@ export class PersistentClock {
         if (this.bootWallclock < this.lastKnownTime) {
           console.error(`[PersistentClock] CRITICAL: Clock rollback detected. Boot time ${this.bootWallclock} < Last known time ${this.lastKnownTime}`);
           this.isUncertain = true;
+        } else {
+          this.isUncertain = false;
         }
       } catch (err) {
         console.error("[PersistentClock] CRITICAL: Time anchor decryption failed!");
@@ -47,6 +52,7 @@ export class PersistentClock {
       }
     } else {
       // First boot, set time anchor
+      this.isUncertain = false;
       await this.updateAnchor(this.bootWallclock);
     }
   }
@@ -71,6 +77,9 @@ export class PersistentClock {
    */
   async updateAnchor(backendTimestamp) {
     if (!this.storage._db) return;
+    if (typeof backendTimestamp !== 'number' || !Number.isFinite(backendTimestamp) || backendTimestamp <= 0) {
+      return;
+    }
     
     // We only move time forward
     if (backendTimestamp > this.lastKnownTime) {

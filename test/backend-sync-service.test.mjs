@@ -1,4 +1,4 @@
-﻿// @ts-check
+// @ts-check
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
@@ -7,6 +7,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { BackendSyncService } from '../src/sync/backendSyncService.mjs';
 import { BackendClient } from '../src/security-authority/protocol/backend-client.mjs';
+import { CanonicalSerializer } from '../src/security-authority/protocol/canonical-serializer.mjs';
 import { repositoryFactory } from '../src/repositories/repositoryFactory.mjs';
 
 test('BackendSyncService Hydration & Encrypted Cache Pipeline', async (t) => {
@@ -21,6 +22,24 @@ test('BackendSyncService Hydration & Encrypted Cache Pipeline', async (t) => {
     }
   });
 
+  // Mock machine identity & backend signing keypair
+  const { privateKey } = crypto.generateKeyPairSync('ed25519');
+  const { publicKey: backendPubKey, privateKey: backendPrivKey } = crypto.generateKeyPairSync('ed25519');
+  process.env.PINNED_BACKEND_PUBKEY_HEX = backendPubKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+  const DOMAIN_PREFIX = Buffer.from('CONTROL_PLANE_V1');
+  const buildSignedEnvelope = (payloadObj) => {
+    const envelope = {
+      version: 2,
+      timestamp: new Date().toISOString(),
+      server_epoch: 1,
+      payload: payloadObj,
+      generation: 1
+    };
+    const msg = Buffer.concat([DOMAIN_PREFIX, CanonicalSerializer.serializeBackendResponse(envelope)]);
+    const sigHex = crypto.sign(null, msg, backendPrivKey).toString('hex');
+    return { ...envelope, ...payloadObj, signatures: { '1': sigHex } };
+  };
+
   // Mock server setup
   await new Promise((resolve) => {
     mockServer = http.createServer((req, res) => {
@@ -31,11 +50,13 @@ test('BackendSyncService Hydration & Encrypted Cache Pipeline', async (t) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'ok' }));
         } else if (req.url === '/api/v1/machines/register') {
+          const resp = buildSignedEnvelope({ machineId: 'mach-live-101', status: 'REGISTERED' });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ machineId: 'mach-live-101', status: 'REGISTERED' }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/auth/init') {
+          const resp = buildSignedEnvelope({ sessionId: 'sess-sync-1', sessionGeneration: 1 });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ sessionId: 'sess-sync-1', sessionGeneration: 1 }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/automation/snapshot') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -66,9 +87,6 @@ test('BackendSyncService Hydration & Encrypted Cache Pipeline', async (t) => {
     });
   });
 
-  // Mock machine identity
-  const { privateKey } = crypto.generateKeyPairSync('ed25519');
-  const DOMAIN_PREFIX = Buffer.from('CONTROL_PLANE_V1');
   const mockIdentity = {
     publicKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     getDescriptor: () => ({ hardwareId: 'hw_sync_test', machineKeyPub: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }),

@@ -10,11 +10,19 @@ import { getSharedStateStore } from '../src/state-store/sharedStateStore.mjs';
 import { workspaceAggregator } from '../src/state/workspaceAggregator.mjs';
 import { CapabilityResolver } from '../src/state/capabilityResolver.mjs';
 import { NativeCore } from '../src/security-authority/native/security-core.mjs';
+import { CAPABILITY } from '../src/security-authority/authorization/capabilities.mjs';
+
+const validSessionFixture = {
+  sessionId: 'test-sess-rapid-001',
+  accountId: 'operator@betting.local',
+  capabilities: Object.values(CAPABILITY),
+  license: { status: 'VALID' }
+};
 
 test('Rapid Start-Stop & Lockout Remediation Invariants', async (t) => {
   NativeCore.init();
   await securityFacade.initialize();
-  await securityFacade.initDevSession();
+  await securityFacade.establishSession(validSessionFixture);
   registerDefaultCommandHandlers();
 
   const store = getSharedStateStore();
@@ -107,8 +115,7 @@ test('Rapid Start-Stop & Lockout Remediation Invariants', async (t) => {
     }
   });
 
-  await t.test('3. START_AUTOMATION self-heals transient degraded state in development mode', async () => {
-    process.env.ACP_DEV_MODE = 'true';
+  await t.test('3. START_AUTOMATION succeeds after session re-establishment from transient degraded state', async () => {
     store.lifecycle.setDesiredState('STOPPED', 'RESET');
     store.lifecycle.setObservedState('STOPPED', 'RESET');
     runtimeManager.activeRuntimes.clear();
@@ -117,6 +124,9 @@ test('Rapid Start-Stop & Lockout Remediation Invariants', async (t) => {
     await securityFacade.transitionToDegraded('SIMULATED_TRANSIENT_DROP');
     assert.strictEqual(securityFacade.isDegraded(), true);
     assert.strictEqual(securityFacade.isSessionRevokedSync(), true);
+
+    // Re-establish valid session via authoritative establishSession
+    await securityFacade.establishSession(validSessionFixture);
 
     // Mock startCluster so command succeeds
     const origStartCluster = executionBoundaryManager.startCluster.bind(executionBoundaryManager);
@@ -134,7 +144,7 @@ test('Rapid Start-Stop & Lockout Remediation Invariants', async (t) => {
       }));
 
       assert.strictEqual(result.success, true);
-      assert.strictEqual(securityFacade.isOperational(), true, 'Dev mode must automatically self-heal to OPERATIONAL');
+      assert.strictEqual(securityFacade.isOperational(), true, 'Session must be OPERATIONAL');
       assert.strictEqual(securityFacade.isDegraded(), false);
       assert.strictEqual(securityFacade.isSessionRevokedSync(), false);
     } finally {
@@ -164,7 +174,7 @@ test('Rapid Start-Stop & Lockout Remediation Invariants', async (t) => {
 
   await t.test('5. Watchdog quarantine settles lifecycle to STOPPED in dev mode without revoking license', async () => {
     process.env.ACP_DEV_MODE = 'true';
-    await securityFacade.initDevSession();
+    await securityFacade.establishSession(validSessionFixture);
     assert.strictEqual(securityFacade.isOperational(), true);
 
     // Simulate the quarantine handler logic wired in index.mjs

@@ -76,6 +76,17 @@ accountsRouter.get('/:id', async (req, res) => {
 // PATCH update account details / password
 accountsRouter.patch('/:id', async (req, res) => {
   try {
+    const { securityFacade } = await import('../../security-authority/facade.mjs');
+    const { CAPABILITY } = await import('../../security-authority/authorization/capabilities.mjs');
+    const authResult = securityFacade.authorize(CAPABILITY.ACCOUNT_MANAGE);
+    if (authResult.status !== 'OPERATIONAL') {
+      return res.status(403).json({
+        success: false,
+        code: 'CAP_001',
+        error: authResult.message || 'Action prohibited by Security Authority'
+      });
+    }
+
     const accountId = req.params.id;
     const updates = req.body || {};
     const existing = await repositoryFactory.getAccountsRepo().findById(accountId);

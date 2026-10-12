@@ -5,13 +5,22 @@ import { ApiServer } from '../src/api-server/server.mjs';
 import { commandRouter } from '../src/command/commandRouter.mjs';
 import { repositoryFactory } from '../src/repositories/repositoryFactory.mjs';
 import { securityFacade } from '../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../src/security-authority/authorization/capabilities.mjs';
+import { getSharedStateStore } from '../src/state-store/sharedStateStore.mjs';
 import { WebSocket } from 'ws';
 
 test('Frontend <-> Control Plane End-to-End Interoperability Test', async (t) => {
-  // Authorize all operations for testing
-  await securityFacade.initDevSession();
+  // Authorize all operations for testing via production-equivalent session establishment
+  await securityFacade.establishSession({
+    sessionId: 'test-sess-interop-001',
+    accountId: 'operator@betting.local',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  });
   // @ts-ignore
   securityFacade.authorize = () => ({ status: 'OPERATIONAL' });
+
+  getSharedStateStore()._seedDefaultAccounts();
 
   // Register necessary command handlers for tests
   commandRouter.register('Execution', 'START_AUTOMATION', async () => ({ started: true }));

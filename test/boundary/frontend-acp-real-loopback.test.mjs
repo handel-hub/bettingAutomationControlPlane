@@ -6,6 +6,7 @@ import { StateStore } from '../../src/state-store/StateStore.mjs';
 import { setSharedStateStore } from '../../src/state-store/sharedStateStore.mjs';
 import { commandRouter } from '../../src/command/commandRouter.mjs';
 import { securityFacade } from '../../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../../src/security-authority/authorization/capabilities.mjs';
 import { repositoryFactory } from '../../src/repositories/repositoryFactory.mjs';
 
 describe('Frontend Console <-> Control Plane Real Loopback Wire Contract', () => {
@@ -13,8 +14,13 @@ describe('Frontend Console <-> Control Plane Real Loopback Wire Contract', () =>
   const testPort = 8097;
 
   before(async () => {
-    // Authorize operational capabilities
-    await securityFacade.initDevSession();
+    // Authorize operational capabilities via production-equivalent session establishment
+    await securityFacade.establishSession({
+      sessionId: 'test-sess-loopback-001',
+      accountId: 'operator@betting.local',
+      capabilities: Object.values(CAPABILITY),
+      license: { status: 'VALID' }
+    });
     // @ts-ignore
     securityFacade.authorize = () => ({ status: 'OPERATIONAL' });
 

@@ -5,6 +5,8 @@ import { wsServer } from '../websocket/wsServer.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { backendClient } from '../../security-authority/protocol/backend-client.mjs';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
+import { securityFacade } from '../../security-authority/facade.mjs';
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
 
 export const billingRouter = Router();
 
@@ -67,21 +69,54 @@ billingRouter.post('/checkout/verify', async (req, res) => {
         }
 
         const snapshot = store.billing.getSnapshot();
-        if (verifyRes && verifyRes.verified === false) {
+        if (!verifyRes || verifyRes.verified === false) {
           return res.status(400).json({
             reference,
             verified: false,
-            error: verifyRes.error || 'Payment not verified on payment gateway',
+            error: verifyRes?.error || 'Payment not verified on payment gateway',
             snapshot
           });
         }
 
+        // Promote Security Authority from AUTHENTICATED to OPERATIONAL with newly granted license & capabilities
+        const fullState = securityFacade.getFullSecurityState();
+        const sessionId = backendClient.sessionId || fullState?.session?.sessionId || `sess_verified_${Date.now()}`;
+        const accountId = backendClient.accountId || fullState?.session?.userId || 'authenticated-operator';
+        const grantedCaps = Array.isArray(verifyRes.capabilities) && verifyRes.capabilities.length > 0
+          ? verifyRes.capabilities
+          : [
+              'CAP_AUTOMATION_START',
+              'CAP_AUTOMATION_STOP',
+              'CAP_FILE_UPLOAD',
+              'CAP_TACTICAL_BET',
+              'CAP_CASH_OUT'
+            ];
+
+        await securityFacade.establishSession({
+          sessionId,
+          accountId,
+          capabilities: grantedCaps,
+          license: verifyRes.license || { status: 'VALID' }
+        });
+
+        const lifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot: snapshot });
+        if (store.system && typeof store.system.setLifecycleState === 'function') {
+          store.system.setLifecycleState(lifecycleState);
+        }
+        if (store.preludeProjection && typeof store.preludeProjection.invalidate === 'function') {
+          store.preludeProjection.invalidate();
+        }
+
         wsServer.broadcast('billing:snapshot', snapshot);
-        wsServer.broadcast('app:state', { state: 'Authorized' });
+        wsServer.broadcast('app:state', { state: lifecycleState });
+        const prelude = store.getPreludeSnapshot ? store.getPreludeSnapshot() : null;
+        if (prelude) {
+          wsServer.broadcast('app:prelude', prelude.payload || prelude);
+        }
         res.json({
           reference,
           verified: true,
-          status: 'Authorized',
+          status: lifecycleState,
           snapshot
         });
       } catch (err) {

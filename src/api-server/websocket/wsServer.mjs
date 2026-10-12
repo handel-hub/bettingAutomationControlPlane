@@ -1,5 +1,6 @@
 // @ts-check
 import net from 'node:net';
+import os from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
@@ -10,7 +11,27 @@ import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { DEFAULT_STRATEGY_CATALOG } from '../../state-store/types/contracts.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
 import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
-import { securityFacade } from '../../security-authority/facade.mjs';
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
+
+/**
+ * Dynamically resolves all active IPv4 addresses bound to the host system's network interfaces.
+ * @returns {Set<string>}
+ */
+export function resolveSystemIPv4Addresses() {
+  const interfaces = os.networkInterfaces();
+  const addresses = new Set(['127.0.0.1']);
+
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      const family = typeof iface.family === 'string' ? iface.family : String(iface.family);
+      if ((family === 'IPv4' || family === '4') && iface.address) {
+        addresses.add(iface.address);
+      }
+    }
+  }
+
+  return addresses;
+}
 
 /**
  * Verifies if an Origin header is permitted to connect to the Control Plane WebSocket.
@@ -39,8 +60,11 @@ export function isAllowedOrigin(origin) {
       return true;
     }
 
-    // 2. Strict IPv4 literal checks (Loopback 127.0.0.0/8 and RFC 1918 Private Subnets)
+    // 2. Dynamically resolved system IPv4 addresses + RFC 1918 Private Subnets
     if (net.isIPv4(host)) {
+      if (resolveSystemIPv4Addresses().has(host)) {
+        return true;
+      }
       const parts = host.split('.').map(Number);
       if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
         // 127.0.0.0/8 (Loopback)
@@ -163,19 +187,7 @@ class WsStreamer {
         const accountsView = await repositoryFactory.getAccountsRepo().list({}, { offset: 0, limit: 50 });
         const notificationsData = await repositoryFactory.getNotificationsRepo().list({ unreadOnly: false, severity: 'ALL' });
         
-        const secState = securityFacade.getSystemState();
-        let computedLifecycleState = 'Authorized';
-        if (billingSnapshot?.status === 'Payment_Required' || billingSnapshot?.status === 'Past_Due') {
-          computedLifecycleState = 'Payment_Required';
-        } else if (securityFacade.isDegraded()) {
-          computedLifecycleState = 'Degraded';
-        } else if (secState === 'OFFLINE_GRACE') {
-          computedLifecycleState = 'Offline_Grace';
-        } else if (secState === 'UNINITIALIZED' || secState === 'INITIALIZING' || secState === 'SECURITY_STATE_READY' || secState === 'UNAUTHENTICATED' || secState === 'AUTHENTICATING') {
-          computedLifecycleState = 'Awaiting_Auth';
-        } else if (secState === 'REVOKED' || secState === 'COMPROMISED') {
-          computedLifecycleState = 'Revoked';
-        }
+        const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
 
         const runtimeState = {
           lifecycleState: computedLifecycleState,
@@ -246,8 +258,10 @@ class WsStreamer {
           if (parsed && (parsed.topic === 'system:resync' || parsed.type === 'RESYNC')) {
             const store = getSharedStateStore();
             const automationSnapshot = await workspaceAggregator.getSnapshot();
+            const billingSnapshot = store.billing.getSnapshot();
+            const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
             const runtimeState = {
-              lifecycleState: 'Authorized',
+              lifecycleState: computedLifecycleState,
               automationLifecycle: workspaceAggregator.lifecycle,
               automationMessage: workspaceAggregator.lifecycleMessage,
               automationCapabilities: automationSnapshot.capabilities,

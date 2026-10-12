@@ -72,8 +72,9 @@ coverage/
 # security-authority
 src/security-authority/test/databases
 
-# Ingress Dev Token
+# Ingress Tokens
 .acp-dev-token
+.acp-ipc-token
 
 # Packaging & Compatibility Lab temporary/compiled outputs
 .build_tmp/
