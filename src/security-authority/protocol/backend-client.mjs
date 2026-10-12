@@ -347,6 +347,7 @@ export class BackendClient {
       nonceValidated: data.nonceValidated,
       license: data.license,
       capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
       signatures: envelope?.signatures
     };
   }
@@ -384,6 +385,7 @@ export class BackendClient {
       nonceValidated: data.nonceValidated,
       license: data.license,
       capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
       signatures: envelope?.signatures
     };
   }

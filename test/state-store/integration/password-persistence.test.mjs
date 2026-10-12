@@ -32,15 +32,17 @@ test('Integration: Direct SQLite Password Persistence & Cold-Boot Recovery', asy
     backendState: 'ACTIVE'
   };
 
-  await t.test('1. Upsert saves password directly into SQLite', () => {
+  await t.test('1. Upsert saves password encrypted at rest in SQLite', () => {
     const saved = store.accounts.upsert(customAccount);
     assert.equal(saved.accountUsername, '08107992381');
     assert.equal(saved.accountPassword, realPassword);
 
-    // Verify row directly in SQLite
+    // Verify row directly in SQLite is encrypted at rest (USF-13 / RC-06)
     const row = store.engine.prepare('SELECT account_password FROM accounts_metadata_cache WHERE account_id = ?').get('acc_persist_01');
     assert.ok(row, 'Row must exist in SQLite');
-    assert.equal(row.account_password, realPassword, 'SQLite row must contain real plaintext password');
+    assert.notEqual(row.account_password, realPassword, 'SQLite row must never store plaintext password');
+    assert.match(row.account_password, /^enc:v1:[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/, 'SQLite row must contain AES-256-GCM ciphertext');
+    assert.equal(store.accounts.getRawPassword('acc_persist_01'), realPassword, 'Decrypted raw password matches original');
   });
 
   await t.test('2. ExecutionPayloadBuilder extracts real password for Chrome execution', () => {

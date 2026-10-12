@@ -76,15 +76,19 @@ export class PersistentClock {
    * @param {number} backendTimestamp 
    */
   async updateAnchor(backendTimestamp) {
-    if (!this.storage._db) return;
     if (typeof backendTimestamp !== 'number' || !Number.isFinite(backendTimestamp) || backendTimestamp <= 0) {
       return;
     }
-    
+
     // We only move time forward
-    if (backendTimestamp > this.lastKnownTime) {
+    if (backendTimestamp >= this.lastKnownTime) {
       this.lastKnownTime = backendTimestamp;
-      
+      this.bootWallclock = backendTimestamp;
+      this.bootHrtime = process.hrtime.bigint();
+      this.isUncertain = false;
+
+      if (!this.storage || !this.storage._db) return;
+
       const nextVersion = Date.now(); // We can just use timestamp as version for time_anchor
       const payload = { last_known_time: this.lastKnownTime };
       const encryptedBlob = this.storage._encryptPayload('time_anchor', nextVersion, 0, payload);
@@ -100,11 +104,6 @@ export class PersistentClock {
           'INSERT INTO secure_state (key, state_version, backend_generation, encrypted_blob) VALUES (?, ?, ?, ?)',
           ['time_anchor', nextVersion, 0, encryptedBlob]
         );
-      }
-
-      // If we received a valid backend sync, we are no longer uncertain.
-      if (this.isUncertain && this.bootWallclock >= backendTimestamp) {
-         this.isUncertain = false;
       }
     }
   }

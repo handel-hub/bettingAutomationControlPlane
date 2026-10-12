@@ -82,3 +82,40 @@ Close `USF-13`.
 ### Exact Code Changes
 1. [`bettingAutomationControlPlane/src/state-store/persistence/adapters/AccountsAdapter.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/state-store/persistence/adapters/AccountsAdapter.mjs):
    - Encrypt `account_password` before writing to SQLite `accounts_metadata_cache` using AES-256-GCM (`enc:v1:<iv>:<tag>:<ciphertext>`) with a key derived from local machine/DPAPI secret material, and transparently decrypt in `getRawPassword()` while keeping `listByUser()` masked as `'[PROTECTED]'`.
+2. [`bettingAutomationControlPlane/src/state-store/schema/migrations/006_encrypt_plaintext_passwords.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/state-store/schema/migrations/006_encrypt_plaintext_passwords.mjs) & [`SchemaMigrator.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/state-store/schema/SchemaMigrator.mjs):
+   - Migrate any pre-existing plaintext `account_password` rows in `accounts_metadata_cache` to `enc:v1:...` AES-256-GCM ciphertext on database startup.
+
+---
+
+## Phase 5: Hostile Audit Review Complete Closure (`REM-01` through `REM-07`)
+
+### Objectives
+Close all remaining findings from the Hostile Security Audit Reviews (`[HIGH-05]`, `[HIGH-06]`, `[NEW-04]`, `[HIGH-07]`, `[CRITICAL-03]`, `[HIGH-09]`, `[CRITICAL-05]`, `[HIGH-14]`, `[MEDIUM-06]`, `[HIGH-15a..d]` / `ACP-02`).
+
+### Exact Code Changes
+1. **`REM-01` (`[HIGH-06]` & `[NEW-04]` — Machine Identity Resolution & Reconciliation Ownership)**:
+   - [`bettingAutomationBackend/src/domain/machine/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/machine/service.mjs): Reject `register()` if `descriptor.hardwareId` differs from `installationId` (`400 HARDWARE_ID_MISMATCH`).
+   - [`bettingAutomationBackend/src/api/middleware/envelope-validator.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/middleware/envelope-validator.mjs) & [`authenticate.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/app/authenticate.mjs): Enforce deterministic priority (`ORDER BY CASE WHEN machine_id::text = $1 THEN 1 WHEN installation_id = $1 THEN 2 ELSE 3 END ASC`) on machine lookups.
+   - [`bettingAutomationBackend/src/api/routes/reconciliation.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/reconciliation.mjs) & [`domain/reconciliation/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/reconciliation/service.mjs): Require `req.sessionId && req.accountId` on `/reconciliation/sync` and verify `serverState.account_id === accountId`.
+   - [`bettingAutomationBackend/src/api/routes/sessions.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/sessions.mjs) & [`authorization.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/authorization.mjs): Use canonical `req.machineId || envelope.machineId`.
+2. **`REM-02` (`[HIGH-05]` — Authentication Rate Limiting)**:
+   - [`bettingAutomationBackend/src/api/middleware/rate-limiter.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/middleware/rate-limiter.mjs): Extract `req.body?.payload?.email || req.body?.email` in `authAccountRateLimiter` with `skipSuccessfulRequests: true`, and mount `ipRateLimiter` / `authAccountRateLimiter` on `/auth/init`, `/auth/register`, `/admin/login`, and `/machines/register`.
+3. **`REM-03` (`[HIGH-07]` & Part VI #2 — Entitlement & Input Validation)**:
+   - [`bettingAutomationBackend/src/domain/betting-accounts/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/betting-accounts/service.mjs): Require an active `VALID` license and enforce `allowedPlatformIds` / `allowed_platform_ids` in `createBettingAccount()`.
+   - [`bettingAutomationBackend/src/domain/automation/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/automation/service.mjs): Validate `source` against `['GLOBAL', 'CUSTOM']` in `updateAccountAutomationConfig()`.
+4. **`REM-04` (`[CRITICAL-03]` & `[HIGH-09]` — Revoked License Payment Guard & `returnUrl` Validation)**:
+   - [`bettingAutomationBackend/src/domain/billing/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/billing/service.mjs): Block `applyPaymentSuccess()` from overwriting an administratively `REVOKED` license (`403 LICENSE_REVOKED`).
+   - [`bettingAutomationBackend/src/api/routes/payments.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/payments.mjs), [`billing.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/billing.mjs), & [`domain/payment/service.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/domain/payment/service.mjs): Validate `returnUrl` protocol (`http:` / `https:`) and use real account email from `accounts`.
+5. **`REM-05` (`[CRITICAL-05]`, `[HIGH-14]`, `[MEDIUM-06]` — System Restart Gate & Background Job Revocation Cascade)**:
+   - [`bettingAutomationBackend/src/api/routes/system.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/api/routes/system.mjs): Require `SUPER_ADMIN` or `CAP_UPDATE_INSTALL` / `CAP_SYSTEM_UPDATE` on `POST /api/v1/system/restart-and-update`.
+   - [`bettingAutomationBackend/src/jobs/subscription-scheduler.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/jobs/subscription-scheduler.mjs) & [`license-sync.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/src/jobs/license-sync.mjs): Increment `session_generation` and `authorization_revision` and terminate active WebSockets on subscription or license expiry/suspension.
+6. **`REM-06` & `REM-07` (`[HIGH-15a..d]` / `ACP-02` — Control Plane Production License Hardening, Offline `graceToken` Verification, & Credential Fallback Removal)**:
+   - [`bettingAutomationControlPlane/src/security-authority/licensing/license-manager.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/security-authority/licensing/license-manager.mjs): Block `ALLOW_DEV_LICENSE` and `"VALID_SIG"` when `NODE_ENV === 'production'`, and add `verifyGraceToken()`.
+   - [`bettingAutomationControlPlane/src/security-authority/protocol/backend-client.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/security-authority/protocol/backend-client.mjs) & [`sync/backendSyncService.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/sync/backendSyncService.mjs): Persist and cryptographically verify `graceToken` during offline grace, anchor `PersistentClock.updateAnchor()` to backend server time, and remove hardcoded `operator@bettingautomation.io` / `Password123!` fallbacks on `GENERATION_MISMATCH`.
+
+---
+
+## Verification Status
+- **Backend Test Suite (`npm test`)**: **81/81 passing (0 failures)**, including `SEC-INV-01` through `SEC-INV-07` in [`security-redesign-invariants.test.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationBackend/tests/security-redesign-invariants.test.mjs).
+- **Control Plane Test Suite (`npm run test:all`)**: **298/298 passing (0 failures)**, including `SEC-INV-08` and `SEC-INV-09` in [`security-redesign-cp-invariants.test.mjs`](file:///c:/Users/John/Documents/CODE/back/bettingAutomationControlPlane/src/security-authority/test/adversarial/security-redesign-cp-invariants.test.mjs).
+

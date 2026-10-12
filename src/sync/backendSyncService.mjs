@@ -9,6 +9,7 @@ import { machineIdentity } from '../security-authority/identity/machine-identity
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { licenseManager } from '../security-authority/licensing/license-manager.mjs';
 import { clock } from '../security-authority/time/clock.mjs';
 import { FreshnessEvaluator } from '../state-store/hydration/FreshnessEvaluator.mjs';
 import { logger } from '../shared/logging.mjs';
@@ -36,6 +37,8 @@ export class BackendSyncService {
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
+    /** @type {any} */
+    this.lastGraceToken = null;
     /** @type {bigint | null} */
     this.lastSyncHrtime = null;
     /** @type {number} */
@@ -251,6 +254,9 @@ export class BackendSyncService {
       try {
         authRes = await this.client.initAuth({ email, password });
         this.lastAuthResult = authRes;
+        if (authRes?.graceToken) {
+          this.lastGraceToken = authRes.graceToken;
+        }
         if (clock) {
           await clock.updateAnchor(Date.now()).catch(() => {});
         }
@@ -347,6 +353,9 @@ export class BackendSyncService {
 
     const authRes = await this.client.initAuth({ email, password });
     this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
     this.isConnected = true;
 
     if (clock) {
@@ -383,6 +392,9 @@ export class BackendSyncService {
 
     const authRes = await this.client.registerOperator({ email, password, name });
     this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
     this.isConnected = true;
 
     if (clock) {
@@ -407,6 +419,7 @@ export class BackendSyncService {
     this.disconnectWebSocket();
     this.client.setSession(null, this.client.machineId);
     this.lastAuthResult = null;
+    this.lastGraceToken = null;
     this.lastSyncTimestamp = null;
     this.lastSyncHrtime = null;
     await securityFacade.logout().catch(() => {});
@@ -712,6 +725,20 @@ export class BackendSyncService {
       return false;
     }
 
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace period denied.');
+        if (!securityFacade.isDegraded()) {
+          securityFacade.transitionToDegraded('INVALID_GRACE_TOKEN').catch(() => {});
+        }
+        return false;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace period denied.');
+      return false;
+    }
+
     let timestamp = this.lastSyncTimestamp;
     if (!timestamp && this.engine) {
       try {
@@ -748,6 +775,17 @@ export class BackendSyncService {
     // 1. Clock rollback or uncertainty check - fail-closed
     if (clock && clock.isUncertain) {
       logger.warn('[BackendSyncService] Clock rollback or uncertain time anchor detected. Grace lease denied.');
+      return null;
+    }
+
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace lease denied.');
+        return null;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace lease denied.');
       return null;
     }
 
@@ -913,6 +951,8 @@ export class BackendSyncService {
       const cachePayload = {
         version: 1,
         savedAt: new Date().toISOString(),
+        lastSyncTimestamp: this.lastSyncTimestamp || null,
+        graceToken: this.lastGraceToken || null,
         globalConfig: configRepo.globalConfig,
         accounts: Array.from(accountsRepo.accounts.values())
       };
@@ -945,6 +985,9 @@ export class BackendSyncService {
       const decrypted = NativeCore.decryptAead(encrypted, aad);
 
       const cachePayload = JSON.parse(decrypted.toString('utf8'));
+      if (cachePayload.graceToken) {
+        this.lastGraceToken = cachePayload.graceToken;
+      }
       if (Array.isArray(cachePayload.accounts)) {
         repositoryFactory.getAccountsRepo().hydrate(cachePayload.accounts);
       }
@@ -1043,21 +1086,29 @@ export class BackendSyncService {
         i--;
       } catch (err) {
         if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-          logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating session...');
-          try {
-            const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-            const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-            await this.client.initAuth({ email, password });
-            await this._dispatchMutation(item.mutationType, item.payload);
-            flushed++;
-            if (this.engine) {
-              try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+          const email = process.env.OPERATOR_EMAIL || null;
+          const password = process.env.OPERATOR_PASSWORD || null;
+          if (email && password) {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating with configured operator credentials...');
+            try {
+              const authRes = await this.client.initAuth({ email, password });
+              if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+              await this._dispatchMutation(item.mutationType, item.payload);
+              flushed++;
+              if (this.engine) {
+                try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+              }
+              this.outbox.splice(i, 1);
+              i--;
+              continue;
+            } catch (retryErr) {
+              logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
             }
-            this.outbox.splice(i, 1);
-            i--;
-            continue;
-          } catch (retryErr) {
-            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
+          } else {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH without configured auto-reauth credentials. Requiring interactive re-authentication.');
+            await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+            wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
+            break;
           }
         }
 
@@ -1126,16 +1177,23 @@ export class BackendSyncService {
       return result;
     } catch (err) {
       if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-        logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session to reconcile generation counter...');
-        try {
-          const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-          const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-          await this.client.initAuth({ email, password });
-          const result = await this._dispatchMutation(type, payload);
-          this.saveLocalCache();
-          return result;
-        } catch (retryErr) {
-          logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+        const email = process.env.OPERATOR_EMAIL || null;
+        const password = process.env.OPERATOR_PASSWORD || null;
+        if (email && password) {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session with configured operator credentials...');
+          try {
+            const authRes = await this.client.initAuth({ email, password });
+            if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+            const result = await this._dispatchMutation(type, payload);
+            this.saveLocalCache();
+            return result;
+          } catch (retryErr) {
+            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+          }
+        } else {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected without configured auto-reauth credentials. Requiring interactive re-authentication.');
+          await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
         }
       }
 

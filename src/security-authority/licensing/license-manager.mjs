@@ -1,5 +1,6 @@
 // @ts-check
 import { NativeCore } from '../native/security-core.mjs';
+import { CanonicalSerializer } from '../protocol/canonical-serializer.mjs';
 
 /**
  * Validates and enforces cryptographic machine licenses.
@@ -15,14 +16,19 @@ export class LicenseManager {
   validateLicenseIntegrity(licensePayload, serverTrustPubHex) {
     if (!licensePayload || !licensePayload.signature) return false;
     
-    // Support dev license mode if explicitly enabled
-    if (process.env.ALLOW_DEV_LICENSE === 'true' && licensePayload.signature === "VALID_SIG") {
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    // Support dev license mode ONLY outside production when explicitly enabled
+    if (!isProduction && process.env.ALLOW_DEV_LICENSE === 'true' && licensePayload.signature === "VALID_SIG") {
       return true;
     }
 
     const pubKeyHex = serverTrustPubHex || process.env.PINNED_BACKEND_PUBKEY_HEX || process.env.PINNED_BACKEND_PUBKEY_V2_HEX;
     if (!pubKeyHex) {
-      // Fallback for tests if no pinned key is specified
+      if (isProduction) {
+        return false;
+      }
+      // Fallback for isolated unit tests if no pinned key is specified
       return licensePayload.signature === "VALID_SIG";
     }
 
@@ -32,6 +38,44 @@ export class LicenseManager {
       const pubKeyBuf = Buffer.from(pubKeyHex, 'hex');
       const sigBuf = Buffer.from(signature, 'hex');
       return NativeCore.verifyEd25519(pubKeyBuf, canonicalData, sigBuf);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Cryptographically verifies an offline GraceToken issued by the Backend.
+   *
+   * @param {Object} token
+   * @param {string} [serverTrustPubHex]
+   * @returns {boolean}
+   */
+  verifyGraceToken(token, serverTrustPubHex) {
+    if (!token || typeof token !== 'object' || !token.signature || typeof token.signature !== 'string') {
+      return false;
+    }
+
+    const now = Date.now();
+    if (token.not_before && now < Number(token.not_before)) return false;
+    if (token.not_after && now > Number(token.not_after)) return false;
+
+    const pubKeyHex =
+      serverTrustPubHex ||
+      (token.key_version === 2 && process.env.PINNED_BACKEND_PUBKEY_V2_HEX
+        ? process.env.PINNED_BACKEND_PUBKEY_V2_HEX
+        : (process.env.PINNED_BACKEND_PUBKEY_HEX || process.env.PINNED_BACKEND_PUBKEY_V2_HEX));
+
+    if (!pubKeyHex) {
+      return false;
+    }
+
+    try {
+      const { signature, key_version, ...tokenPayload } = token;
+      const canonicalString = CanonicalSerializer.canonicalStringify(tokenPayload);
+      const messageBuffer = Buffer.from(canonicalString, 'utf8');
+      const pubKeyBuf = Buffer.from(pubKeyHex, 'hex');
+      const sigBuf = Buffer.from(signature, 'hex');
+      return NativeCore.verifyEd25519(pubKeyBuf, messageBuffer, sigBuf);
     } catch {
       return false;
     }
