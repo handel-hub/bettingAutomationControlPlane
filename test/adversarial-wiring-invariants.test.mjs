@@ -17,6 +17,14 @@ test('Adversarial Control Plane Wiring Invariants & Red-Team Verification', asyn
   const store = getSharedStateStore({ dbPath: ':memory:', userId: 'usr_adversarial' });
 
   // Baseline: ensure securityFacade is operational
+  // @ts-ignore
+  engineInstance.inMemoryState = {
+    state: 'OPERATIONAL',
+    authorization: {
+      status: 'VALID',
+      capability_set: [CAPABILITY.AUTOMATION_START, CAPABILITY.AUTOMATION_STOP]
+    }
+  };
   securityFacade.isDegraded = () => false;
   const originalAuthorize = securityFacade.authorize.bind(securityFacade);
   securityFacade.authorize = (cap) => ({ status: 'OPERATIONAL' });
@@ -188,6 +196,32 @@ test('Adversarial Control Plane Wiring Invariants & Red-Team Verification', asyn
     assert.match(canStartWhenActive.message, /Missing capability/);
 
     runtimeManager.activeRuntimes.clear();
+  });
+
+  await t.test('SEC-INV-08 (RC-06): Bookmaker account_password is encrypted at rest in SQLite accounts_metadata_cache', () => {
+    const rawPassword = 'SuperSecretBookmakerPassword!99';
+    const testAccountId = 'acc-enc-test-1';
+
+    // Insert via the public StateStore API (maps to AccountsAdapter.upsert internally)
+    store.accounts.upsert({
+      id: testAccountId,
+      name: 'Enc Test Account',
+      platformId: 'sportybet',
+      platformDisplayName: 'SportyBet',
+      accountUsername: 'user_encrypted',
+      accountPassword: rawPassword
+    });
+
+    // Inspect raw SQLite row directly to verify ciphertext storage
+    // store.engine is the SqliteStorageEngine; store.engine.db is the better-sqlite3 db
+    const rawRow = store.engine.db.prepare('SELECT account_password FROM accounts_metadata_cache WHERE account_id = ?').get(testAccountId);
+    assert.ok(rawRow, 'Row must exist in accounts_metadata_cache');
+    assert.notEqual(rawRow.account_password, rawPassword, 'Raw SQLite column must never store plaintext password');
+    assert.match(rawRow.account_password, /^enc:v1:[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/, 'Must be AES-256-GCM enc:v1 format');
+
+    // Verify transparent decryption via getRawPassword()
+    const decrypted = store.accounts.getRawPassword(testAccountId);
+    assert.equal(decrypted, rawPassword, 'getRawPassword() must transparently decrypt the stored ciphertext');
   });
 
   t.after(() => {
