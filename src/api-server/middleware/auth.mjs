@@ -84,8 +84,8 @@ export function ingressAuthMiddleware(req, res, next) {
     return next();
   }
 
-  // Exempt health-check and public system pings
-  if (req.path === '/api/v1/system/health' || req.path === '/api/v1/system/ping') {
+  // Exempt health-check, public system pings, and local pairing discovery
+  if (req.path === '/api/v1/system/health' || req.path === '/api/v1/system/ping' || req.path === '/api/v1/system/network-endpoints') {
     return next();
   }
 

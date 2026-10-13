@@ -22,7 +22,8 @@ const DEFAULT_PORTS = [3000, 3001, 5000, 8000];
 
 function buildAllowedOrigins() {
   const origins = new Set();
-  const hosts = ['localhost', ...resolveSystemIPv4Addresses()];
+  const machineHostname = os.hostname().toLowerCase();
+  const hosts = ['localhost', machineHostname, `${machineHostname}.local`, ...resolveSystemIPv4Addresses()];
   for (const host of hosts) {
     for (const port of DEFAULT_PORTS) {
       origins.add(`http://${host}:${port}`);

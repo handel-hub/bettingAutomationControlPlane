@@ -59,8 +59,8 @@ export function isAllowedOrigin(origin) {
     const parsed = new URL(origin);
     const host = parsed.hostname.toLowerCase();
 
-    // 1. Allow standard loopback hostnames and IPv6 loopback
-    if (host === 'localhost' || host === '[::1]' || host === '::1') {
+    // 1. Allow standard loopback hostnames, IPv6 loopback, and local mDNS (.local)
+    if (host === 'localhost' || host === '[::1]' || host === '::1' || host.endsWith('.local') || host === os.hostname().toLowerCase()) {
       return true;
     }
 
