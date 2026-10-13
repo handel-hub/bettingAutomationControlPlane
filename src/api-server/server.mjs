@@ -1,6 +1,7 @@
 // @ts-check
 import express from 'express';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import { traceIdMiddleware } from './middleware/traceId.mjs';
 import { rawBodySaver } from './middleware/rawBody.mjs';
 import { ingressAuthMiddleware } from './middleware/auth.mjs';
