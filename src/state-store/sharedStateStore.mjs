@@ -13,7 +13,11 @@ let _sharedStore = null;
  */
 export function getSharedStateStore(options = {}) {
   if (!_sharedStore) {
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const isTest =
+      process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.execArgv.includes('--test') ||
+      Boolean(process.env.npm_lifecycle_event?.includes('test'));
     let defaultDbPath = ':memory:';
     if (!isTest) {
       const dataDir = path.join(process.cwd(), 'data');

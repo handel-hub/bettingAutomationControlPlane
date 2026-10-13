@@ -51,6 +51,13 @@ export class WorkspaceAggregator {
     this.setLifecycle('STOPPED', 'Execution engine standby');
     // Stop all active browser processes
     this.activeAccountIds.clear();
+    operationTracker.failAllPending('AUTOMATION_STOPPED');
+    try {
+      const store = getSharedStateStore();
+      if (store && store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+        store.accounts.resetObservedStates('STOP_COMPLETED');
+      }
+    } catch { /* ignore */ }
   }
 
   activateAccount(accountId) {
@@ -104,6 +111,7 @@ export class WorkspaceAggregator {
     const accountSnapshots = await Promise.all(stagedAccounts.map(async (acc) => {
       const overrides = await configRepo.getAccountConfig(acc.id);
       const isBrowserActive = this.activeAccountIds.has(acc.id);
+      const isWorkspaceStopped = this.lifecycle === 'STOPPED';
 
       return {
         id: acc.id,
@@ -112,8 +120,8 @@ export class WorkspaceAggregator {
         accountUsername: acc.accountUsername,
         accountStatus: isBrowserActive ? 'IN_USE' : 'IDLE',
         browserStatus: isBrowserActive ? 'ACTIVE' : 'STOPPED',
-        desiredState: acc.desiredState || (isBrowserActive ? 'RUNNING' : 'STOPPED'),
-        observedState: acc.observedState || (isBrowserActive ? 'RUNNING' : 'STOPPED'),
+        desiredState: isWorkspaceStopped && !isBrowserActive ? 'STOPPED' : (acc.desiredState || (isBrowserActive ? 'RUNNING' : 'STOPPED')),
+        observedState: isWorkspaceStopped && !isBrowserActive ? 'STOPPED' : (acc.observedState || (isBrowserActive ? 'RUNNING' : 'STOPPED')),
         executionStatusReason: acc.executionStatusReason || null,
         betCycleEnabled: overrides.betCycleEnabled ?? true,
         pricingSource: overrides.pricingSource || 'GLOBAL',

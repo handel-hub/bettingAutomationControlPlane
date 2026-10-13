@@ -34,22 +34,22 @@ export class CapabilityResolver {
     // Start / Stop capabilities
     const canStartAutomation = isAuthorized && !hasActiveRuntime && isStopped && totalConfiguredAccounts > 0 && !hasPendingAction;
     const startDisabledReason = !canStartAutomation
-      ? (!isAuthorized
-          ? (authorizationReason || 'Operation prohibited by Security Authority')
+      ? (!isStopped
+          ? (isRunning ? 'Automation is already running' : 'Automation is currently transitioning')
           : hasActiveRuntime
             ? 'Automation runtime process is currently active'
-            : !isStopped
-              ? (isRunning ? 'Automation is already running' : 'Automation is currently transitioning')
+            : !isAuthorized
+              ? (authorizationReason || 'Operation prohibited by Security Authority')
               : totalConfiguredAccounts === 0
                 ? 'At least one account must be configured'
                 : hasPendingAction
-                  ? 'Operation in progress'
-                  : undefined)
+                   ? 'Operation in progress'
+                   : undefined)
       : undefined;
 
-    const canStopAutomation = (isRunning || lifecycle === 'STARTING') && !hasPendingAction;
+    const canStopAutomation = isRunning || lifecycle === 'STARTING';
     const stopDisabledReason = !canStopAutomation 
-      ? (isStopped ? 'Automation is already stopped' : hasPendingAction ? 'Operation in progress' : undefined) 
+      ? (isStopped ? 'Automation is already stopped' : undefined) 
       : undefined;
 
     // Tactical operations

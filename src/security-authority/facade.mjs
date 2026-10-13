@@ -31,7 +31,13 @@ export class SecurityFacade {
    */
   async initialize(dbPath) {
     if (!StorageAdapter._db) {
-      const resolvedPath = dbPath || process.env.CP_SECURITY_DB_PATH || './data/control_plane_security.db';
+      const isTest =
+        process.env.NODE_ENV === 'test' ||
+        Boolean(process.env.NODE_TEST_CONTEXT) ||
+        process.execArgv.includes('--test') ||
+        Boolean(process.env.npm_lifecycle_event?.includes('test'));
+      const defaultPath = isTest ? ':memory:' : './data/control_plane_security.db';
+      const resolvedPath = dbPath || process.env.CP_SECURITY_DB_PATH || defaultPath;
       await StorageAdapter.initDatabase(resolvedPath);
     }
     await initClock();

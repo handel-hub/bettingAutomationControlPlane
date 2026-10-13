@@ -68,7 +68,11 @@ export class BackendSyncService {
     if (!fs.existsSync(secDir)) {
       try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
     }
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const isTest =
+      process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.execArgv.includes('--test') ||
+      Boolean(process.env.npm_lifecycle_event?.includes('test'));
     const defaultCachePath = isTest
       ? path.join(os.tmpdir(), `acp_test_cache_${process.pid}.enc`)
       : path.join(secDir, 'acp_cache.enc');
@@ -358,10 +362,12 @@ export class BackendSyncService {
         currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
       } catch { /* ignore */ }
 
-      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
-      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
-        const platforms = platformRes.registry.platforms || platformRes.registry;
-        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+      if (this.client.sessionId) {
+        const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
+        if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
+          const platforms = platformRes.registry.platforms || platformRes.registry;
+          catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+        }
       }
 
       const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
@@ -663,8 +669,40 @@ export class BackendSyncService {
     // 2. Domain Event Routing
     switch (eventType) {
       case 'LICENSE_UPDATED': {
+        const licPayload = payload?.license || payload || {};
+        const caps = Array.isArray(licPayload.capabilities)
+          ? licPayload.capabilities
+          : (Array.isArray(payload?.capabilities)
+            ? payload.capabilities
+            : ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY']);
+        const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+        const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+        await securityFacade.establishSession({
+          ...(this.lastAuthResult || {}),
+          sessionId,
+          sessionGeneration,
+          capabilities: caps,
+          license: {
+            ...(this.lastAuthResult?.license || {}),
+            ...licPayload,
+            licenseId: payload?.licenseKey || licPayload.licenseId || this.lastAuthResult?.license?.licenseId || `lic-${payload?.accountId || 'active'}`,
+            status: licPayload.status || 'VALID',
+            planId: licPayload.planId || this.lastAuthResult?.license?.planId || 'pro',
+            capabilities: caps
+          }
+        }).catch(() => {});
         const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
         wsServer.broadcast('billing:snapshot', billingSnapshot);
+        try {
+          const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+          const snap = await workspaceAggregator.getSnapshot();
+          wsServer.broadcast('automation:snapshot', snap);
+          wsServer.broadcast('automation:delta', {
+            type: 'CAPABILITIES_CHANGED',
+            capabilities: snap.capabilities,
+            fleetReadiness: snap.fleetReadiness
+          });
+        } catch { /* ignore */ }
         break;
       }
 
@@ -691,7 +729,32 @@ export class BackendSyncService {
           };
           await repositoryFactory.getBillingRepo().updateSubscription(normalizedSub);
           if (normalizedStatus === 'Active') {
+            const defaultCaps = ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY'];
+            const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+            const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+            await securityFacade.establishSession({
+              ...(this.lastAuthResult || {}),
+              sessionId,
+              sessionGeneration,
+              capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps,
+              license: {
+                ...(this.lastAuthResult?.license || {}),
+                status: 'VALID',
+                planId: normalizedSub.planId || 'pro',
+                capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps
+              }
+            }).catch(() => {});
             wsServer.broadcast('app:state', { state: 'Authorized' });
+            try {
+              const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+              const snap = workspaceAggregator.getSnapshot();
+              wsServer.broadcast('automation:snapshot', snap);
+              wsServer.broadcast('automation:delta', {
+                type: 'CAPABILITIES_CHANGED',
+                capabilities: snap.capabilities,
+                fleetReadiness: snap.fleetReadiness
+              });
+            } catch { /* ignore */ }
           } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required' || normalizedStatus === 'EXPIRED' || normalizedStatus === 'Expired') {
             await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
             wsServer.broadcast('app:state', { state: 'Payment_Required' });
@@ -956,6 +1019,14 @@ export class BackendSyncService {
       }
       if (Array.isArray(autoSnapshot?.accounts) && autoSnapshot.accounts.length > 0) {
         accountsRepo.hydrate(autoSnapshot.accounts);
+        try {
+          const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+          for (const acc of autoSnapshot.accounts) {
+            if (acc?.id && acc?.accountPassword) {
+              vaultCredentialPipeline.storeCredential(acc.id, acc.accountPassword);
+            }
+          }
+        } catch { /* ignore */ }
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch automation snapshot directly');

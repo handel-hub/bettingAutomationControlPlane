@@ -15,10 +15,12 @@ export const automationRouter = Router();
 automationRouter.get('/snapshot', async (req, res) => {
   try {
     const store = getSharedStateStore();
-    await workspaceAggregator.getSnapshot();
+    const aggSnapshot = await workspaceAggregator.getSnapshot();
     const runtimeState = {
       lifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: workspaceAggregator.lifecycleMessage,
+      capabilities: aggSnapshot.capabilities,
+      fleetReadiness: aggSnapshot.fleetReadiness,
       activeAccountIds: workspaceAggregator.activeAccountIds,
       stagedAccountIds: workspaceAggregator.stagedAccountIds,
       activeBrowsers: workspaceAggregator.activeAccountIds.size,

@@ -170,9 +170,11 @@ export class DecisionEngine {
     if (typeof this.activeExecutionChecker === 'function') {
       try {
         if (this.activeExecutionChecker()) {
-          return caps.filter(c => c !== 'CAP_AUTOMATION_START');
+          return caps.filter(c => c !== CAPABILITY.AUTOMATION_START);
         }
-      } catch { /* ignore */ }
+      } catch {
+        // Ignore checker errors
+      }
     }
     return caps;
   }

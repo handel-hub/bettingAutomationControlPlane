@@ -107,9 +107,25 @@ billingRouter.post('/checkout/verify', async (req, res) => {
           store.preludeProjection.invalidate();
         }
 
+        const { workspaceAggregator } = await import('../../state/workspaceAggregator.mjs');
+        const automationSnapshot = await workspaceAggregator.getSnapshot();
+
         wsServer.broadcast('billing:snapshot', snapshot);
         wsServer.broadcast('app:state', { state: lifecycleState });
-        const prelude = store.getPreludeSnapshot ? store.getPreludeSnapshot() : null;
+        wsServer.broadcast('automation:snapshot', automationSnapshot);
+        wsServer.broadcast('automation:delta', {
+          type: 'CAPABILITIES_CHANGED',
+          capabilities: automationSnapshot.capabilities
+        });
+        const prelude = store.getPreludeSnapshot
+          ? store.getPreludeSnapshot({
+              lifecycleState,
+              automationLifecycle: automationSnapshot.lifecycle,
+              automationMessage: automationSnapshot.lifecycleMessage,
+              automationCapabilities: automationSnapshot.capabilities,
+              automationAccounts: automationSnapshot.accounts
+            })
+          : null;
         if (prelude) {
           wsServer.broadcast('app:prelude', prelude.payload || prelude);
         }

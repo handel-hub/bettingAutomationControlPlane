@@ -17,20 +17,54 @@ export { registerDefaultCommandHandlers } from './command/registerCommands.mjs';
 import { registerDefaultCommandHandlers } from './command/registerCommands.mjs';
 
 // Wire operation tracker events to WebSocket deltas
-operationTracker.on('operation:completed', ({ operationId, op, result }) => {
+operationTracker.on('operation:completed', async ({ operationId, op }) => {
   const traceId = op?.metadata?.traceId || operationTracker.getOperation(operationId)?.metadata?.traceId;
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: null }
   }, { correlationId: operationId, traceId });
+  try {
+    const snapshot = await workspaceAggregator.getSnapshot();
+    wsServer.broadcast('automation:delta', {
+      type: 'CAPABILITIES_CHANGED',
+      capabilities: snapshot.capabilities
+    }, { correlationId: operationId, traceId });
+  } catch {}
 });
 
-operationTracker.on('operation:failed', ({ operationId, op, errorReason }) => {
+operationTracker.on('operation:failed', async ({ operationId, op, errorReason }) => {
   const traceId = op?.metadata?.traceId || operationTracker.getOperation(operationId)?.metadata?.traceId;
   wsServer.broadcast('automation:delta', {
     type: 'STATUS_UPDATED',
     systemStatus: { globalActionPending: null }
   }, { correlationId: operationId, traceId });
+  wsServer.broadcast('automation:delta', {
+    type: 'OPERATION_FAILED',
+    action: op?.actionType || 'OPERATION',
+    errorReason: errorReason || 'Operation failed'
+  }, { correlationId: operationId, traceId });
+  try {
+    const snapshot = await workspaceAggregator.getSnapshot();
+    wsServer.broadcast('automation:delta', {
+      type: 'CAPABILITIES_CHANGED',
+      capabilities: snapshot.capabilities
+    }, { correlationId: operationId, traceId });
+  } catch {}
+});
+
+operationTracker.on('operation:uncertain', async ({ operationId, op }) => {
+  const traceId = op?.metadata?.traceId || operationTracker.getOperation(operationId)?.metadata?.traceId;
+  wsServer.broadcast('automation:delta', {
+    type: 'STATUS_UPDATED',
+    systemStatus: { globalActionPending: null }
+  }, { correlationId: operationId, traceId });
+  try {
+    const snapshot = await workspaceAggregator.getSnapshot();
+    wsServer.broadcast('automation:delta', {
+      type: 'CAPABILITIES_CHANGED',
+      capabilities: snapshot.capabilities
+    }, { correlationId: operationId, traceId });
+  } catch {}
 });
 
 // Synchronize runtime manager events with workspace snapshot
@@ -58,6 +92,7 @@ runtimeManager.on('runtimeExited', (pid) => {
     const exitReason = `PROCESS_EXIT_PID_${pid}`;
     const targetObserved = currentState.desiredState === 'RUNNING' ? 'ABORTED' : 'STOPPED';
 
+    operationTracker.failAllPending(exitReason);
     store.lifecycle.setObservedState(targetObserved, exitReason);
     store.accounts.resetObservedStates(exitReason);
     workspaceAggregator.setLifecycle(targetObserved, exitReason);
@@ -86,6 +121,24 @@ executionBoundaryManager.on('clientConnected', (connId) => {
 executionBoundaryManager.on('clientDisconnected', (connId) => {
   runtimeManager.activeConnections.delete(connId);
   runtimeManager.emit('clientDisconnected', connId);
+});
+
+executionBoundaryManager.on('operationResult', (payload) => {
+  const { operationId, status, error, code } = payload || {};
+  const isUncertain = status === 'UNCERTAIN' || status === 'UNKNOWN' || status === 'TIMEOUT' || code === 'EP_TX_001';
+  const isCompleted = status === 'COMPLETED' || status === 'SUCCESS';
+
+  if (operationId) {
+    if (isCompleted) {
+      operationTracker.completeOperation(operationId, payload);
+    } else if (isUncertain) {
+      operationTracker.markUncertain(operationId, error || 'UNCERTAIN_OUTCOME', payload);
+    } else {
+      operationTracker.failOperation(operationId, error || `Operation ${status || 'FAILED'}`);
+    }
+  } else {
+    operationTracker.failAllPending('OPERATION_RESULT_WITHOUT_ID');
+  }
 });
 
 executionBoundaryManager.on('stateChanged', ({ state, message }) => {
@@ -188,6 +241,7 @@ executionBoundaryManager.on('browserStatus', (payload) => {
 executionBoundaryManager.on('quarantineRequired', (data) => {
   logger.warn({ data }, '[ExecutionBoundary] Quarantine required by watchdog. Quarantining runtime.');
   runtimeManager.quarantineExecution('WATCHDOG_HEARTBEAT_DEAD');
+  operationTracker.failAllPending('WATCHDOG_HEARTBEAT_DEAD');
 
   // Cleanly settle execution plane state to STOPPED so operator can restart without ACP restart
   workspaceAggregator.setLifecycle('STOPPED', 'Execution heartbeat lost: runtime quarantined');
@@ -195,6 +249,9 @@ executionBoundaryManager.on('quarantineRequired', (data) => {
     const store = getSharedStateStore();
     store.lifecycle.setDesiredState('STOPPED', 'WATCHDOG_QUARANTINE');
     store.lifecycle.setObservedState('STOPPED', 'WATCHDOG_QUARANTINE');
+    if (store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+      store.accounts.resetObservedStates('WATCHDOG_QUARANTINE');
+    }
   } catch {}
 
   wsServer.broadcast('automation:delta', {
