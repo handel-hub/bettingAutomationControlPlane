@@ -22,6 +22,7 @@ import { executionBoundaryManager } from './boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
 import { logger } from '../shared/logging.mjs';
 import { resolveExecutionScriptHash } from '../security-authority/execution/execution-integrity.mjs';
+import { ExecutionHandshakeTimeoutError } from '../state-store/types/errors.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -496,7 +497,7 @@ export class RuntimeManager extends EventEmitter {
           this.terminateRuntime(pid);
           this.engineStatus = 'ABORTED';
           this.emit('handshakeTimeout', { pid, handshakeTimeoutMs });
-          executionBoundaryManager.abortConnection(new Error(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
+          executionBoundaryManager.abortConnection(new ExecutionHandshakeTimeoutError(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
         }
       }, handshakeTimeoutMs);
 

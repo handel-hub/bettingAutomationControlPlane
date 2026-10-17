@@ -39,6 +39,8 @@ settingsRouter.post('/intent', async (req, res) => {
   if (requiresStepUp) {
     const providedSecret = stepUpSecret || payload?.currentPassword || null;
     if (!providedSecret) {
+      // Contract: Returns HTTP 200 with status: 'REQUIRES_STEP_UP' per IntentAck protocol.
+      // Frontend client (useSettingsStore.ts / controlPlaneClient.ts) intercepts this to render StepUpModal.
       return res.status(200).json({
         requestId,
         status: 'REQUIRES_STEP_UP',

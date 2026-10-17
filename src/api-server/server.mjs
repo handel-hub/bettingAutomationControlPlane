@@ -109,6 +109,20 @@ export class ApiServer {
     });
     this.app.get('/ping', (req, res) => res.status(200).send('pong'));
 
+    // Global terminal error-handling middleware for structured JSON error responses
+    this.app.use((err, req, res, _next) => {
+      const status = err.status || err.statusCode || 500;
+      const code = err.code || 'INTERNAL_ERROR';
+      const isRetryable = err.retryable ?? (status === 504 || status === 503 || status === 409);
+      logger.error({ err: err.message, status, code, url: req.originalUrl }, '[ApiServer] Unhandled route error');
+      res.status(status).json({
+        success: false,
+        code,
+        error: err.message || 'Internal server error',
+        retryable: isRetryable
+      });
+    });
+
     // Attach WebSocket server
     wsServer.attach(this.server);
   }

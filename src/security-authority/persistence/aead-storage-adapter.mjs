@@ -94,12 +94,47 @@ export const AEADStorageAdapter = {
       this._minValidStateVersion = this._pathMinVersions.get(resolvedPath) || 0;
     }
 
-    this._db = await open({
-      filename: dbPath,
-      driver: sqlite3.Database
-    });
+    try {
+      this._db = await open({
+        filename: dbPath,
+        driver: sqlite3.Database
+      });
 
-    await this._migrateDatabase(this._db);
+      await this._migrateDatabase(this._db);
+    } catch (err) {
+      const msg = err.message ? err.message.toLowerCase() : '';
+      if (
+        msg.includes('corrupt') ||
+        msg.includes('file is not a database') ||
+        msg.includes('malformed') ||
+        msg.includes('unsupported')
+      ) {
+        console.error(`[AEADStorageAdapter] CRITICAL: Security database corrupted: ${err.message}. Quarantining.`);
+        if (this._db) {
+          try { await this._db.close(); } catch { /* ignore */ }
+          this._db = null;
+        }
+        if (resolvedPath !== ':memory:' && fs.existsSync(resolvedPath)) {
+          const corruptPath = `${resolvedPath}.corrupt.${Date.now()}`;
+          try {
+            fs.renameSync(resolvedPath, corruptPath);
+            if (fs.existsSync(`${resolvedPath}-wal`)) fs.renameSync(`${resolvedPath}-wal`, `${corruptPath}-wal`);
+            if (fs.existsSync(`${resolvedPath}-shm`)) fs.renameSync(`${resolvedPath}-shm`, `${corruptPath}-shm`);
+          } catch (renameErr) {
+            console.error('[AEADStorageAdapter] Failed to quarantine corrupt DB file:', renameErr);
+          }
+        }
+        // Re-open clean database
+        this._minValidStateVersion = 0;
+        this._db = await open({
+          filename: dbPath,
+          driver: sqlite3.Database
+        });
+        await this._migrateDatabase(this._db);
+      } else {
+        throw err;
+      }
+    }
   },
 
   /**
@@ -225,8 +260,13 @@ export const AEADStorageAdapter = {
       try {
         const anchoredVersion = Number(NativeCore.getTransitionIntent());
         if (Number.isFinite(anchoredVersion) && anchoredVersion > 0 && row.state_version < anchoredVersion) {
-          console.error(`[AEADStorageAdapter] CRITICAL: DPAPI hardware anchor rollback detected! Row version: ${row.state_version}, Anchored version: ${anchoredVersion}`);
-          throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+          if (anchoredVersion === row.state_version + 1) {
+            console.warn(`[AEADStorageAdapter] Reconciling uncommitted power-loss intent: anchored=${anchoredVersion}, row=${row.state_version}`);
+            try { NativeCore.setTransitionIntent(row.state_version); } catch { /* ignore */ }
+          } else {
+            console.error(`[AEADStorageAdapter] CRITICAL: DPAPI hardware anchor rollback detected! Row version: ${row.state_version}, Anchored version: ${anchoredVersion}`);
+            throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+          }
         }
       } catch (err) {
         if (err.message?.includes('SECURITY_STATE_UNCERTAIN')) throw err;

@@ -74,3 +74,31 @@ export class UnhydratedStateError extends StateStoreError {
     this.domain = domain;
   }
 }
+
+export class ExecutionHandshakeTimeoutError extends StateStoreError {
+  /**
+   * @param {string} [message]
+   * @param {any} [details]
+   */
+  constructor(message = 'Handshake timeout exceeded waiting for Execution Plane client connection', details = null) {
+    super(message, 'EXECUTION_HANDSHAKE_TIMEOUT');
+    this.status = 504;
+    this.statusCode = 504;
+    this.retryable = true;
+    this.details = details;
+  }
+}
+
+export class ExecutionPreemptedError extends StateStoreError {
+  /**
+   * @param {string} [message]
+   * @param {any} [details]
+   */
+  constructor(message = 'Execution startup preempted by concurrent stop request', details = null) {
+    super(message, 'EXECUTION_PREEMPTED');
+    this.status = 409;
+    this.statusCode = 409;
+    this.retryable = true;
+    this.details = details;
+  }
+}
