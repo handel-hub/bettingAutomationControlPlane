@@ -20,6 +20,7 @@ automationRouter.get('/snapshot', async (req, res) => {
       lifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: workspaceAggregator.lifecycleMessage,
       capabilities: aggSnapshot.capabilities,
+      capabilityList: aggSnapshot.capabilityList,
       fleetReadiness: aggSnapshot.fleetReadiness,
       activeAccountIds: workspaceAggregator.activeAccountIds,
       stagedAccountIds: workspaceAggregator.stagedAccountIds,

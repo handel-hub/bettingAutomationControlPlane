@@ -180,10 +180,15 @@ export class WorkspaceAggregator {
         ? 'READY' 
         : 'ERROR';
 
+    const capabilityList = Array.isArray(capabilities?.rawCapabilities)
+      ? [...capabilities.rawCapabilities]
+      : [];
+
     return {
       lifecycle: this.lifecycle,
       lifecycleMessage: this.lifecycleMessage,
       capabilities,
+      capabilityList,
       globalConfig,
       accounts: accountSnapshots,
       systemStatus: {

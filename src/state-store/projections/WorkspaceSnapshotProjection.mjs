@@ -73,27 +73,34 @@ export class WorkspaceSnapshotProjection {
         ? 'READY'
         : 'ERROR';
 
+    const capabilities = runtimeState.capabilities || {
+      canStartAutomation: lifecycle === 'STOPPED' && eligibleAccounts.length > 0,
+      canStopAutomation: lifecycle === 'RUNNING',
+      canPlaceBet: lifecycle === 'RUNNING' && activeBrowsers > 0,
+      canCashOut: lifecycle === 'RUNNING' && activeBrowsers > 0,
+      canValidate: lifecycle === 'RUNNING',
+      canActivateAccount: lifecycle === 'STOPPED' && activeBrowsers < maxCapacity,
+      activateAccountDisabledReason: lifecycle !== 'STOPPED' ? 'Cannot add accounts while automation is running' : undefined,
+      canDeactivateAccount: activeBrowsers > 0,
+      canIncreaseBrowserCount: activeBrowsers < maxCapacity,
+      canDecreaseBrowserCount: activeBrowsers > 1,
+      canToggleBetCycle: true,
+      canEditPricing: true,
+      canEditRisk: true,
+      canEditRebet: true,
+      canEditProxy: lifecycle === 'STOPPED',
+      canEditExecution: true
+    };
+
+    const capabilityList = Array.isArray(runtimeState.capabilityList)
+      ? runtimeState.capabilityList
+      : (Array.isArray(capabilities?.rawCapabilities) ? capabilities.rawCapabilities : []);
+
     return Object.freeze({
       lifecycle,
       lifecycleMessage: runtimeState.lifecycleMessage,
-      capabilities: runtimeState.capabilities || {
-        canStartAutomation: lifecycle === 'STOPPED' && eligibleAccounts.length > 0,
-        canStopAutomation: lifecycle === 'RUNNING',
-        canPlaceBet: lifecycle === 'RUNNING' && activeBrowsers > 0,
-        canCashOut: lifecycle === 'RUNNING' && activeBrowsers > 0,
-        canValidate: lifecycle === 'RUNNING',
-        canActivateAccount: lifecycle === 'STOPPED' && activeBrowsers < maxCapacity,
-        activateAccountDisabledReason: lifecycle !== 'STOPPED' ? 'Cannot add accounts while automation is running' : undefined,
-        canDeactivateAccount: activeBrowsers > 0,
-        canIncreaseBrowserCount: activeBrowsers < maxCapacity,
-        canDecreaseBrowserCount: activeBrowsers > 1,
-        canToggleBetCycle: true,
-        canEditPricing: true,
-        canEditRisk: true,
-        canEditRebet: true,
-        canEditProxy: lifecycle === 'STOPPED',
-        canEditExecution: true
-      },
+      capabilities,
+      capabilityList,
       globalConfig,
       accounts: accountSnapshots,
       systemStatus: {
@@ -103,6 +110,7 @@ export class WorkspaceSnapshotProjection {
         activeBrowsers,
         totalConfiguredCapacity: maxCapacity
       },
+      fleetReadiness: runtimeState.fleetReadiness || null,
       globalActionPending: runtimeState.globalActionPending || null
     });
   }
