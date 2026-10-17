@@ -1,7 +1,8 @@
-// @ts-check
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { securityFacade } from '../../security-authority/facade.mjs';
 import { logger } from '../../shared/logging.mjs';
 
@@ -40,6 +41,16 @@ export function initIpcToken() {
 
   try {
     fs.writeFileSync(ipcTokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+    if (process.platform === 'win32') {
+      try {
+        const username = process.env.USERNAME || (typeof os.userInfo === 'function' ? os.userInfo()?.username : null);
+        if (username) {
+          execFileSync('icacls', [ipcTokenPath, '/inheritance:r', '/grant:r', `${username}:(R,W)`, 'SYSTEM:(R,W)'], { stdio: 'ignore', windowsHide: true });
+        }
+      } catch {
+        // Fall back gracefully if icacls is restricted in current execution sandbox
+      }
+    }
     logger.info(
       { tokenFile: '.acp-ipc-token', persisted: Boolean(savedToken), requireAuth: authConfig.requireAuth },
       '[Auth] Local IPC authentication token ready'
@@ -85,7 +96,15 @@ export function ingressAuthMiddleware(req, res, next) {
   }
 
   // Exempt health-check, public system pings, and local pairing discovery
-  if (req.path === '/api/v1/system/health' || req.path === '/api/v1/system/ping' || req.path === '/api/v1/system/network-endpoints') {
+  if (
+    req.path === '/api/v1/system/health' ||
+    req.path === '/api/v1/system/ping' ||
+    req.path === '/api/v1/system/network-endpoints' ||
+    req.path === '/health' ||
+    req.path === '/health/' ||
+    req.path === '/ping' ||
+    req.path === '/ping/'
+  ) {
     return next();
   }
 

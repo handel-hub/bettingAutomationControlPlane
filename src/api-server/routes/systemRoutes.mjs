@@ -8,6 +8,18 @@ import { resolveSystemIPv4Addresses } from '../websocket/wsServer.mjs';
 
 export const systemRouter = Router();
 
+systemRouter.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+systemRouter.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
 systemRouter.get('/network-endpoints', (req, res) => {
   const hostname = os.hostname().toLowerCase();
   const mdnsHostname = `${hostname}.local`;

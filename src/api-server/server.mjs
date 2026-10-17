@@ -99,6 +99,16 @@ export class ApiServer {
     this.app.use('/api/v1/platforms', platformsRouter);
     this.app.use('/api/v1/prelude', preludeRouter);
 
+    // Top-level Public Health Probes (ALB, Docker, System monitors)
+    this.app.get('/health', (req, res) => {
+      res.json({
+        status: 'ok',
+        uptime: Math.round(process.uptime()),
+        timestamp: new Date().toISOString()
+      });
+    });
+    this.app.get('/ping', (req, res) => res.status(200).send('pong'));
+
     // Attach WebSocket server
     wsServer.attach(this.server);
   }

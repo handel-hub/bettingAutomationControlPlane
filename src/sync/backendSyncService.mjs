@@ -191,6 +191,22 @@ export class BackendSyncService {
    * @param {any} payload
    */
   enqueueOutbox(type, payload) {
+    const MAX_OUTBOX_CAPACITY = 5000;
+    if (this.outbox.length >= MAX_OUTBOX_CAPACITY) {
+      // Find oldest non-critical telemetry mutation to evict first
+      const purgeIdx = this.outbox.findIndex(item => 
+        item.status !== 'IN_FLIGHT' && 
+        (item.mutationType === 'TELEMETRY' || item.mutationType === 'TELEMETRY_LOG' || item.mutationType === 'METRIC_EVENT' || item.mutationType === 'PING')
+      );
+      const targetIdx = purgeIdx !== -1 ? purgeIdx : 0;
+      const evicted = this.outbox.splice(targetIdx, 1)[0];
+      if (evicted && this.engine) {
+        try {
+          this.engine.run('DELETE FROM sync_outbox WHERE id = ?', [evicted.id]);
+        } catch { /* ignore */ }
+      }
+    }
+
     const id = `out_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const item = {
       id,
