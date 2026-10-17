@@ -1,4 +1,5 @@
 import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
+import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { logger } from '../../shared/logging.mjs';
 
 /**
@@ -82,20 +83,48 @@ export class ExecutionPayloadBuilder {
   /**
    * Compiles the complete LIFECYCLE:INITIALIZE payload conforming to Execution Plane's AutomationController constructor.
    * Merges decrypted credentials from VaultCredentialPipeline into temporary in-memory objects.
+   * Filters strictly to staged/targeted accounts to prevent whole-fleet spawning of unselected accounts.
    * 
    * @param {object} store - StateStore instance
    * @param {string} [traceId]
+   * @param {Array<string> | Set<string>} [targetAccountIds] - Specific account IDs to compile
    * @returns {object}
    */
-  static buildInitializationPayload(store, traceId = undefined) {
+  static buildInitializationPayload(store, traceId = undefined, targetAccountIds = null) {
     const globalConfig = typeof store.configContainer?.getGlobalConfig === 'function'
       ? store.configContainer.getGlobalConfig()
       : (typeof store.configContainer?.toSettingsIniObject === 'function'
         ? store.configContainer.toSettingsIniObject()
         : {});
-    const accounts = typeof store.accountsContainer?.getAll === 'function'
+    const allAccounts = typeof store.accountsContainer?.getAll === 'function'
       ? store.accountsContainer.getAll()
       : [];
+
+    let accounts;
+    if (Array.isArray(targetAccountIds) && targetAccountIds.length > 0) {
+      const idMap = new Map(allAccounts.map(a => [a.id, a]));
+      accounts = targetAccountIds.map(id => idMap.get(id)).filter(Boolean).filter(acc => acc.backendState !== 'SUSPENDED');
+    } else {
+      let targetSet = null;
+      if (targetAccountIds instanceof Set) {
+        targetSet = targetAccountIds;
+      } else if (workspaceAggregator?.stagedAccountIds && workspaceAggregator.stagedAccountIds.size > 0) {
+        const hasMatch = allAccounts.some(acc => workspaceAggregator.stagedAccountIds.has(acc.id));
+        if (hasMatch) {
+          targetSet = new Set(workspaceAggregator.stagedAccountIds);
+        }
+      }
+
+      accounts = targetSet
+        ? allAccounts.filter(acc => targetSet.has(acc.id) && acc.backendState !== 'SUSPENDED')
+        : allAccounts.filter(acc => acc.backendState !== 'SUSPENDED');
+    }
+
+    if (accounts.length === 0) {
+      const errorMsg = `[NO_ACCOUNTS_STAGED] No non-suspended accounts are staged for automation. Please stage at least one account.`;
+      logger.error({ traceId }, errorMsg);
+      throw new Error(errorMsg);
+    }
 
     // 1. Compile INI-compatible Settings for AutomationController
     const settings = {

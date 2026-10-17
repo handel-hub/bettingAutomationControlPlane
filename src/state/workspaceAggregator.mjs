@@ -17,6 +17,8 @@ export class WorkspaceAggregator {
     this.activeAccountIds = new Set();
     /** @type {Set<string>} staged account IDs ready in automation */
     this.stagedAccountIds = new Set();
+    /** @type {boolean} whether staging was explicitly initialized or modified */
+    this.hasInitializedStaging = false;
     /** @type {any} */
     this.fleetReadiness = null;
   }
@@ -61,20 +63,24 @@ export class WorkspaceAggregator {
   }
 
   activateAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.add(accountId);
     this.activeAccountIds.add(accountId);
   }
 
   deactivateAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.delete(accountId);
     this.activeAccountIds.delete(accountId);
   }
 
   stageAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.add(accountId);
   }
 
   unstageAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.delete(accountId);
     this.activeAccountIds.delete(accountId);
   }
@@ -90,13 +96,13 @@ export class WorkspaceAggregator {
     const accounts = accountsRes?.viewportAccounts || [];
     const maxCapacity = globalConfig?.browserSpawning?.maxAccountsToSpawn || 2;
 
-    // Auto-stage non-suspended accounts if stagedAccountIds is empty or has no match
+    // Auto-stage non-suspended accounts ONLY on cold initial boot if staging has never been touched
     const nonSuspendedAccounts = accounts.filter(acc => acc.backendState !== 'SUSPENDED');
-    const hasAnyStaged = nonSuspendedAccounts.some(acc => this.stagedAccountIds.has(acc.id));
-    if (!hasAnyStaged && nonSuspendedAccounts.length > 0) {
+    if (!this.hasInitializedStaging && this.stagedAccountIds.size === 0 && nonSuspendedAccounts.length > 0) {
       for (const acc of nonSuspendedAccounts.slice(0, maxCapacity)) {
         this.stagedAccountIds.add(acc.id);
       }
+      this.hasInitializedStaging = true;
     }
 
     // Only accounts that are NOT SUSPENDED and are staged in automation

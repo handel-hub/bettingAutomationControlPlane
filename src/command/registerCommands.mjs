@@ -45,10 +45,33 @@ export function registerDefaultCommandHandlers() {
         workspaceAggregator.setLifecycle('STOPPED');
       }
 
-      // If any provisioned account is missing its local password (e.g. after cache reset),
+      // If explicit accountIds were provided in the command payload, synchronize stagedAccountIds
+      if (Array.isArray(cmd.payload?.accountIds) && cmd.payload.accountIds.length > 0) {
+        workspaceAggregator.stagedAccountIds.clear();
+        for (const id of cmd.payload.accountIds) {
+          workspaceAggregator.stagedAccountIds.add(id);
+        }
+        workspaceAggregator.hasInitializedStaging = true;
+      }
+
+      // If staging was never initialized (e.g. headless/test start), auto-seed up to maxCapacity
+      if (!workspaceAggregator.hasInitializedStaging && workspaceAggregator.stagedAccountIds.size === 0) {
+        const nonSuspended = (store.accountsContainer?.getAll?.() || []).filter(acc => acc.backendState !== 'SUSPENDED');
+        for (const acc of nonSuspended.slice(0, 2)) {
+          workspaceAggregator.stagedAccountIds.add(acc.id);
+        }
+        workspaceAggregator.hasInitializedStaging = true;
+      }
+
+      const stagedIds = Array.from(workspaceAggregator.stagedAccountIds || []);
+
+      // If any targeted staged account is missing its local password (e.g. after cache reset),
       // self-heal from the authoritative Backend snapshot before spawning the worker.
-      const existingAccounts = store.accountsContainer?.getAll?.() || [];
-      const hasMissingPassword = existingAccounts.length === 0 || existingAccounts.some(acc => {
+      const allAccounts = store.accountsContainer?.getAll?.() || [];
+      const targetAccounts = stagedIds.length > 0
+        ? allAccounts.filter(acc => workspaceAggregator.stagedAccountIds.has(acc.id))
+        : allAccounts;
+      const hasMissingPassword = targetAccounts.length > 0 && targetAccounts.some(acc => {
         const pwd = ExecutionPayloadBuilder.resolvePassword(acc, store);
         return !pwd || pwd.trim() === '';
       });
@@ -82,7 +105,10 @@ export function registerDefaultCommandHandlers() {
 
       // 4. Two-Phase Spawn Commit: Send startCluster instruction over pipe with rollback on failure
       try {
-        await executionBoundaryManager.startCluster({ traceId: cmd.traceId });
+        await executionBoundaryManager.startCluster({ 
+          traceId: cmd.traceId,
+          targetAccountIds: stagedIds
+        });
       } catch (clusterErr) {
         logger.error({ err: clusterErr.message, pid }, '[Command] Failed to start cluster on newly spawned runtime. Rolling back process.');
         runtimeManager.terminateRuntime(pid);
@@ -280,7 +306,8 @@ export function registerDefaultCommandHandlers() {
       const store = getSharedStateStore();
       store.accounts.upsert(created);
     } catch { /* ignore */ }
-    workspaceAggregator.stageAccount(created.id);
+    // Do not auto-stage newly registered accounts into the automation fleet;
+    // they remain in general portfolio storage until explicitly staged by the operator.
     try {
       const syncResult = await backendSyncService.syncMutation('REGISTER_ACCOUNT', {
         id: created.id,
@@ -297,8 +324,10 @@ export function registerDefaultCommandHandlers() {
         if (cmd.payload?.accountPassword) {
           vaultCredentialPipeline.storeCredential(syncResult.id, cmd.payload.accountPassword);
         }
-        workspaceAggregator.unstageAccount(oldId);
-        workspaceAggregator.stageAccount(created.id);
+        if (workspaceAggregator.stagedAccountIds.has(oldId)) {
+          workspaceAggregator.unstageAccount(oldId);
+          workspaceAggregator.stageAccount(created.id);
+        }
       }
     } catch (err) {
       if (err?.isPolicyRejection) {

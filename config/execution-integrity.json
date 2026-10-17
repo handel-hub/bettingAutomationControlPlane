@@ -9,6 +9,10 @@
       "sha256": "2100180d02858d828840efdfbd6daec53b2e7d42b069124d5a4d1b2c0985911d",
       "updatedAt": "2026-10-12T21:34:15.805Z"
     },
+    "../bettingAutomation/dist/runner.cjs": {
+      "sha256": "42ad86bbb559c38e116327de0e04c3221a33abf1cd3fb652b0f7be4e6b6586ab",
+      "updatedAt": "2026-10-17T06:16:12.000Z"
+    },
     "../bettingAutomation/launcher/index.mjs": {
       "sha256": "de7ce69a3aeacde12b42e32ff879695f950832d44d0863417d7ae4e13e685ff8",
       "updatedAt": "2026-10-12T21:34:15.808Z"

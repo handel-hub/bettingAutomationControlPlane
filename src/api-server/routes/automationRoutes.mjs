@@ -49,12 +49,14 @@ automationRouter.get('/strategy-catalog', (req, res) => {
 
 // POST start automation
 automationRouter.post('/start', async (req, res) => {
+  const { accountIds } = req.body || {};
   return executeCommand({
     req,
     res,
     category: 'Execution',
     type: 'START_AUTOMATION',
     capability: CAPABILITY.AUTOMATION_START,
+    payload: { accountIds: Array.isArray(accountIds) ? accountIds : undefined },
     onSuccess: async () => {
       workspaceAggregator.startAutomation();
       const snapshot = await workspaceAggregator.getSnapshot();

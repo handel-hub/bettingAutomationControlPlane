@@ -383,17 +383,24 @@ export class RuntimeManager extends EventEmitter {
         cpRoot = parent;
       }
       const backRoot = path.resolve(cpRoot, '..');
-      const launcherCandidate = path.resolve(backRoot, 'bettingAutomation/launcher/index.mjs');
+      const compiledCandidate = path.resolve(backRoot, 'bettingAutomation/dist/runner.cjs');
       const realWorkerCandidate = path.resolve(backRoot, 'bettingAutomation/src/worker/index.mjs');
+      const launcherCandidate = path.resolve(backRoot, 'bettingAutomation/launcher/index.mjs');
 
       const isTest = process.env.NODE_ENV === 'test' ||
                      process.env.npm_lifecycle_event?.includes('test') ||
                      process.env.ACP_USE_MOCK_WORKER === 'true';
       const preferMock = isTest || options.useMockWorker === true;
-      if (!preferMock && fs.existsSync(launcherCandidate)) {
-        targetScript = launcherCandidate;
+      const preferCompiled = process.env.USE_COMPILED === 'true' || options.useCompiled === true;
+
+      if (!preferMock && preferCompiled && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
       } else if (!preferMock && fs.existsSync(realWorkerCandidate)) {
         targetScript = realWorkerCandidate;
+      } else if (!preferMock && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
+      } else if (!preferMock && fs.existsSync(launcherCandidate)) {
+        targetScript = launcherCandidate;
       } else if (options.useDevWorkerFallback !== false) {
         const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true' || isTest;
         if (isDev) {

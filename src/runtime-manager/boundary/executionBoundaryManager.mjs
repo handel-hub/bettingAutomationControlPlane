@@ -282,11 +282,12 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * Compiles the authoritative cold-boot LIFECYCLE:INITIALIZE payload from StateStore.
    * Decrypts credentials strictly into temporary memory for this frame; never leaks to disk.
    * @param {string} [traceId]
+   * @param {Array<string> | Set<string>} [targetAccountIds]
    * @returns {object}
    */
-  compileInitializationPayload(traceId) {
+  compileInitializationPayload(traceId, targetAccountIds = null) {
     const store = this.stateStore || getSharedStateStore();
-    return ExecutionPayloadBuilder.buildInitializationPayload(store, traceId);
+    return ExecutionPayloadBuilder.buildInitializationPayload(store, traceId, targetAccountIds);
   }
 
   /**
@@ -296,7 +297,8 @@ export class ExecutionBoundaryManager extends EventEmitter {
    */
   initialize(initPayload = null, options = {}) {
     const opts = typeof options === 'string' ? { traceId: options } : (options || {});
-    const payload = initPayload || this.compileInitializationPayload(opts.traceId);
+    const targetAccountIds = opts.targetAccountIds || opts.accountIds || null;
+    const payload = initPayload || this.compileInitializationPayload(opts.traceId, targetAccountIds);
     this.engineStatus = 'INITIALIZING';
     const mergedOpts = {
       timeoutMs: 60000,
@@ -332,7 +334,8 @@ export class ExecutionBoundaryManager extends EventEmitter {
     return this.initialize(opts.initPayload || null, {
       waitForAck: opts.waitForAck ?? true,
       timeoutMs: opts.timeoutMs ?? 60000,
-      traceId: opts.traceId
+      traceId: opts.traceId,
+      targetAccountIds: opts.targetAccountIds || opts.accountIds || null
     });
   }
 
