@@ -9,6 +9,8 @@ import { machineIdentity } from '../security-authority/identity/machine-identity
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { licenseManager } from '../security-authority/licensing/license-manager.mjs';
+import { clock } from '../security-authority/time/clock.mjs';
 import { FreshnessEvaluator } from '../state-store/hydration/FreshnessEvaluator.mjs';
 import { logger } from '../shared/logging.mjs';
 
@@ -35,6 +37,12 @@ export class BackendSyncService {
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
+    /** @type {any} */
+    this.lastGraceToken = null;
+    /** @type {bigint | null} */
+    this.lastSyncHrtime = null;
+    /** @type {number} */
+    this.lastObservedEpoch = 0;
     this.enableWebSocket = options.enableWebSocket !== undefined ? options.enableWebSocket : true;
 
     /** @type {WebSocket | null} */
@@ -60,7 +68,11 @@ export class BackendSyncService {
     if (!fs.existsSync(secDir)) {
       try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
     }
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const isTest =
+      process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.execArgv.includes('--test') ||
+      Boolean(process.env.npm_lifecycle_event?.includes('test'));
     const defaultCachePath = isTest
       ? path.join(os.tmpdir(), `acp_test_cache_${process.pid}.enc`)
       : path.join(secDir, 'acp_cache.enc');
@@ -106,6 +118,41 @@ export class BackendSyncService {
   }
 
   /**
+   * Encrypts an outbox mutation payload using NativeCore AEAD before SQLite persistence.
+   * @private
+   * @param {any} payload
+   * @returns {string}
+   */
+  _encryptOutboxPayload(payload) {
+    const jsonStr = JSON.stringify(payload);
+    try {
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const encrypted = NativeCore.encryptAead(Buffer.from(jsonStr, 'utf8'), aad);
+      return `enc:v1:${Buffer.from(encrypted).toString('base64')}`;
+    } catch {
+      return jsonStr;
+    }
+  }
+
+  /**
+   * Decrypts an outbox mutation payload loaded from SQLite persistence.
+   * @private
+   * @param {string} rawPayload
+   * @returns {any}
+   */
+  _decryptOutboxPayload(rawPayload) {
+    if (typeof rawPayload === 'string' && rawPayload.startsWith('enc:v1:')) {
+      const cipherBuf = Buffer.from(rawPayload.slice('enc:v1:'.length), 'base64');
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const plainBuf = NativeCore.decryptAead(cipherBuf, aad);
+      const str = Buffer.from(plainBuf).toString('utf8');
+      plainBuf.fill(0);
+      return JSON.parse(str);
+    }
+    return JSON.parse(rawPayload);
+  }
+
+  /**
    * Hydrates pending outbox entries from persistence.
    * @private
    */
@@ -120,17 +167,19 @@ export class BackendSyncService {
       const existingIds = new Set(this.outbox.map(i => i.id));
       for (const row of rows) {
         if (!existingIds.has(row.id)) {
-          this.outbox.push({
-            id: row.id,
-            mutationType: row.mutation_type,
-            payload: JSON.parse(row.payload_json),
-            attempts: row.attempts,
-            status: row.status,
-            createdAt: row.created_at,
-            nextRetryAt: row.next_retry_at,
-            lastError: row.last_error
-          });
-          existingIds.add(row.id);
+          try {
+            this.outbox.push({
+              id: row.id,
+              mutationType: row.mutation_type,
+              payload: this._decryptOutboxPayload(row.payload_json),
+              attempts: row.attempts,
+              status: row.status,
+              createdAt: row.created_at,
+              nextRetryAt: row.next_retry_at,
+              lastError: row.last_error
+            });
+            existingIds.add(row.id);
+          } catch { /* ignore corrupted outbox entry */ }
         }
       }
     } catch { /* ignore */ }
@@ -142,6 +191,22 @@ export class BackendSyncService {
    * @param {any} payload
    */
   enqueueOutbox(type, payload) {
+    const MAX_OUTBOX_CAPACITY = 5000;
+    if (this.outbox.length >= MAX_OUTBOX_CAPACITY) {
+      // Find oldest non-critical telemetry mutation to evict first
+      const purgeIdx = this.outbox.findIndex(item => 
+        item.status !== 'IN_FLIGHT' && 
+        (item.mutationType === 'TELEMETRY' || item.mutationType === 'TELEMETRY_LOG' || item.mutationType === 'METRIC_EVENT' || item.mutationType === 'PING')
+      );
+      const targetIdx = purgeIdx !== -1 ? purgeIdx : 0;
+      const evicted = this.outbox.splice(targetIdx, 1)[0];
+      if (evicted && this.engine) {
+        try {
+          this.engine.run('DELETE FROM sync_outbox WHERE id = ?', [evicted.id]);
+        } catch { /* ignore */ }
+      }
+    }
+
     const id = `out_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const item = {
       id,
@@ -158,10 +223,11 @@ export class BackendSyncService {
 
     if (this.engine) {
       try {
+        const serializedPayload = this._encryptOutboxPayload(item.payload);
         this.engine.run(`
           INSERT INTO sync_outbox (id, mutation_type, payload_json, attempts, status, last_error, created_at, next_retry_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `, [item.id, item.mutationType, JSON.stringify(item.payload), item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
+        `, [item.id, item.mutationType, serializedPayload, item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
       } catch { /* ignore */ }
     }
 
@@ -235,42 +301,212 @@ export class BackendSyncService {
       logger.warn({ err: err.message }, '[BackendSyncService] Machine registration returned notice (may already be registered)');
     }
 
-    // 5. Authenticate session if credentials provided or available in env
-    const email = credentials?.email || process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-    const password = credentials?.password || process.env.OPERATOR_PASSWORD || 'Password123!';
+    // 5. Authenticate session ONLY if explicit credentials provided or configured in env
+    const email = credentials?.email || process.env.OPERATOR_EMAIL || null;
+    const password = credentials?.password || process.env.OPERATOR_PASSWORD || null;
 
-    try {
-      const authRes = await this.client.initAuth({ email, password });
-      logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
-      console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
-    } catch (err) {
-      logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; proceeding with public/local capability scope');
-      console.warn(`⚠ [ControlPlane] Cloud Backend login failed for "${email}": ${err.message}`);
+    this.isConnected = true;
+    let authRes = null;
+
+    if (email && password) {
+      try {
+        authRes = await this.client.initAuth({ email, password });
+        this.lastAuthResult = authRes;
+        if (authRes?.graceToken) {
+          this.lastGraceToken = authRes.graceToken;
+        }
+        if (clock) {
+          await clock.updateAnchor(Date.now()).catch(() => {});
+        }
+        logger.info({ sessionId: authRes.sessionId, generation: authRes.sessionGeneration }, '[BackendSyncService] Machine session authenticated');
+        console.log(`✓ [ControlPlane] Operator "${email}" logged in to Cloud Backend (Session: ${authRes.sessionId})`);
+      } catch (err) {
+        this.lastAuthResult = null;
+        logger.warn({ err: err.message }, '[BackendSyncService] Auth init failed; operator must authenticate via /api/v1/auth/login');
+        console.warn(`⚠ [ControlPlane] Cloud Backend login failed for "${email}": ${err.message}`);
+      }
+    } else {
+      this.lastAuthResult = null;
+      logger.info('[BackendSyncService] No startup credentials provided; awaiting interactive operator authentication.');
     }
 
-    // 6. Pull authoritative snapshot and hydrate in-memory repositories & state store
+    // 6. If authenticated, pull authoritative snapshot and hydrate in-memory repositories & state store
+    if (authRes && authRes.sessionId) {
+      try {
+        await this.pullAuthoritativeSnapshot();
+        this.isHydrated = true;
+
+        // 7. Flush pending outbox mutations now that we are connected and authenticated
+        await this.flushOutbox();
+
+        // 8. Save encrypted cache for future offline cold boot
+        this.saveLocalCache();
+        logger.info('[BackendSyncService] Authoritative state hydrated and local cache updated.');
+
+        // 9. Establish Server-to-ACP Event Stream WebSocket connection
+        if (this.enableWebSocket && this.client.sessionId) {
+          this.connectWebSocket();
+        }
+      } catch (err) {
+        logger.error({ err: err.message }, '[BackendSyncService] Error pulling snapshot from backend; falling back to cache');
+        this.loadLocalCache();
+      }
+    } else {
+      // Pull public reference catalogs (platforms & plans) even before login
+      await this.pullPublicCatalogs();
+    }
+
+    return {
+      isConnected: this.isConnected,
+      isHydrated: this.isHydrated,
+      session: this.lastAuthResult
+    };
+  }
+
+  /**
+   * Pulls public reference catalogs (platforms & plans) without requiring an authenticated session.
+   */
+  async pullPublicCatalogs() {
+    const catalogsRepo = repositoryFactory.getCatalogsRepo();
     try {
-      await this.pullAuthoritativeSnapshot();
-      this.isConnected = true;
-      this.isHydrated = true;
+      let currentPlatformEtag = undefined;
+      let currentPlansEtag = undefined;
+      try {
+        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+        const store = getSharedStateStore();
+        currentPlatformEtag = store.metadataAdapter?.get('platform_registry')?.etag;
+        currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
+      } catch { /* ignore */ }
 
-      // 7. Flush pending outbox mutations now that we are connected
-      await this.flushOutbox();
+      if (this.client.sessionId) {
+        const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
+        if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
+          const platforms = platformRes.registry.platforms || platformRes.registry;
+          catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+        }
+      }
 
-      // 8. Save encrypted cache for future offline cold boot & test fixture compatibility
-      this.saveLocalCache();
-      logger.info('[BackendSyncService] Authoritative state hydrated and local cache updated.');
-
-      // 9. Establish Server-to-ACP Event Stream WebSocket connection
-      if (this.enableWebSocket && this.client.sessionId) {
-        this.connectWebSocket();
+      const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
+      if (!plansRes.notModified && plansRes.catalog && catalogsRepo) {
+        const plans = plansRes.catalog.plans || plansRes.catalog;
+        catalogsRepo.hydratePlans(plans, plansRes.etag);
       }
     } catch (err) {
-      logger.error({ err: err.message }, '[BackendSyncService] Error pulling snapshot from backend; falling back to cache');
-      this.loadLocalCache();
+      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch public catalog snapshots');
+    }
+  }
+
+  /**
+   * Interactive operator login flow: registers machine if needed, authenticates with Backend,
+   * establishes SecurityFacade session, pulls authoritative snapshot, and connects WebSocket.
+   * @param {{ email: string, password: string }} credentials
+   */
+  async authenticateOperator({ email, password }) {
+    if (!this.machineIdentity.publicKeyHex) {
+      await this.machineIdentity.initialize();
+    }
+    try {
+      const desc = this.machineIdentity.getDescriptor();
+      const selfSig = this.machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
+      await this.client.registerMachine(desc.machineKeyPub, `inst_${desc.hardwareId}`, selfSig, desc);
+    } catch { /* ignore if already registered */ }
+
+    const authRes = await this.client.initAuth({ email, password });
+    this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
+    this.isConnected = true;
+
+    if (clock) {
+      await clock.updateAnchor(Date.now()).catch(() => {});
     }
 
-    return { isConnected: this.isConnected, isHydrated: this.isHydrated };
+    const securityResult = await securityFacade.establishSession(authRes);
+    await this.pullAuthoritativeSnapshot();
+    this.isHydrated = true;
+    await this.flushOutbox();
+    this.saveLocalCache();
+
+    if (this.enableWebSocket && this.client.sessionId) {
+      this.connectWebSocket();
+    }
+
+    return { authRes, securityResult };
+  }
+
+  /**
+   * Interactive operator registration flow: registers operator on Backend, establishes session,
+   * and hydrates initial state.
+   * @param {{ email: string, password: string, name?: string }} params
+   */
+  async registerOperator({ email, password, name }) {
+    if (!this.machineIdentity.publicKeyHex) {
+      await this.machineIdentity.initialize();
+    }
+    try {
+      const desc = this.machineIdentity.getDescriptor();
+      const selfSig = this.machineIdentity.signPayload(Buffer.from(`REGISTRATION:${desc.hardwareId}`, 'utf8'));
+      await this.client.registerMachine(desc.machineKeyPub, `inst_${desc.hardwareId}`, selfSig, desc);
+    } catch { /* ignore if already registered */ }
+
+    const authRes = await this.client.registerOperator({ email, password, name });
+    this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
+    this.isConnected = true;
+
+    if (clock) {
+      await clock.updateAnchor(Date.now()).catch(() => {});
+    }
+
+    const securityResult = await securityFacade.establishSession(authRes);
+    await this.pullAuthoritativeSnapshot();
+    this.isHydrated = true;
+
+    if (this.enableWebSocket && this.client.sessionId) {
+      this.connectWebSocket();
+    }
+
+    return { authRes, securityResult };
+  }
+
+  /**
+   * Logs out current operator session, scrubs local user-scoped cache, and disconnects event stream.
+   */
+  async logoutOperator() {
+    this.disconnectWebSocket();
+    if (this.client?.sessionId && typeof this.client.logout === 'function') {
+      await this.client.logout().catch(() => {});
+    }
+    await securityFacade.logout().catch(() => {});
+    await securityFacade.transitionToUnauthenticated().catch(() => {});
+    this.client.setSession(null, this.client.machineId);
+    this.lastAuthResult = null;
+    this.lastGraceToken = null;
+    this.lastSyncTimestamp = null;
+    this.lastSyncHrtime = null;
+    this.outbox = [];
+    if (this.engine) {
+      try {
+        this.engine.run('DELETE FROM sync_outbox');
+      } catch { /* ignore */ }
+    }
+    if (this.cacheFilePath && fs.existsSync(this.cacheFilePath)) {
+      try {
+        fs.unlinkSync(this.cacheFilePath);
+      } catch { /* ignore */ }
+    }
+    try {
+      const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+      vaultCredentialPipeline.clear();
+    } catch { /* ignore */ }
+    try {
+      const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
+      const store = getSharedStateStore();
+      store.onLogout();
+    } catch { /* ignore */ }
   }
 
   /**
@@ -369,6 +605,33 @@ export class BackendSyncService {
   async handleServerEvent(event) {
     if (!event || typeof event !== 'object') return;
 
+    // Check server epoch reset / progression
+    const incomingEpoch = Number(event.server_epoch ?? event.epoch ?? 0);
+    if (incomingEpoch > 0) {
+      if (this.lastObservedEpoch === 0) {
+        this.lastObservedEpoch = incomingEpoch;
+      } else if (incomingEpoch > this.lastObservedEpoch) {
+        logger.info({ incomingEpoch, lastEpoch: this.lastObservedEpoch }, '[BackendSyncService] New server epoch detected! Resetting sequence watermarks and reconciling state.');
+        this.accountSequences.clear();
+        this.lastObservedSequence = 0;
+        this.lastObservedEpoch = incomingEpoch;
+        try {
+          if (!this._reconcilingPromise) {
+            this._reconcilingPromise = this.pullAuthoritativeSnapshot();
+          }
+          await this._reconcilingPromise;
+        } catch (err) {
+          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed on epoch change');
+          return;
+        } finally {
+          this._reconcilingPromise = null;
+        }
+      } else if (incomingEpoch < this.lastObservedEpoch) {
+        logger.debug({ incomingEpoch, currentEpoch: this.lastObservedEpoch }, '[BackendSyncService] Dropping event from prior server epoch');
+        return;
+      }
+    }
+
     const eventType = event.eventType || event.topic;
     const seq = event.sequenceNumber;
     const payload = event.payload || {};
@@ -389,13 +652,29 @@ export class BackendSyncService {
       } else if (seq > lastSeq + 1) {
         // Gap detected!
         logger.warn({ accountId, expected: lastSeq + 1, received: seq }, '[BackendSyncService] Monotonic sequence gap detected! Triggering full authoritative state reconciliation');
+        
+        // Await authoritative state reconciliation to restore clean baseline
+        try {
+          if (!this._reconcilingPromise) {
+            this._reconcilingPromise = this.pullAuthoritativeSnapshot();
+          }
+          await this._reconcilingPromise;
+        } catch (err) {
+          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed after gap');
+          return;
+        } finally {
+          this._reconcilingPromise = null;
+        }
+
+        // Drop frame if superseded by authoritative snapshot
+        const currentWatermark = this.accountSequences.get(accountId) ?? (this.lastObservedSequence ?? 0);
+        if (seq <= currentWatermark) {
+          logger.debug({ accountId, seq, currentWatermark }, '[BackendSyncService] Frame already captured by authoritative snapshot, dropping');
+          return;
+        }
+
         this.accountSequences.set(accountId, seq);
         this.lastObservedSequence = Math.max(this.lastObservedSequence, seq);
-        
-        // Trigger full state reconciliation
-        this.pullAuthoritativeSnapshot().catch(err => {
-          logger.error({ err: err.message }, '[BackendSyncService] Authoritative state reconciliation failed after gap');
-        });
       } else {
         // Duplicate or stale frame (seq <= lastSeq)
         logger.debug({ accountId, seq, lastSeq }, '[BackendSyncService] Dropping duplicate or stale frame');
@@ -406,8 +685,40 @@ export class BackendSyncService {
     // 2. Domain Event Routing
     switch (eventType) {
       case 'LICENSE_UPDATED': {
+        const licPayload = payload?.license || payload || {};
+        const caps = Array.isArray(licPayload.capabilities)
+          ? licPayload.capabilities
+          : (Array.isArray(payload?.capabilities)
+            ? payload.capabilities
+            : ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY']);
+        const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+        const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+        await securityFacade.establishSession({
+          ...(this.lastAuthResult || {}),
+          sessionId,
+          sessionGeneration,
+          capabilities: caps,
+          license: {
+            ...(this.lastAuthResult?.license || {}),
+            ...licPayload,
+            licenseId: payload?.licenseKey || licPayload.licenseId || this.lastAuthResult?.license?.licenseId || `lic-${payload?.accountId || 'active'}`,
+            status: licPayload.status || 'VALID',
+            planId: licPayload.planId || this.lastAuthResult?.license?.planId || 'pro',
+            capabilities: caps
+          }
+        }).catch(() => {});
         const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
         wsServer.broadcast('billing:snapshot', billingSnapshot);
+        try {
+          const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+          const snap = await workspaceAggregator.getSnapshot();
+          wsServer.broadcast('automation:snapshot', snap);
+          wsServer.broadcast('automation:delta', {
+            type: 'CAPABILITIES_CHANGED',
+            capabilities: snap.capabilities,
+            fleetReadiness: snap.fleetReadiness
+          });
+        } catch { /* ignore */ }
         break;
       }
 
@@ -419,8 +730,12 @@ export class BackendSyncService {
         break;
       }
 
-      case 'SUBSCRIPTION_STATUS_CHANGED': {
-        if (payload.subscription) {
+      case 'SUBSCRIPTION_STATUS_CHANGED':
+      case 'subscription:expired': {
+        if (eventType === 'subscription:expired') {
+          await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Payment_Required' });
+        } else if (payload.subscription) {
           const sub = payload.subscription;
           const normalizedStatus = sub.status === 'ACTIVE' ? 'Active' : (sub.status === 'PAST_DUE' ? 'Past_Due' : (sub.status === 'CANCELLED' ? 'Cancelled' : sub.status));
           const normalizedSub = {
@@ -430,8 +745,34 @@ export class BackendSyncService {
           };
           await repositoryFactory.getBillingRepo().updateSubscription(normalizedSub);
           if (normalizedStatus === 'Active') {
+            const defaultCaps = ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY'];
+            const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+            const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+            await securityFacade.establishSession({
+              ...(this.lastAuthResult || {}),
+              sessionId,
+              sessionGeneration,
+              capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps,
+              license: {
+                ...(this.lastAuthResult?.license || {}),
+                status: 'VALID',
+                planId: normalizedSub.planId || 'pro',
+                capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps
+              }
+            }).catch(() => {});
             wsServer.broadcast('app:state', { state: 'Authorized' });
-          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required') {
+            try {
+              const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+              const snap = workspaceAggregator.getSnapshot();
+              wsServer.broadcast('automation:snapshot', snap);
+              wsServer.broadcast('automation:delta', {
+                type: 'CAPABILITIES_CHANGED',
+                capabilities: snap.capabilities,
+                fleetReadiness: snap.fleetReadiness
+              });
+            } catch { /* ignore */ }
+          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required' || normalizedStatus === 'EXPIRED' || normalizedStatus === 'Expired') {
+            await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
             wsServer.broadcast('app:state', { state: 'Payment_Required' });
           }
         }
@@ -496,10 +837,9 @@ export class BackendSyncService {
 
       case 'FORCE_LOGOUT': {
         logger.warn('[BackendSyncService] Backend issued FORCE_LOGOUT. Invalidating session context.');
+        await this.logoutOperator().catch(() => {});
         this.client.setSession(null, null);
-        await securityFacade.logout().catch(() => {});
         wsServer.broadcast('app:state', 'Unauthenticated');
-        this.disconnectWebSocket();
         break;
       }
 
@@ -513,10 +853,31 @@ export class BackendSyncService {
 
   /**
    * Evaluates the 2-hour offline operational grace period.
-   * If exceeded, transitions Security Authority into Degraded mode.
+   * Anchored to hardware monotonic timer and persistent clock rollback detection.
+   * If exceeded or tampered, transitions Security Authority into Degraded mode.
    * @returns {boolean} True if within grace period, false if expired.
    */
   checkGracePeriod() {
+    // 1. PersistentClock rollback check - fail-closed if boot-time clock rollback or anchor tampering detected
+    if (clock && clock.isUncertain) {
+      logger.warn('[BackendSyncService] Clock rollback detected or time anchor uncertain. Grace period denied.');
+      return false;
+    }
+
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace period denied.');
+        if (!securityFacade.isDegraded()) {
+          securityFacade.transitionToDegraded('INVALID_GRACE_TOKEN').catch(() => {});
+        }
+        return false;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace period denied.');
+      return false;
+    }
+
     let timestamp = this.lastSyncTimestamp;
     if (!timestamp && this.engine) {
       try {
@@ -528,12 +889,94 @@ export class BackendSyncService {
       } catch { /* ignore */ }
     }
     if (!timestamp) return false;
-    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(timestamp);
+
+    // 3. Monotonic elapsed duration check from process.hrtime.bigint()
+    let elapsedMonotonicMs = null;
+    if (this.lastSyncHrtime) {
+      const elapsedNs = process.hrtime.bigint() - this.lastSyncHrtime;
+      elapsedMonotonicMs = Number(elapsedNs / 1000000n);
+    }
+
+    const isWithin = FreshnessEvaluator.isSubscriptionWithinGracePeriod(timestamp, elapsedMonotonicMs);
     if (!isWithin && !securityFacade.isDegraded()) {
       logger.warn('[BackendSyncService] 2-hour offline operational grace period expired. Transitioning to degraded mode.');
       securityFacade.transitionToDegraded('GRACE_PERIOD_EXPIRED').catch(() => {});
     }
     return isWithin;
+  }
+
+  /**
+   * Computes authoritative offline grace lease anchored to backend lastSyncTimestamp.
+   * Defeats caller tampering, restart extensions, and OS wall-clock rollbacks.
+   * @returns {{ lastValidatedAt: string, cachedTime: number, expiresAt: number, remainingMs: number } | null}
+   */
+  getOfflineGraceLease() {
+    // 1. Clock rollback or uncertainty check - fail-closed
+    if (clock && clock.isUncertain) {
+      logger.warn('[BackendSyncService] Clock rollback or uncertain time anchor detected. Grace lease denied.');
+      return null;
+    }
+
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace lease denied.');
+        return null;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace lease denied.');
+      return null;
+    }
+
+    let timestamp = this.lastSyncTimestamp;
+    if (!timestamp && this.engine) {
+      try {
+        const rows = this.engine.query("SELECT last_validated_at FROM cache_metadata WHERE entity_key = 'billing'");
+        if (rows && rows[0]?.last_validated_at) {
+          timestamp = rows[0].last_validated_at;
+          this.lastSyncTimestamp = timestamp;
+        }
+      } catch { /* ignore */ }
+    }
+    if (!timestamp) return null;
+
+    const cachedTime = new Date(timestamp).getTime();
+    if (isNaN(cachedTime)) return null;
+
+    // Fixed 2-hour TTL constant (7,200,000ms) from FreshnessEvaluator
+    const maxGraceMs = FreshnessEvaluator.TTL_POLICIES.subscription_grace * 1000;
+    const absoluteExpiresAt = cachedTime + maxGraceMs;
+
+    const currentClockTime = clock ? clock.now() : Date.now();
+
+    // Rollback detection: current time cannot precede the backend's validation timestamp
+    if (currentClockTime < cachedTime) {
+      logger.warn('[BackendSyncService] System time is earlier than authoritative sync timestamp. Grace lease denied.');
+      return null;
+    }
+
+    // Hardware monotonic check
+    if (this.lastSyncHrtime) {
+      const elapsedNs = process.hrtime.bigint() - this.lastSyncHrtime;
+      const elapsedMs = Number(elapsedNs / 1000000n);
+      if (elapsedMs >= maxGraceMs) {
+        logger.warn('[BackendSyncService] Hardware monotonic timer exceeded 2-hour grace period.');
+        return null;
+      }
+    }
+
+    const remainingMs = absoluteExpiresAt - currentClockTime;
+    if (remainingMs <= 0) {
+      logger.warn('[BackendSyncService] 2-hour operational grace period expired based on sync timestamp.');
+      return null;
+    }
+
+    return {
+      lastValidatedAt: timestamp,
+      cachedTime,
+      expiresAt: absoluteExpiresAt,
+      remainingMs
+    };
   }
 
   /**
@@ -579,16 +1022,27 @@ export class BackendSyncService {
     const configRepo = repositoryFactory.getConfigRepo();
     const accountsRepo = repositoryFactory.getAccountsRepo();
     const billingRepo = repositoryFactory.getBillingRepo();
-    const catalogsRepo = repositoryFactory.getCatalogsRepo();
+    let anyAuthDomainSucceeded = false;
 
     // 1. Fetch automation configuration and accounts snapshot
     try {
       const autoSnapshot = await this.client.getAutomationSnapshot();
+      if (autoSnapshot) {
+        anyAuthDomainSucceeded = true;
+      }
       if (autoSnapshot?.globalConfig) {
         configRepo.hydrate(autoSnapshot.globalConfig);
       }
       if (Array.isArray(autoSnapshot?.accounts) && autoSnapshot.accounts.length > 0) {
         accountsRepo.hydrate(autoSnapshot.accounts);
+        try {
+          const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+          for (const acc of autoSnapshot.accounts) {
+            if (acc?.id && acc?.accountPassword) {
+              vaultCredentialPipeline.storeCredential(acc.id, acc.accountPassword);
+            }
+          }
+        } catch { /* ignore */ }
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch automation snapshot directly');
@@ -598,6 +1052,7 @@ export class BackendSyncService {
     try {
       const accountsRes = await this.client.getBettingAccounts({ limit: 1000 });
       if (Array.isArray(accountsRes?.viewportAccounts)) {
+        anyAuthDomainSucceeded = true;
         accountsRepo.hydrate(accountsRes.viewportAccounts);
       }
     } catch (err) {
@@ -608,6 +1063,7 @@ export class BackendSyncService {
     try {
       const billingRes = await this.client.getBillingSnapshot();
       if (billingRes) {
+        anyAuthDomainSucceeded = true;
         const sub = billingRes.subscription || (billingRes.status ? billingRes : null);
         const invs = billingRes.invoices || [];
         if (typeof billingRepo.hydrate === 'function') {
@@ -619,32 +1075,15 @@ export class BackendSyncService {
     }
 
     // 4. Fetch platform registry and plans catalog with conditional ETag revalidation
-    try {
-      let currentPlatformEtag = undefined;
-      let currentPlansEtag = undefined;
-      try {
-        const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
-        const store = getSharedStateStore();
-        currentPlatformEtag = store.metadataAdapter?.get('platform_registry')?.etag;
-        currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
-      } catch { /* ignore */ }
+    await this.pullPublicCatalogs();
 
-      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
-      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
-        const platforms = platformRes.registry.platforms || platformRes.registry;
-        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+    if (anyAuthDomainSucceeded) {
+      this.lastSyncTimestamp = new Date().toISOString();
+      this.lastSyncHrtime = process.hrtime.bigint();
+      if (clock) {
+        await clock.updateAnchor(Date.now()).catch(() => {});
       }
-
-      const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
-      if (!plansRes.notModified && plansRes.catalog && catalogsRepo) {
-        const plans = plansRes.catalog.plans || plansRes.catalog;
-        catalogsRepo.hydratePlans(plans, plansRes.etag);
-      }
-    } catch (err) {
-      logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch catalog snapshots directly');
     }
-
-    this.lastSyncTimestamp = new Date().toISOString();
   }
 
   /**
@@ -659,6 +1098,8 @@ export class BackendSyncService {
       const cachePayload = {
         version: 1,
         savedAt: new Date().toISOString(),
+        lastSyncTimestamp: this.lastSyncTimestamp || null,
+        graceToken: this.lastGraceToken || null,
         globalConfig: configRepo.globalConfig,
         accounts: Array.from(accountsRepo.accounts.values())
       };
@@ -691,6 +1132,9 @@ export class BackendSyncService {
       const decrypted = NativeCore.decryptAead(encrypted, aad);
 
       const cachePayload = JSON.parse(decrypted.toString('utf8'));
+      if (cachePayload.graceToken) {
+        this.lastGraceToken = cachePayload.graceToken;
+      }
       if (Array.isArray(cachePayload.accounts)) {
         repositoryFactory.getAccountsRepo().hydrate(cachePayload.accounts);
       }
@@ -717,6 +1161,10 @@ export class BackendSyncService {
       case 'REGISTER_ACCOUNT':
         // NOTE: Do NOT scrub accountPassword! Backend database encrypts it with AES-256-GCM AEAD.
         result = await this.client.createBettingAccount(payload);
+        break;
+
+      case 'UPDATE_ACCOUNT_CREDENTIALS':
+        result = await this.client.updateBettingAccount(payload.accountId, payload);
         break;
 
       case 'UPDATE_GLOBAL_CONFIG':
@@ -785,21 +1233,29 @@ export class BackendSyncService {
         i--;
       } catch (err) {
         if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-          logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating session...');
-          try {
-            const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-            const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-            await this.client.initAuth({ email, password });
-            await this._dispatchMutation(item.mutationType, item.payload);
-            flushed++;
-            if (this.engine) {
-              try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+          const email = process.env.OPERATOR_EMAIL || null;
+          const password = process.env.OPERATOR_PASSWORD || null;
+          if (email && password) {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating with configured operator credentials...');
+            try {
+              const authRes = await this.client.initAuth({ email, password });
+              if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+              await this._dispatchMutation(item.mutationType, item.payload);
+              flushed++;
+              if (this.engine) {
+                try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+              }
+              this.outbox.splice(i, 1);
+              i--;
+              continue;
+            } catch (retryErr) {
+              logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
             }
-            this.outbox.splice(i, 1);
-            i--;
-            continue;
-          } catch (retryErr) {
-            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
+          } else {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH without configured auto-reauth credentials. Requiring interactive re-authentication.');
+            await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+            wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
+            break;
           }
         }
 
@@ -868,16 +1324,23 @@ export class BackendSyncService {
       return result;
     } catch (err) {
       if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-        logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session to reconcile generation counter...');
-        try {
-          const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-          const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-          await this.client.initAuth({ email, password });
-          const result = await this._dispatchMutation(type, payload);
-          this.saveLocalCache();
-          return result;
-        } catch (retryErr) {
-          logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+        const email = process.env.OPERATOR_EMAIL || null;
+        const password = process.env.OPERATOR_PASSWORD || null;
+        if (email && password) {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session with configured operator credentials...');
+          try {
+            const authRes = await this.client.initAuth({ email, password });
+            if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+            const result = await this._dispatchMutation(type, payload);
+            this.saveLocalCache();
+            return result;
+          } catch (retryErr) {
+            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+          }
+        } else {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected without configured auto-reauth credentials. Requiring interactive re-authentication.');
+          await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
         }
       }
 
@@ -886,6 +1349,23 @@ export class BackendSyncService {
         logger.info({ type }, '[BackendSyncService] Resource already exists on Backend; ignoring duplicate');
         this.saveLocalCache();
         return { exists: true, duplicated: true };
+      }
+
+      // Fail-fast on authoritative Backend policy/entitlement/validation rejections (do not enqueue in retry outbox)
+      const policyRejectCodes = new Set([
+        'ENTITLEMENT_LIMIT_REACHED',
+        'BE_PERM_ENTITLEMENT_EXCEEDED',
+        'BE_PERM_LICENSE_EXPIRED',
+        'BE_PERM_FORBIDDEN',
+        'BE_VAL_SCHEMA_VIOLATION',
+        'BE_VAL_INVALID_UUID',
+        'HTTP_403',
+        'HTTP_400'
+      ]);
+      if (policyRejectCodes.has(err.code) || err.status === 403 || err.status === 400) {
+        err.isPolicyRejection = true;
+        logger.warn({ type, code: err.code, err: err.message }, '[BackendSyncService] Authoritative Backend policy rejection; failing fast without outbox retry');
+        throw err;
       }
 
       logger.warn({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation directly to Backend; enqueuing in retry outbox');

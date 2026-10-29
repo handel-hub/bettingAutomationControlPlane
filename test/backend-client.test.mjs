@@ -1,9 +1,10 @@
-﻿// @ts-check
+// @ts-check
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
 import crypto from 'crypto';
 import { BackendClient, ProtocolError, Errors } from '../src/security-authority/protocol/backend-client.mjs';
+import { CanonicalSerializer } from '../src/security-authority/protocol/canonical-serializer.mjs';
 
 test('BackendClient API & Resilient Connection Testing', async (t) => {
   let mockServer;
@@ -33,9 +34,33 @@ test('BackendClient API & Resilient Connection Testing', async (t) => {
     mockServer.close();
   });
 
-  // Mock machine identity
+  // Mock machine identity & backend signing keypair
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const { publicKey: backendPubKey, privateKey: backendPrivKey } = crypto.generateKeyPairSync('ed25519');
+  const rawBackendPubHex = backendPubKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+  process.env.PINNED_BACKEND_PUBKEY_HEX = rawBackendPubHex;
+
   const DOMAIN_PREFIX = Buffer.from('CONTROL_PLANE_V1');
+  const buildSignedEnvelope = (payloadObj) => {
+    const envelope = {
+      version: 2,
+      timestamp: new Date().toISOString(),
+      server_epoch: 1,
+      payload: payloadObj,
+      generation: 1
+    };
+    const msg = Buffer.concat([
+      DOMAIN_PREFIX,
+      CanonicalSerializer.serializeBackendResponse(envelope)
+    ]);
+    const sigHex = crypto.sign(null, msg, backendPrivKey).toString('hex');
+    return {
+      ...envelope,
+      ...payloadObj,
+      signatures: { '1': sigHex }
+    };
+  };
+
   const mockIdentity = {
     getDescriptor: () => ({ hardwareId: 'hw_mock_unit_1' }),
     signPayload: (buf) => {
@@ -62,18 +87,19 @@ test('BackendClient API & Resilient Connection Testing', async (t) => {
     assert.ok(health.status.includes('ECONNREFUSED') || health.status.includes('fetch'));
   });
 
-  await t.test('registerMachine sends valid ProtocolEnvelopeV2 and sets machineId', async () => {
+  await t.test('registerMachine sends valid ProtocolEnvelopeV2, verifies signature, and sets machineId', async () => {
     serverHandler = (req, res) => {
       assert.strictEqual(req.url, '/api/v1/machines/register');
       assert.strictEqual(lastReceivedBody.version, 2);
       assert.strictEqual(lastReceivedBody.machineId, 'hw_mock_unit_1');
       assert.strictEqual(typeof lastReceivedBody.signature, 'string');
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      const resp = buildSignedEnvelope({
         machineId: 'backend-mach-uuid-99',
         status: 'REGISTERED'
-      }));
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(resp));
     };
 
     const client = new BackendClient(`http://127.0.0.1:${serverPort}`, mockIdentity);
@@ -88,16 +114,33 @@ test('BackendClient API & Resilient Connection Testing', async (t) => {
     assert.strictEqual(client.machineId, 'backend-mach-uuid-99');
   });
 
-  await t.test('initAuth sets sessionId and updates clientGeneration', async () => {
+  await t.test('registerMachine rejects unsigned backend response with ErrInvalidSignature', async () => {
     serverHandler = (req, res) => {
-      assert.strictEqual(req.url, '/api/v1/auth/init');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
+        machineId: 'backend-mach-uuid-99',
+        status: 'REGISTERED'
+      }));
+    };
+
+    const client = new BackendClient(`http://127.0.0.1:${serverPort}`, mockIdentity);
+    await assert.rejects(
+      () => client.registerMachine('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', 'inst-uuid-1', 'sig-dummy'),
+      (err) => err instanceof ProtocolError && err.code === Errors.ErrInvalidSignature
+    );
+  });
+
+  await t.test('initAuth verifies signature, sets sessionId, and updates clientGeneration', async () => {
+    serverHandler = (req, res) => {
+      assert.strictEqual(req.url, '/api/v1/auth/init');
+      const resp = buildSignedEnvelope({
         sessionId: 'sess-token-42',
         accountId: 'acc-uuid-100',
         sessionGeneration: 3,
         nonceValidated: true
-      }));
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(resp));
     };
 
     const client = new BackendClient(`http://127.0.0.1:${serverPort}`, mockIdentity);

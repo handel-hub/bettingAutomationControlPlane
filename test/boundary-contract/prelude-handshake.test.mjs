@@ -2,9 +2,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiServer } from '../../src/api-server/server.mjs';
+import { securityFacade } from '../../src/security-authority/facade.mjs';
+import { CAPABILITY } from '../../src/security-authority/authorization/capabilities.mjs';
 import { WebSocket } from 'ws';
 
 test('Boundary Contract: Prelude Handshake & Atomic Projections', async (t) => {
+  await securityFacade.establishSession({
+    sessionId: 'test-sess-prelude-001',
+    accountId: 'operator@betting.local',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  });
   const server = new ApiServer();
   const port = 8092;
   await server.listen(port, '127.0.0.1');

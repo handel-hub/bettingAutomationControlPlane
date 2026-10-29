@@ -55,15 +55,14 @@ export class DecisionEngine {
       machine: rawState.machine
     };
 
-    // Ensure native FFI revocation flag reflects persisted security state upon boot/restart (survives restart)
-    const nonRevokedStates = [
-      SecurityState.OPERATIONAL,
-      SecurityState.AUTHENTICATED,
-      SecurityState.AUTHENTICATING,
-      SecurityState.RENEWING,
-      SecurityState.OFFLINE_GRACE
-    ];
-    NativeCore.setRevokedSync(!nonRevokedStates.includes(this.inMemoryState.state));
+    if (
+      this.inMemoryState.state === SecurityState.REVOKED ||
+      this.inMemoryState.state === SecurityState.COMPROMISED ||
+      this.inMemoryState.state === SecurityState.TAMPER_SUSPECTED
+    ) {
+      NativeCore.setRevokedSync(true);
+      return;
+    }
 
     if (this.inMemoryState.state === SecurityState.UNINITIALIZED) {
       // Begin bootstrap automatically
@@ -76,7 +75,36 @@ export class DecisionEngine {
         storageVerified: true, 
         machineIdentityVerified: isMachineValid 
       });
+    } else {
+      // Invariant: Cold boot never revives active operational state directly from disk.
+      // Persisted credentials/session are retained as cached state, but active state begins in READY.
+      this.inMemoryState.state = SecurityState.SECURITY_STATE_READY;
+      const isMachineValid = NativeCore.verifyMachineIdentitySync();
+      if (!isMachineValid) {
+        this.inMemoryState.state = SecurityState.COMPROMISED;
+        try {
+          await StorageAdapter.commitTransitionWithOCC(
+            this.inMemoryState.state_version,
+            { ...this.inMemoryState, state: SecurityState.COMPROMISED },
+            TransitionEvent.IDENTITY_MISMATCH
+          );
+          this.inMemoryState.state_version += 1;
+        } catch { /* ignore */ }
+        NativeCore.setRevokedSync(true);
+        return;
+      }
     }
+
+    // Ensure native FFI revocation flag reflects active security state upon boot/restart
+    const nonRevokedStates = [
+      SecurityState.OPERATIONAL,
+      SecurityState.AUTHENTICATED,
+      SecurityState.AUTHENTICATING,
+      SecurityState.RENEWING,
+      SecurityState.OFFLINE_GRACE,
+      SecurityState.SECURITY_STATE_READY
+    ];
+    NativeCore.setRevokedSync(!nonRevokedStates.includes(this.inMemoryState.state));
   }
 
   /**
@@ -125,24 +153,28 @@ export class DecisionEngine {
    * @returns {import('./authorization/capabilities.mjs').Capability[]}
    */
   getCurrentCapabilities() {
-    // Per Canonical Specification §48, non-security configuration modifications
-    // (pricing, risk, rebet, proxy, timeouts) are non-entitlement-gated and permitted.
-    // Emergency stop is also a non-entitlement-gated safety invariant.
-    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP];
+    // Safety invariant: Emergency stop is always permitted.
+    const safetyCaps = [CAPABILITY.AUTOMATION_STOP];
 
     if (this.inMemoryState?.state !== SecurityState.OPERATIONAL && this.inMemoryState?.state !== SecurityState.OFFLINE_GRACE) {
-      return baseCaps;
+      return safetyCaps;
     }
     if (this.inMemoryState.authorization?.status !== 'VALID') {
-      return baseCaps;
+      return safetyCaps;
     }
+    const strictCaps = Boolean(/** @type {any} */ (this.inMemoryState).license?.strictCapabilities);
+    const baseCaps = strictCaps
+      ? [CAPABILITY.AUTOMATION_STOP]
+      : [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
     const caps = Array.from(new Set([...baseCaps, ...(this.inMemoryState.authorization.capability_set || [])]));
     if (typeof this.activeExecutionChecker === 'function') {
       try {
         if (this.activeExecutionChecker()) {
-          return caps.filter(c => c !== 'CAP_AUTOMATION_START');
+          return caps.filter(c => c !== CAPABILITY.AUTOMATION_START);
         }
-      } catch { /* ignore */ }
+      } catch {
+        // Ignore checker errors
+      }
     }
     return caps;
   }

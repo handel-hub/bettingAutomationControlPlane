@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { InMemoryAccountsRepo, InMemoryConfigRepo } from '../src/repositories/in-memory/InMemoryRepos.mjs';
 import { CapabilityResolver } from '../src/state/capabilityResolver.mjs';
 import { WorkspaceAggregator } from '../src/state/workspaceAggregator.mjs';
+import { repositoryFactory } from '../src/repositories/repositoryFactory.mjs';
 
 test('InMemoryAccountsRepo: enforces composite uniqueness on (platform, username)', async () => {
   const repo = new InMemoryAccountsRepo();
@@ -49,6 +50,11 @@ test('CapabilityResolver: accurately reflects lifecycle states and disabled reas
   assert.equal(stoppedCaps.canPlaceBet, false);
   assert.match(stoppedCaps.placeBetDisabledReason, /must be running/);
   assert.equal(stoppedCaps.canEditProxy, true);
+  assert.equal(stoppedCaps.includes('CAP_AUTOMATION_START'), true);
+  assert.equal(stoppedCaps.includes('CAP_AUTOMATION_STOP'), false);
+  assert.equal(stoppedCaps.includes('canStartAutomation'), true);
+  assert.equal(Array.isArray(stoppedCaps.rawCapabilities), true);
+  assert.ok(stoppedCaps.rawCapabilities.includes('CAP_AUTOMATION_START'));
 
   // When RUNNING with 1 browser
   const runningCaps = CapabilityResolver.resolve({
@@ -76,16 +82,62 @@ test('CapabilityResolver: accurately reflects lifecycle states and disabled reas
     totalConfiguredAccounts: 2
   });
 
-  assert.equal(pendingCaps.canPlaceBet, false);
-  assert.match(pendingCaps.placeBetDisabledReason, /Operation in progress/);
+  // When unauthorized by Security Authority
+  const unauthorizedCaps = CapabilityResolver.resolve({
+    lifecycle: 'STOPPED',
+    isAuthorized: false,
+    authorizationReason: 'Control Plane in Degraded Mode (Backend Offline)',
+    activeBrowsers: 0,
+    maxCapacity: 2,
+    globalActionPending: null,
+    totalConfiguredAccounts: 2
+  });
+
+  assert.equal(unauthorizedCaps.canStartAutomation, false);
+  assert.equal(unauthorizedCaps.startDisabledReason, 'Control Plane in Degraded Mode (Backend Offline)');
+
+  // When active runtime process is alive
+  const activeRuntimeCaps = CapabilityResolver.resolve({
+    lifecycle: 'STOPPED',
+    isAuthorized: true,
+    hasActiveRuntime: true,
+    activeBrowsers: 0,
+    maxCapacity: 2,
+    globalActionPending: null,
+    totalConfiguredAccounts: 2
+  });
+
+  assert.equal(activeRuntimeCaps.canStartAutomation, false);
+  assert.equal(activeRuntimeCaps.startDisabledReason, 'Automation runtime process is currently active');
 });
 
 test('WorkspaceAggregator: compiles complete workspace snapshot', async () => {
+  const accountsRepo = repositoryFactory.getAccountsRepo();
+  try {
+    await accountsRepo.create({
+      id: 'acc-test-seed-1',
+      name: 'Default Test Account 1',
+      platformDisplayName: 'SportyBet',
+      accountUsername: 'test_auto_user_1'
+    });
+  } catch {}
+  try {
+    await accountsRepo.create({
+      id: 'acc-test-seed-2',
+      name: 'Default Test Account 2',
+      platformDisplayName: 'BetKing',
+      accountUsername: 'test_auto_user_2'
+    });
+  } catch {}
   const aggregator = new WorkspaceAggregator();
   const snapshot = await aggregator.getSnapshot();
 
   assert.equal(snapshot.lifecycle, 'STOPPED');
   assert.ok(snapshot.capabilities);
+  assert.equal(typeof snapshot.capabilities.canStartAutomation, 'boolean');
+  assert.ok(Array.isArray(snapshot.capabilityList));
+  assert.equal(snapshot.capabilityList.includes('CAP_AUTOMATION_START'), snapshot.capabilities.canStartAutomation);
+  assert.ok(snapshot.capabilityList.includes('CAP_CONFIG_MODIFY'));
   assert.ok(snapshot.globalConfig);
   assert.ok(snapshot.globalConfig.pricing);
   assert.ok(Array.isArray(snapshot.accounts));

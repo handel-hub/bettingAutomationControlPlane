@@ -51,7 +51,7 @@ export function createDefaultGlobalConfig() {
       timeouts: {
         resultTimeoutMs: 30000,
         navigationTimeoutMs: 10000,
-        loginTimeoutMs: 15000,
+        loginTimeoutMs: 25000,
         decisionFreshnessTTLMs: 5000,
         reconciliationTimeoutMs: 12000
       },
@@ -60,7 +60,7 @@ export function createDefaultGlobalConfig() {
         maxRecoveryAttempts: 3,
         recoveryBaseDelayMs: 1000
       },
-      keyboardTypingDelayMs: 40,
+      keyboardTypingDelayMs: 10,
       maxRecordedActions: 50,
       orderTimeoutMs: 8000,
       retryCount: 2,
@@ -101,23 +101,23 @@ export function createDefaultGlobalConfig() {
 export function createDefaultSubscriptionSnapshot(userId = 'usr_default') {
   return {
     userId,
-    currentPlan: 'Starter',
-    currentPlanId: 'starter',
-    price: 5000,
+    currentPlan: 'None',
+    currentPlanId: null,
+    price: 0,
     currency: 'NGN',
     currencySymbol: '₦',
-    status: 'Active',
+    status: 'Payment_Required',
     billingInterval: 'Monthly',
-    renewalDate: new Date(Date.now() + 30 * 86400000).toISOString(),
+    renewalDate: null,
     expirationDate: null,
     entitlements: {
-      maxAccounts: 3,
-      maxConcurrentBrowsers: 2,
-      allowedPlatformIds: ['sportybet', 'bet9ja', 'betking', '1xbet'],
+      maxAccounts: 0,
+      maxConcurrentBrowsers: 0,
+      allowedPlatformIds: [],
       stealthAntidetectEnabled: false,
       priorityScanning: false
     },
-    availableActions: ['CHANGE_PLAN', 'CANCEL_SUBSCRIPTION', 'UPDATE_PAYMENT'],
+    availableActions: ['SUBSCRIBE', 'CHANGE_PLAN', 'UPDATE_PAYMENT'],
     notices: []
   };
 }

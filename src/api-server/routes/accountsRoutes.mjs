@@ -7,6 +7,7 @@ import { backendSyncService } from '../../sync/backendSyncService.mjs';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
 import { RevisionConflictError } from '../../state-store/types/errors.mjs';
+import { vaultCredentialPipeline } from '../../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 
 export const accountsRouter = Router();
 
@@ -45,6 +46,9 @@ accountsRouter.post('/', async (req, res) => {
         accountPassword,
         tags
       });
+      if (accountPassword) {
+        vaultCredentialPipeline.storeCredential(created.id, accountPassword);
+      }
       const sanitized = sanitizeAccountForExport(created);
       wsServer.broadcast('accounts:delta', {
         type: 'ACCOUNT_CREATED',
@@ -72,6 +76,24 @@ accountsRouter.get('/:id', async (req, res) => {
 // PATCH update account details / password
 accountsRouter.patch('/:id', async (req, res) => {
   try {
+    const { securityFacade } = await import('../../security-authority/facade.mjs');
+    const { CAPABILITY } = await import('../../security-authority/authorization/capabilities.mjs');
+    if (!securityFacade.isCommandPermitted('UPDATE_ACCOUNT_CREDENTIALS')) {
+      return res.status(403).json({
+        success: false,
+        code: 'SECURITY_STATE_DENIED',
+        error: `Command UPDATE_ACCOUNT_CREDENTIALS is not permitted in security state ${securityFacade.getSystemState()}`
+      });
+    }
+    const authResult = securityFacade.authorize(CAPABILITY.ACCOUNT_MANAGE);
+    if (authResult.status !== 'OPERATIONAL') {
+      return res.status(403).json({
+        success: false,
+        code: 'CAP_001',
+        error: authResult.message || 'Action prohibited by Security Authority'
+      });
+    }
+
     const accountId = req.params.id;
     const updates = req.body || {};
     const existing = await repositoryFactory.getAccountsRepo().findById(accountId);
@@ -91,7 +113,16 @@ accountsRouter.patch('/:id', async (req, res) => {
       expectedRevision = Number(bodyRevision);
     }
 
+    if (updates.accountPassword) {
+      vaultCredentialPipeline.storeCredential(accountId, updates.accountPassword);
+    }
     const updated = await repositoryFactory.getAccountsRepo().update(accountId, updates, expectedRevision);
+    try {
+      await backendSyncService.syncMutation('UPDATE_ACCOUNT_CREDENTIALS', {
+        accountId,
+        ...updates
+      });
+    } catch { /* ignore */ }
     backendSyncService.saveLocalCache();
     const sanitized = sanitizeAccountForExport(updated);
     wsServer.broadcast('accounts:delta', {
@@ -234,6 +265,18 @@ accountsRouter.post('/bulk-action', async (req, res) => {
                 accountId: id
               });
             }
+          }
+        }
+
+        const actionMap = {
+          BULK_DELETE: 'DELETE_ACCOUNT',
+          BULK_ACTIVATE: 'ACTIVATE_ACCOUNT',
+          BULK_DEACTIVATE: 'DEACTIVATE_ACCOUNT'
+        };
+        const mappedAction = actionMap[type];
+        if (mappedAction) {
+          for (const id of accountIds) {
+            await backendSyncService.syncMutation('ACCOUNT_ACTION', { accountId: id, action: mappedAction }).catch(() => {});
           }
         }
       }

@@ -21,6 +21,8 @@ import { securityFacade } from '../security-authority/facade.mjs';
 import { executionBoundaryManager } from './boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
 import { logger } from '../shared/logging.mjs';
+import { resolveExecutionScriptHash } from '../security-authority/execution/execution-integrity.mjs';
+import { ExecutionHandshakeTimeoutError } from '../state-store/types/errors.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -39,6 +41,10 @@ export class RuntimeManager extends EventEmitter {
     this.engineStatus = 'OFFLINE';
     this.activeBrowserCount = 0;
     this.latestFleetReadiness = null;
+    /** @type {number | null} */
+    this.currentStartingPid = null;
+    /** @type {Map<number, { resolve: Function, timer: any }>} */
+    this.exitDeferredMap = new Map();
   }
 
   stopServer() {
@@ -370,17 +376,35 @@ export class RuntimeManager extends EventEmitter {
 
     let targetScript = scriptPath || process.env.RUNTIME_ENTRY_SCRIPT;
     if (!targetScript) {
-      const realWorkerCandidate = path.resolve(__dirname, '../../../bettingAutomation/src/worker/index.mjs');
+      let cpRoot = __dirname;
+      while (cpRoot && (!fs.existsSync(path.join(cpRoot, 'package.json')) || !fs.existsSync(path.join(cpRoot, 'src')))) {
+        const parent = path.dirname(cpRoot);
+        if (parent === cpRoot) break;
+        cpRoot = parent;
+      }
+      const backRoot = path.resolve(cpRoot, '..');
+      const compiledCandidate = path.resolve(backRoot, 'bettingAutomation/dist/runner.cjs');
+      const realWorkerCandidate = path.resolve(backRoot, 'bettingAutomation/src/worker/index.mjs');
+      const launcherCandidate = path.resolve(backRoot, 'bettingAutomation/launcher/index.mjs');
+
       const isTest = process.env.NODE_ENV === 'test' ||
                      process.env.npm_lifecycle_event?.includes('test') ||
                      process.env.ACP_USE_MOCK_WORKER === 'true';
       const preferMock = isTest || options.useMockWorker === true;
-      if (!preferMock && fs.existsSync(realWorkerCandidate)) {
+      const preferCompiled = process.env.USE_COMPILED === 'true' || options.useCompiled === true;
+
+      if (!preferMock && preferCompiled && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
+      } else if (!preferMock && fs.existsSync(realWorkerCandidate)) {
         targetScript = realWorkerCandidate;
+      } else if (!preferMock && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
+      } else if (!preferMock && fs.existsSync(launcherCandidate)) {
+        targetScript = launcherCandidate;
       } else if (options.useDevWorkerFallback !== false) {
         const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true' || isTest;
         if (isDev) {
-          targetScript = path.resolve(__dirname, '../../test/fixtures/mock-orchestrated-worker.mjs');
+          targetScript = path.resolve(cpRoot, 'test/fixtures/mock-orchestrated-worker.mjs');
         }
       }
     }
@@ -388,28 +412,86 @@ export class RuntimeManager extends EventEmitter {
     const handshakeTimeoutMs = options.handshakeTimeoutMs || 10_000;
     let handshakeTimer = null;
 
+    let appRootModified = false;
     if (targetScript && !process.env.APP_ROOT) {
       const normalizedScript = path.resolve(targetScript);
       const srcIndex = normalizedScript.lastIndexOf(path.sep + 'src' + path.sep);
       const buildIndex = normalizedScript.lastIndexOf(path.sep + 'build' + path.sep);
       if (srcIndex !== -1) {
         process.env.APP_ROOT = normalizedScript.slice(0, srcIndex);
+        appRootModified = true;
       } else if (buildIndex !== -1) {
         process.env.APP_ROOT = normalizedScript.slice(0, buildIndex);
+        appRootModified = true;
       }
     }
 
-    const pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
-      if (handshakeTimer) clearTimeout(handshakeTimer);
-      this.activeRuntimes.delete(exitedPid);
-      runtimeHeartbeat.remove(exitedPid);
-      if (this.engineStatus !== 'ABORTED') {
-        this.engineStatus = 'STOPPED';
+    const resolvedSha256 = resolveExecutionScriptHash(targetScript, expectedSha256);
+
+    let pid;
+    try {
+      pid = NativeCore.spawnExecutionProcess(this.pipeName, (exitedPid) => {
+        // 1. Resolve any asynchronous termination awaiter immediately
+        const deferred = this.exitDeferredMap.get(exitedPid);
+        if (deferred) {
+          clearTimeout(deferred.timer);
+          this.exitDeferredMap.delete(exitedPid);
+          deferred.resolve(true);
+        }
+
+        const wasStarting = this.currentStartingPid === exitedPid;
+        if (wasStarting) {
+          this.currentStartingPid = null;
+          if (handshakeTimer) clearTimeout(handshakeTimer);
+        }
+
+        const wasActive = this.activeRuntimes.has(exitedPid);
+        this.activeRuntimes.delete(exitedPid);
+        runtimeHeartbeat.remove(exitedPid);
+
+        // Clean up stale Chromium lockfiles if left behind in session directories
+        try {
+          let cpRoot = __dirname;
+          while (cpRoot && (!fs.existsSync(path.join(cpRoot, 'package.json')) || !fs.existsSync(path.join(cpRoot, 'src')))) {
+            const parent = path.dirname(cpRoot);
+            if (parent === cpRoot) break;
+            cpRoot = parent;
+          }
+          const backRoot = path.resolve(cpRoot, '..');
+          const sessionsDir = path.resolve(backRoot, 'bettingAutomation/sessions');
+          if (fs.existsSync(sessionsDir)) {
+            const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isDirectory()) {
+                const lockFile = path.join(sessionsDir, entry.name, 'SingletonLock');
+                if (fs.existsSync(lockFile)) {
+                  fs.unlinkSync(lockFile);
+                }
+              }
+            }
+          }
+        } catch { /* best effort cleanup */ }
+
+        // Only propagate state transition if this process was genuinely starting or actively tracked
+        if (wasActive || wasStarting) {
+          if (this.engineStatus !== 'ABORTED') {
+            this.engineStatus = 'STOPPED';
+          }
+          this.emit('runtimeExited', exitedPid);
+          if (wasStarting) {
+            executionBoundaryManager.abortConnection(new Error(`Execution Plane process (PID ${exitedPid}) exited prematurely before connection`));
+          }
+        } else {
+          logger.info({ pid: exitedPid }, '[RuntimeManager] Cleanly reaped exit of already-terminated or stale process');
+        }
+      }, targetScript, resolvedSha256);
+    } finally {
+      if (appRootModified) {
+        delete process.env.APP_ROOT;
       }
-      this.emit('runtimeExited', exitedPid);
-      executionBoundaryManager.abortConnection(new Error(`Execution Plane process (PID ${exitedPid}) exited prematurely before connection`));
-    }, targetScript, expectedSha256);
+    }
     
+    this.currentStartingPid = pid;
     this.activeRuntimes.add(pid);
     runtimeHeartbeat.recordHeartbeat(pid);
     this.engineStatus = 'STARTING';
@@ -422,7 +504,7 @@ export class RuntimeManager extends EventEmitter {
           this.terminateRuntime(pid);
           this.engineStatus = 'ABORTED';
           this.emit('handshakeTimeout', { pid, handshakeTimeoutMs });
-          executionBoundaryManager.abortConnection(new Error(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
+          executionBoundaryManager.abortConnection(new ExecutionHandshakeTimeoutError(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
         }
       }, handshakeTimeoutMs);
 
@@ -430,8 +512,11 @@ export class RuntimeManager extends EventEmitter {
         handshakeTimer.unref();
       }
 
-      // Clear timer on first successful client connection
+      // Clear timer and starting PID on first successful client connection
       const onConnected = (connId) => {
+        if (this.currentStartingPid === pid) {
+          this.currentStartingPid = null;
+        }
         if (handshakeTimer) {
           clearTimeout(handshakeTimer);
           handshakeTimer = null;
@@ -458,20 +543,93 @@ export class RuntimeManager extends EventEmitter {
    * @param {number} pid 
    */
   terminateRuntime(pid) {
+    if (this.currentStartingPid === pid) {
+      this.currentStartingPid = null;
+    }
     if (this.activeRuntimes.has(pid)) {
       NativeCore.terminateExecutionProcess(pid);
       this.activeRuntimes.delete(pid);
       runtimeHeartbeat.remove(pid);
+    } else {
+      try {
+        NativeCore.terminateExecutionProcess(pid);
+      } catch {}
     }
   }
 
   /**
-   * Terminates all instances.
+   * Terminates a specific runtime instance and awaits its OS process exit.
+   * @param {number} pid 
+   * @param {number} [timeoutMs=2000]
+   * @returns {Promise<boolean>}
+   */
+  async terminateRuntimeAndWait(pid, timeoutMs = 2000) {
+    if (this.currentStartingPid === pid) {
+      this.currentStartingPid = null;
+    }
+    this.activeRuntimes.delete(pid);
+    runtimeHeartbeat.remove(pid);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const onDone = () => {
+        if (settled) return;
+        settled = true;
+        this.exitDeferredMap.delete(pid);
+        resolve(true);
+      };
+
+      const timer = setTimeout(onDone, timeoutMs);
+      if (timer.unref) timer.unref();
+
+      this.exitDeferredMap.set(pid, { resolve: onDone, timer });
+
+      try {
+        const terminated = NativeCore.terminateExecutionProcess(pid);
+        if (!terminated) {
+          clearTimeout(timer);
+          onDone();
+        }
+      } catch {
+        clearTimeout(timer);
+        onDone();
+      }
+    });
+  }
+
+  /**
+   * Terminates all active runtime instances and awaits their physical OS exit.
+   * @param {number} [timeoutMs=2500]
+   */
+  async terminateAllAndWait(timeoutMs = 2500) {
+    const pids = Array.from(this.activeRuntimes);
+    if (this.currentStartingPid && !pids.includes(this.currentStartingPid)) {
+      pids.push(this.currentStartingPid);
+    }
+    this.currentStartingPid = null;
+    this.activeRuntimes.clear();
+    runtimeHeartbeat.clear();
+
+    if (pids.length === 0) {
+      this.engineStatus = 'OFFLINE';
+      this.stopServer();
+      return;
+    }
+
+    await Promise.all(pids.map(pid => this.terminateRuntimeAndWait(pid, timeoutMs)));
+    this.engineStatus = 'OFFLINE';
+    this.stopServer();
+  }
+
+  /**
+   * Terminates all instances synchronously/fire-and-forget.
    */
   terminateAll() {
+    this.currentStartingPid = null;
     for (const pid of this.activeRuntimes) {
       this.terminateRuntime(pid);
     }
+    this.activeRuntimes.clear();
     runtimeHeartbeat.clear();
     this.engineStatus = 'OFFLINE';
     this.stopServer();

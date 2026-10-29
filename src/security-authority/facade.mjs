@@ -11,6 +11,7 @@ import { licenseManager } from './licensing/license-manager.mjs';
 import { tamperDetector } from './integrity/tamper-detector.mjs';
 import { envelopeValidator } from './protocol/envelope.mjs';
 import { CAPABILITY } from './authorization/capabilities.mjs';
+import { initClock } from './time/clock.mjs';
 
 /**
  * @typedef {Object} SecurityResult
@@ -30,104 +31,177 @@ export class SecurityFacade {
    */
   async initialize(dbPath) {
     if (!StorageAdapter._db) {
-      const resolvedPath = dbPath || process.env.CP_SECURITY_DB_PATH || './data/control_plane_security.db';
+      const isTest =
+        process.env.NODE_ENV === 'test' ||
+        Boolean(process.env.NODE_TEST_CONTEXT) ||
+        process.execArgv.includes('--test') ||
+        Boolean(process.env.npm_lifecycle_event?.includes('test'));
+      const defaultPath = isTest ? ':memory:' : './data/control_plane_security.db';
+      const resolvedPath = dbPath || process.env.CP_SECURITY_DB_PATH || defaultPath;
       await StorageAdapter.initDatabase(resolvedPath);
     }
+    await initClock();
     await engineInstance.initialize();
   }
 
   /**
-   * Authenticates a user.
-   * @param {any} credentials 
+   * Establishes an authenticated session from authoritative backend login or cached session.
+   * Dispatches LOGIN_INTENT -> BACKEND_AUTH_SUCCESS -> AUTHZ_LICENSE_RESOLVED cleanly.
+   * @param {Object} authPayload
+   * @param {string} authPayload.sessionId
+   * @param {string} [authPayload.accountId]
+   * @param {number} [authPayload.expiresInMs]
+   * @param {string[]} [authPayload.capabilities]
+   * @param {Object} [authPayload.license]
    * @returns {Promise<SecurityResult>}
    */
-  async authenticate(credentials) {
-    const loginIntentSuccess = await engineInstance.dispatch(TransitionEvent.LOGIN_INTENT, credentials);
-    if (!loginIntentSuccess) {
-      return { status: "DENIED", message: "Login intent rejected by state machine" };
+  async establishSession(authPayload) {
+    if (!engineInstance.inMemoryState) {
+      await this.initialize();
     }
 
-    // In reality this calls the protocol/backend-client layer
-    // Mocking success based on backend response:
-    const backendResponse = { nonceValidated: true, isBackendResponse: true };
-    const authSuccess = await engineInstance.dispatch(TransitionEvent.BACKEND_AUTH_SUCCESS, backendResponse);
+    if (!authPayload || !authPayload.sessionId) {
+      return { status: "DENIED", message: "Invalid session payload" };
+    }
 
-    if (authSuccess) {
-      // Automatic authorization resolution chained per plan (§15)
-      const authzResponse = { backendConfirmed: true };
-      const authzSuccess = await engineInstance.dispatch(TransitionEvent.AUTHZ_LICENSE_RESOLVED, authzResponse);
-      
+    const licenseData = authPayload.license || { status: 'VALID' };
+    if (licenseData.status === 'REVOKED') {
+      await this.revokeLicense('LICENSE_REVOKED_AT_AUTH');
+      return { status: "DENIED", message: "License is revoked" };
+    }
+
+    const sessionData = {
+      sessionId: authPayload.sessionId,
+      status: 'AUTHENTICATED',
+      userId: authPayload.accountId || 'authenticated-operator',
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + (authPayload.expiresInMs || 86400000)
+    };
+
+    const rawCaps = Array.isArray(authPayload.capabilities)
+      ? authPayload.capabilities
+      : Object.values(CAPABILITY);
+
+    const expandedCaps = new Set(rawCaps);
+    if (expandedCaps.has('CAP_CASH_OUT')) expandedCaps.add('CAP_BET_CASHOUT');
+    if (expandedCaps.has('CAP_BET_CASHOUT')) expandedCaps.add('CAP_CASH_OUT');
+    if (expandedCaps.has('CAP_TACTICAL_BET')) {
+      expandedCaps.add('CAP_BET_PLACE');
+      expandedCaps.add('CAP_BET_VALIDATE');
+    }
+    if (expandedCaps.has('CAP_BET_PLACE')) expandedCaps.add('CAP_TACTICAL_BET');
+    if (expandedCaps.has('CAP_CONFIG_MODIFY')) expandedCaps.add('CAP_ACCOUNT_MANAGE');
+
+    const requiresSignatureCheck = Boolean(licenseData.signature) || process.env.NODE_ENV === 'production';
+    const hasValidSignature = requiresSignatureCheck
+      ? this.validateLicenseIntegrity(licenseData, undefined, { accountId: authPayload.accountId })
+      : true;
+
+    const isLicenseValid = licenseData.status === 'VALID' && hasValidSignature && expandedCaps.size > 0;
+
+    const authorizationData = {
+      status: isLicenseValid
+        ? 'VALID'
+        : (!hasValidSignature ? 'LICENSE_SIGNATURE_INVALID' : (licenseData.status || 'PAYMENT_REQUIRED')),
+      capability_set: isLicenseValid ? Array.from(expandedCaps) : []
+    };
+
+    const currentState = this.getSystemState();
+
+    if (currentState === SecurityState.OFFLINE_GRACE && isLicenseValid) {
+      const reconnected = await engineInstance.dispatch(TransitionEvent.BACKEND_RECONNECTED, {
+        handshakePassed: true,
+        authorizationData,
+        licenseData,
+        sessionData
+      });
+      if (reconnected) {
+        NativeCore.setRevokedSync(false);
+        return { status: "OPERATIONAL" };
+      }
+    }
+
+    const loginEligibleStates = new Set([
+      SecurityState.SECURITY_STATE_READY,
+      SecurityState.UNAUTHENTICATED,
+      SecurityState.REAUTHENTICATION_REQUIRED,
+      SecurityState.LOGGED_OUT,
+      SecurityState.AUTH_FAILED,
+      SecurityState.AUTHZ_FAILURE,
+      SecurityState.EXPIRED,
+      SecurityState.AUTHENTICATED,
+      SecurityState.OPERATIONAL
+    ]);
+
+    if (loginEligibleStates.has(/** @type {any} */ (currentState))) {
+      const initEvent = currentState === SecurityState.REAUTHENTICATION_REQUIRED
+        ? TransitionEvent.USER_REINITIATES
+        : TransitionEvent.LOGIN_INTENT;
+      const loginIntentSuccess = await engineInstance.dispatch(initEvent, { sessionData });
+      if (!loginIntentSuccess) {
+        return { status: "DENIED", message: "Login intent rejected by state machine" };
+      }
+
+      const authSuccess = await engineInstance.dispatch(TransitionEvent.BACKEND_AUTH_SUCCESS, {
+        nonceValidated: true,
+        sessionData,
+        authorizationData,
+        licenseData
+      });
+      if (!authSuccess) {
+        return { status: "DENIED", message: "Backend authentication transition rejected" };
+      }
+
+      if (!isLicenseValid) {
+        NativeCore.setRevokedSync(false);
+        return {
+          status: "AUTHENTICATED",
+          message: !hasValidSignature
+            ? 'License cryptographic signature verification failed'
+            : `Active subscription/license required (${licenseData.status || 'PAYMENT_REQUIRED'})`
+        };
+      }
+
+      const authzSuccess = await engineInstance.dispatch(TransitionEvent.AUTHZ_LICENSE_RESOLVED, {
+        backendConfirmed: true,
+        authorizationData,
+        licenseData
+      });
+
       if (authzSuccess) {
+        NativeCore.setRevokedSync(false);
         return { status: "OPERATIONAL" };
       }
       return { status: "PARTIAL", message: "Authenticated but Authorization failed" };
     }
 
-    return { status: "DENIED", message: "Backend authentication failed" };
+    return { status: /** @type {any} */ (this.getSystemState()) };
   }
 
   /**
-   * Provisions a full-capability Developer Operational session.
-   * Used in local development when the cloud backend is offline/unreachable.
-   * Ensures system is in OPERATIONAL state with all capabilities granted,
-   * unsetting native revocation flags and updating persistent storage.
+   * Authenticates a user or session.
+   * @param {any} credentials 
+   * @returns {Promise<SecurityResult>}
    */
-  async initDevSession() {
-    // 1. Clear native FFI revocation flag
-    NativeCore.setRevokedSync(false);
-
-    const devSession = {
-      sessionId: 'dev-session-001',
+  async authenticate(credentials) {
+    if (credentials && credentials.sessionId) {
+      return this.establishSession(credentials);
+    }
+    if (process.env.NODE_ENV === 'production') {
+      return { status: "DENIED", message: "Unverified local session fabrication is forbidden in production" };
+    }
+    const sessionData = {
+      sessionId: `sess_${Date.now()}`,
       status: 'AUTHENTICATED',
-      userId: 'dev-operator',
+      userId: credentials?.email || 'operator',
       issuedAt: Date.now(),
-      expiresAt: Date.now() + 86400000 * 365
+      expiresAt: Date.now() + 86400000
     };
-
-    const allCaps = Object.values(CAPABILITY);
-    const devAuthz = {
-      status: 'VALID',
-      capability_set: allCaps
-    };
-
-    const currentState = this.getSystemState();
-
-    // 2. If at initial boot states, transition cleanly via state machine
-    if (currentState === SecurityState.SECURITY_STATE_READY || currentState === SecurityState.UNAUTHENTICATED) {
-      await engineInstance.dispatch(TransitionEvent.LOGIN_INTENT, { sessionData: devSession });
-      await engineInstance.dispatch(TransitionEvent.BACKEND_AUTH_SUCCESS, {
-        nonceValidated: true,
-        sessionData: devSession
-      });
-      await engineInstance.dispatch(TransitionEvent.AUTHZ_LICENSE_RESOLVED, {
-        backendConfirmed: true,
-        authorizationData: devAuthz,
-        licenseData: { status: 'VALID' }
-      });
-    } else if (currentState === SecurityState.OFFLINE_GRACE) {
-      // Reconnect from offline grace
-      await engineInstance.dispatch(TransitionEvent.BACKEND_RECONNECTED, {
-        handshakePassed: true,
-        authorizationData: devAuthz,
-        sessionData: devSession
-      });
-    }
-
-    // 3. Ensure inMemoryState is OPERATIONAL with full capabilities
-    if (engineInstance.inMemoryState) {
-      engineInstance.inMemoryState.state = SecurityState.OPERATIONAL;
-      engineInstance.inMemoryState.session = devSession;
-      engineInstance.inMemoryState.authorization = devAuthz;
-      engineInstance.inMemoryState.license = { status: 'VALID' };
-
-      // Ensure persistent row is synchronized if storage is initialized
-      try {
-        const row = await StorageAdapter.getSecurityStateRow();
-        if (row && row.state !== SecurityState.OPERATIONAL) {
-          await StorageAdapter.commitTransitionWithOCC(row.state_version, engineInstance.inMemoryState, 'DEV_MODE_OPERATIONAL');
-        }
-      } catch { /* ignore storage error in memory/test modes */ }
-    }
+    return this.establishSession({
+      sessionId: sessionData.sessionId,
+      accountId: sessionData.userId,
+      capabilities: Object.values(CAPABILITY)
+    });
   }
 
   /**
@@ -136,9 +210,8 @@ export class SecurityFacade {
    * @returns {SecurityResult}
    */
   authorize(capability) {
-    // Canonical §48: Non-security config modify is permitted (not entitlement-gated).
     // Safety invariant: Emergency stop is always permitted.
-    if (capability === CAPABILITY.CONFIG_MODIFY || capability === CAPABILITY.AUTOMATION_STOP) {
+    if (capability === CAPABILITY.AUTOMATION_STOP) {
       return { status: "OPERATIONAL" };
     }
 
@@ -146,6 +219,21 @@ export class SecurityFacade {
     if (capabilities.includes(capability)) {
       return { status: "OPERATIONAL" };
     }
+
+    // Bidirectional alias mapping between Backend and Control Plane capability naming conventions
+    const aliasMap = {
+      'CAP_BET_CASHOUT': 'CAP_CASH_OUT',
+      'CAP_CASH_OUT': 'CAP_BET_CASHOUT',
+      'CAP_BET_PLACE': 'CAP_TACTICAL_BET',
+      'CAP_TACTICAL_BET': 'CAP_BET_PLACE',
+      'CAP_BET_VALIDATE': 'CAP_TACTICAL_BET'
+    };
+
+    const targetAlias = aliasMap[capability];
+    if (targetAlias && capabilities.includes(targetAlias)) {
+      return { status: "OPERATIONAL" };
+    }
+
     return { status: "DENIED", message: `Missing capability: ${capability}` };
   }
 
@@ -158,11 +246,95 @@ export class SecurityFacade {
   }
 
   /**
-   * Revokes the current session explicitly.
+   * Revokes the current session explicitly and persists the cleared state to disk.
    */
   async logout() {
     await engineInstance.dispatch(TransitionEvent.LOGOUT_INTENT, {});
     await engineInstance.dispatch(TransitionEvent.LOGOUT_SEQUENCE_COMPLETE, { allStepsCompleted: true });
+    if (engineInstance.inMemoryState) {
+      engineInstance.inMemoryState.session = null;
+      engineInstance.inMemoryState.authorization = null;
+      engineInstance.inMemoryState.license = null;
+      try {
+        const row = await StorageAdapter.getSecurityStateRow();
+        if (row) {
+          const committed = await StorageAdapter.commitTransitionWithOCC(
+            row.state_version,
+            {
+              ...engineInstance.inMemoryState,
+              state: SecurityState.LOGGED_OUT,
+              session: null,
+              authorization: null,
+              license: null
+            },
+            TransitionEvent.LOGOUT_SEQUENCE_COMPLETE
+          );
+          if (committed) {
+            engineInstance.inMemoryState.state_version = row.state_version + 1;
+          }
+        }
+      } catch {
+        // Ignore storage error during logout cleanup
+      }
+    }
+  }
+
+  /**
+   * Transitions the security authority to UNAUTHENTICATED when no active operator session exists.
+   */
+  async transitionToUnauthenticated() {
+    if (!engineInstance.inMemoryState) {
+      await this.initialize();
+    }
+    const s = this.getSystemState();
+    if (s === SecurityState.SECURITY_STATE_READY || s === SecurityState.AUTH_FAILED || s === SecurityState.LOGGED_OUT) {
+      if (engineInstance.inMemoryState) {
+        engineInstance.inMemoryState.state = SecurityState.UNAUTHENTICATED;
+        engineInstance.inMemoryState.session = null;
+        engineInstance.inMemoryState.authorization = null;
+        try {
+          const row = await StorageAdapter.getSecurityStateRow();
+          if (row && row.state !== SecurityState.UNAUTHENTICATED) {
+            const committed = await StorageAdapter.commitTransitionWithOCC(
+              row.state_version,
+              {
+                ...engineInstance.inMemoryState,
+                state: SecurityState.UNAUTHENTICATED,
+                session: null,
+                authorization: null
+              },
+              'TRANSITION_TO_UNAUTHENTICATED'
+            );
+            if (committed) {
+              engineInstance.inMemoryState.state_version = row.state_version + 1;
+            }
+          }
+        } catch {
+          // Ignore storage error
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns current session metadata if available.
+   */
+  getSessionInfo() {
+    return engineInstance.inMemoryState?.session || null;
+  }
+
+  /**
+   * Returns current license metadata if available.
+   */
+  getLicenseInfo() {
+    return engineInstance.inMemoryState?.license || null;
+  }
+
+  /**
+   * Returns complete in-memory security authority state snapshot.
+   */
+  getFullSecurityState() {
+    return engineInstance.inMemoryState || null;
   }
 
   /**
@@ -190,16 +362,56 @@ export class SecurityFacade {
   isDegraded() {
     const s = this.getSystemState();
     if (s === "UNINITIALIZED") return false;
-    return s !== SecurityState.OPERATIONAL;
+    return s !== SecurityState.OPERATIONAL && s !== SecurityState.OFFLINE_GRACE;
   }
 
   /**
-   * Explicitly triggers transition to OFFLINE_GRACE / degraded state when backend or internet drops.
+   * Enters OFFLINE_GRACE mode when backend is unreachable but valid cached lease exists.
+   * @param {Object} [leaseData]
+   * @returns {Promise<boolean>}
+   */
+  async enterOfflineGrace(leaseData = {}) {
+    const currentState = this.getSystemState();
+    if (currentState === SecurityState.SECURITY_STATE_READY || currentState === SecurityState.UNAUTHENTICATED) {
+      const success = await engineInstance.dispatch(TransitionEvent.ENTER_OFFLINE_GRACE, {
+        isWithinGrace: true,
+        ...leaseData
+      });
+      if (success) {
+        NativeCore.setRevokedSync(false);
+        return true;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Explicitly triggers transition to degraded state when backend or internet drops and grace is unavailable.
    * @param {string} [reason]
    * @returns {Promise<boolean>}
    */
   async transitionToDegraded(reason = 'BACKEND_UNREACHABLE') {
     const currentState = this.getSystemState();
+
+    if (reason === 'OFFLINE_GRACE') {
+      if (currentState === SecurityState.OPERATIONAL) {
+        await engineInstance.dispatch(TransitionEvent.RENEW_THRESHOLD_REACHED, {
+          now: Date.now() + 10000,
+          renewAfter: 0,
+          renewalMutexHeld: false
+        });
+        await engineInstance.dispatch(TransitionEvent.RENEW_BACKEND_UNREACHABLE, { reason });
+        NativeCore.setRevokedSync(false);
+        return true;
+      } else if (currentState === SecurityState.OFFLINE_GRACE) {
+        NativeCore.setRevokedSync(false);
+        return true;
+      } else {
+        return this.enterOfflineGrace();
+      }
+    }
+
     if (currentState === SecurityState.OPERATIONAL) {
       // Must first transition via RENEW_THRESHOLD_REACHED or RENEW_BACKEND_UNREACHABLE
       await engineInstance.dispatch(TransitionEvent.RENEW_THRESHOLD_REACHED, {
@@ -207,9 +419,24 @@ export class SecurityFacade {
         renewAfter: 0,
         renewalMutexHeld: false
       });
-      return await engineInstance.dispatch(TransitionEvent.RENEW_BACKEND_UNREACHABLE, { reason });
+      await engineInstance.dispatch(TransitionEvent.RENEW_BACKEND_UNREACHABLE, { reason });
+      await engineInstance.dispatch(TransitionEvent.OFFLINE_GRACE_EXHAUSTED, {
+        accumulatedMs: 7200001,
+        offlineGraceMax: 7200000
+      });
+      NativeCore.setRevokedSync(true);
+      return true;
+    } else if (currentState === SecurityState.OFFLINE_GRACE) {
+      await engineInstance.dispatch(TransitionEvent.OFFLINE_GRACE_EXHAUSTED, {
+        accumulatedMs: 7200001,
+        offlineGraceMax: 7200000
+      });
+      NativeCore.setRevokedSync(true);
+      return true;
+    } else {
+      NativeCore.setRevokedSync(true);
+      return true;
     }
-    return true;
   }
 
   /**
@@ -224,9 +451,19 @@ export class SecurityFacade {
   isCommandPermitted(commandType) {
     const s = this.getSystemState();
     
-    // In REVOKED state, hard lockdown: only emergency containment stops and view status are permitted
-    if (s === SecurityState.REVOKED || this.isSessionRevokedSync()) {
-      return commandType === 'EMERGENCY_STOP' || commandType === 'STOP_AUTOMATION' || commandType === 'VIEW_STATUS';
+    // In REVOKED, COMPROMISED, or TAMPER_SUSPECTED state, hard lockdown: only emergency containment stops and view status are permitted
+    if (
+      s === SecurityState.REVOKED ||
+      s === SecurityState.COMPROMISED ||
+      s === SecurityState.TAMPER_SUSPECTED ||
+      this.isSessionRevokedSync()
+    ) {
+      return (
+        commandType === 'EMERGENCY_STOP' ||
+        commandType === 'STOP_AUTOMATION' ||
+        commandType === 'VIEW_STATUS' ||
+        commandType === 'GET_HEALTH'
+      );
     }
 
     if (this.isDegraded()) {
@@ -370,11 +607,12 @@ export class SecurityFacade {
   /**
    * Validates the Ed25519 cryptographic signature of a license payload.
    * @param {Object} licensePayload 
-   * @param {string} serverTrustPubHex 
+   * @param {string} [serverTrustPubHex] 
+   * @param {Object} [expectedContext]
    * @returns {boolean}
    */
-  validateLicenseIntegrity(licensePayload, serverTrustPubHex) {
-    return licenseManager.validateLicenseIntegrity(licensePayload, serverTrustPubHex);
+  validateLicenseIntegrity(licensePayload, serverTrustPubHex, expectedContext = {}) {
+    return licenseManager.validateLicenseIntegrity(licensePayload, serverTrustPubHex, expectedContext);
   }
 
   /**

@@ -1,0 +1,13 @@
+# 12. Residual Risk Register (`RESIDUAL_RISK_REGISTER.md`)
+
+This register documents fundamental architectural boundaries that remain inherent to running software on an untrusted local machine under full local administrator compromise, after all Backend and Control Plane vulnerabilities (`USF-01`..`USF-13`) have been remediated.
+
+---
+
+## 1. Residual Risks Under Full Local Compromise
+
+| Risk ID | Risk Description | Why It Cannot Be Eliminated Purely in Software | Compensating Controls Implemented | Classification |
+|---|---|---|---|---|
+| **RR-01** | **Local Execution Plane Patching (Self-Targeted Automation)** | The Execution Plane (`bettingAutomation`) runs Playwright browser workers on the user's local machine and connects directly to third-party bookmakers (`sportybet.com`, `bet9ja.com`) using the user's own bookmaker credentials and proxies. A local administrator who patches their own CP/EP binaries can run their local Playwright scripts without asking the Backend for an execution lease. | 1. Zero Backend secrets, signing keys, or other tenants' data exist in CP/EP.<br>2. All Backend APIs (`/api/v1/*`, `/authorization`, `/reconcile`, WebSocket updates, cloud sync) strictly enforce active account, session, machine, and license state on the server. | **Inherent Local Execution Boundary (Accepted)** |
+| **RR-02** | **In-Memory Credential Inspection by Local Root Debugger** | When EP logs into a bookmaker website on the local machine, the decrypted bookmaker password must eventually be typed into the local Chromium DOM. A local root/admin attacker attaching a memory debugger to their own process at that instant can read their own bookmaker password. | 1. Passwords are encrypted at rest in SQLite (`enc:v1:` AES-256-GCM in `AccountsAdapter.mjs`) and in PostgreSQL (`betting_account_secrets`).<br>2. CP→EP transit uses single-use, 30-second TTL memory-only vault tokens (`vt_...`) via `VaultCredentialPipeline`. | **Inherent Local Memory Boundary (Mitigated at Rest & in Transit)** |
+| **RR-03** | **Local Hardware Fingerprint Spoofing Within Account Seat Quota** | Hardware telemetry (`descriptor.hardwareHash`) is collected on the client machine. A compromised client can synthesize deterministic hardware hashes when calling `POST /machines/register`. | 1. `POST /machines/register` enforces `pg_advisory_xact_lock` per `accountId` and caps active machines to `maxMachines` (default 2).<br>2. Re-registration requires cryptographic proof of possession of the registered Ed25519 private key (`selfSignature`).<br>3. Clone detection flags duplicate hardware hashes across accounts. | **Bounded by Server-Enforced Seat Quota** |

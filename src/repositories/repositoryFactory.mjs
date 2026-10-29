@@ -242,6 +242,11 @@ class StateStoreNotificationsAdapter {
     const store = getSharedStateStore();
     return store.notifications.delete(id);
   }
+
+  async clearAll() {
+    const store = getSharedStateStore();
+    return store.notifications.clearAll ? store.notifications.clearAll() : { success: true, clearedCount: 0 };
+  }
 }
 
 /**

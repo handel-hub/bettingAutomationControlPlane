@@ -1,0 +1,22 @@
+{
+  "test_id": "AUTHZ-02",
+  "invariant_ids": [
+    "INV-04",
+    "INV-07"
+  ],
+  "campaign": "TIER1_AUTHZ",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "invalidActionHttpStatus": 400
+  },
+  "side_effects": {
+    "unauthorizedStateChange": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Unsupported account actionType rejected with HTTP 400 INVALID_ACTION_TYPE."
+}

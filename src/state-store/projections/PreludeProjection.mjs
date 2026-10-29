@@ -1,4 +1,5 @@
 // @ts-check
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
 
 /**
  * Compiles the complete, immutable atomic Prelude payload matching Section 5.3
@@ -34,7 +35,9 @@ export class PreludeProjection {
    * @returns {Readonly<any>}
    */
   project(userId, containers, runtimeState = {}) {
-    const revisionKey = `${containers.accounts.revision}:${containers.config.revision}:${containers.billing.revision}:${containers.catalogs.revision}:${containers.settings.revision}:${containers.notifications.revision}`;
+    const billingSnapshot = containers.billing.getSnapshot();
+    const effectiveLifecycleState = runtimeState.lifecycleState || resolveAuthoritativeLifecycleState({ billingSnapshot });
+    const revisionKey = `${containers.accounts.revision}:${containers.config.revision}:${containers.billing.revision}:${containers.catalogs.revision}:${containers.settings.revision}:${containers.notifications.revision}:${effectiveLifecycleState}`;
 
     if (this._cachedPayload && this._cachedRevisionKey === revisionKey) {
       return this._cachedPayload;
@@ -43,7 +46,6 @@ export class PreludeProjection {
     const now = new Date().toISOString();
     const settingsSnapshot = containers.settings.getSnapshot();
     const userProfile = settingsSnapshot.profile.data;
-    const billingSnapshot = containers.billing.getSnapshot();
     const plansCatalog = containers.catalogs.getPlansCatalog();
     const platformRegistry = containers.catalogs.getPlatformRegistry();
     const accounts = containers.accounts.getAll();
@@ -82,7 +84,7 @@ export class PreludeProjection {
         environment: 'production'
       },
       lifecycle: {
-        state: runtimeState.lifecycleState || 'Authorized',
+        state: effectiveLifecycleState,
         message: runtimeState.lifecycleMessage || 'Control Plane operational and synchronized'
       },
       user: {

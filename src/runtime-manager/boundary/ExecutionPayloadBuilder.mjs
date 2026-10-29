@@ -1,5 +1,6 @@
-// @ts-check
 import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
+import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
+import { logger } from '../../shared/logging.mjs';
 
 /**
  * ExecutionPayloadBuilder
@@ -55,12 +56,12 @@ export class ExecutionPayloadBuilder {
         Timeouts: {
           ResultTimeoutMs: Number(execution.orderTimeoutMs || 30000),
           NavigationTimeoutMs: Number(execution.navigationTimeoutMs || 10000),
-          LoginTimeoutMs: Number(execution.loginTimeoutMs || 15000),
+          LoginTimeoutMs: Number(execution.loginTimeoutMs || 25000),
           DecisionFreshnessTTLMs: Number(execution.decisionFreshnessTTLMs || 3000),
           ReconciliationTimeoutMs: Number(execution.reconciliationTimeoutMs || 120000)
         },
         Pacing: {
-          KeyboardTypingDelayMs: Number(execution.interPlatformDelayMs || 250),
+          KeyboardTypingDelayMs: Number(execution.keyboardTypingDelayMs ?? 10),
           PacingStrategy: execution.pacingStrategy || 'AGGRESSIVE'
         }
       },
@@ -82,20 +83,48 @@ export class ExecutionPayloadBuilder {
   /**
    * Compiles the complete LIFECYCLE:INITIALIZE payload conforming to Execution Plane's AutomationController constructor.
    * Merges decrypted credentials from VaultCredentialPipeline into temporary in-memory objects.
+   * Filters strictly to staged/targeted accounts to prevent whole-fleet spawning of unselected accounts.
    * 
    * @param {object} store - StateStore instance
    * @param {string} [traceId]
+   * @param {Array<string> | Set<string>} [targetAccountIds] - Specific account IDs to compile
    * @returns {object}
    */
-  static buildInitializationPayload(store, traceId = undefined) {
+  static buildInitializationPayload(store, traceId = undefined, targetAccountIds = null) {
     const globalConfig = typeof store.configContainer?.getGlobalConfig === 'function'
       ? store.configContainer.getGlobalConfig()
       : (typeof store.configContainer?.toSettingsIniObject === 'function'
         ? store.configContainer.toSettingsIniObject()
         : {});
-    const accounts = typeof store.accountsContainer?.getAll === 'function'
+    const allAccounts = typeof store.accountsContainer?.getAll === 'function'
       ? store.accountsContainer.getAll()
       : [];
+
+    let accounts;
+    if (Array.isArray(targetAccountIds) && targetAccountIds.length > 0) {
+      const idMap = new Map(allAccounts.map(a => [a.id, a]));
+      accounts = targetAccountIds.map(id => idMap.get(id)).filter(Boolean).filter(acc => acc.backendState !== 'SUSPENDED');
+    } else {
+      let targetSet = null;
+      if (targetAccountIds instanceof Set) {
+        targetSet = targetAccountIds;
+      } else if (workspaceAggregator?.stagedAccountIds && workspaceAggregator.stagedAccountIds.size > 0) {
+        const hasMatch = allAccounts.some(acc => workspaceAggregator.stagedAccountIds.has(acc.id));
+        if (hasMatch) {
+          targetSet = new Set(workspaceAggregator.stagedAccountIds);
+        }
+      }
+
+      accounts = targetSet
+        ? allAccounts.filter(acc => targetSet.has(acc.id) && acc.backendState !== 'SUSPENDED')
+        : allAccounts.filter(acc => acc.backendState !== 'SUSPENDED');
+    }
+
+    if (accounts.length === 0) {
+      const errorMsg = `[NO_ACCOUNTS_STAGED] No non-suspended accounts are staged for automation. Please stage at least one account.`;
+      logger.error({ traceId }, errorMsg);
+      throw new Error(errorMsg);
+    }
 
     // 1. Compile INI-compatible Settings for AutomationController
     const settings = {
@@ -131,11 +160,16 @@ export class ExecutionPayloadBuilder {
     };
 
     // 2. Resolve credentials for physical browser execution
-    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
     const compiledAccounts = accounts.map((acc, index) => {
-      const password = !isMaskedPassword(acc.accountPassword)
-        ? acc.accountPassword
-        : (vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword) || acc.rawPassword || '');
+      const password = ExecutionPayloadBuilder.resolvePassword(acc, store);
+
+      // Pre-flight assertion: fail-fast with a clear, descriptive error if credentials are missing
+      if (!password || password.trim() === '') {
+        const errorMsg = `[CREDENTIAL_MISSING] Account "${acc.accountUsername}" (${acc.platformDisplayName || acc.platformId}) has no valid password provisioned. Automation cannot start without valid login credentials.`;
+        logger.error({ accountId: acc.id, username: acc.accountUsername }, errorMsg);
+        throw new Error(errorMsg);
+      }
+
       return {
         id: acc.id,
         role: index === 0 ? 'master' : 'slave',
@@ -204,16 +238,44 @@ export class ExecutionPayloadBuilder {
   }
 
   /**
+   * Resolves plaintext password from account object, memory vault, or authoritative SQLite cache.
+   * @param {object} acc
+   * @param {object} [store]
+   * @returns {string}
+   */
+  static resolvePassword(acc, store = null) {
+    if (!acc) return '';
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+    let password = '';
+    if (!isMaskedPassword(acc.accountPassword)) {
+      password = acc.accountPassword;
+    } else if (!isMaskedPassword(acc.rawPassword)) {
+      password = acc.rawPassword;
+    } else {
+      const fromVault = vaultCredentialPipeline.decryptCredential(acc.id, acc.rawPassword || acc.accountPassword);
+      if (fromVault && !isMaskedPassword(fromVault)) {
+        password = fromVault;
+      } else if (store?.accounts?.getRawPassword) {
+        try {
+          const rawFromDb = store.accounts.getRawPassword(acc.id);
+          if (rawFromDb && !isMaskedPassword(rawFromDb)) {
+            password = rawFromDb;
+            vaultCredentialPipeline.storeCredential(acc.id, rawFromDb);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    return password;
+  }
+
+  /**
    * Compiles the payload for ACTIVATE_ACCOUNT command with decrypted credentials and active policy.
    * @param {object} account
    * @param {object} [store]
    * @returns {object}
    */
   static buildActivateAccountPayload(account, store = null) {
-    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
-    const password = !isMaskedPassword(account.accountPassword)
-      ? account.accountPassword
-      : (vaultCredentialPipeline.decryptCredential(account.id, account.rawPassword || account.accountPassword) || account.rawPassword || '');
+    const password = ExecutionPayloadBuilder.resolvePassword(account, store);
 
     let policy = null;
     if (store && typeof store.configContainer?.getGlobalConfig === 'function') {

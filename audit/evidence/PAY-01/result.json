@@ -1,0 +1,21 @@
+{
+  "test_id": "PAY-01",
+  "invariant_ids": [
+    "INV-01"
+  ],
+  "campaign": "TIER1_PAY",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "currencyMismatchHttpStatus": 400
+  },
+  "side_effects": {
+    "licenseIssuedForInvalidCurrency": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Non-NGN currency rejected with HTTP 400 CURRENCY_MISMATCH."
+}

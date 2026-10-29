@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
 
 export const preludeRouter = Router();
 
@@ -12,9 +13,11 @@ preludeRouter.get('/', async (req, res) => {
     const store = getSharedStateStore();
     const workspaceSnapshot = await workspaceAggregator.getSnapshot();
     const billingSnapshot = store.billing.getSnapshot();
-    const isPaymentRequired = billingSnapshot?.status === 'Payment_Required' || billingSnapshot?.status === 'Past_Due';
+    const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
+    const isPaymentRequired = computedLifecycleState === 'Payment_Required';
+
     const runtimeState = {
-      lifecycleState: isPaymentRequired ? 'Payment_Required' : 'Authorized',
+      lifecycleState: computedLifecycleState,
       lifecycle: workspaceAggregator.lifecycle,
       automationLifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: isPaymentRequired ? 'Payment required to activate automation suite' : workspaceAggregator.lifecycleMessage,

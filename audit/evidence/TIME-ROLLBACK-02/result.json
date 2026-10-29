@@ -1,0 +1,22 @@
+{
+  "test_id": "TIME-ROLLBACK-02",
+  "invariant_ids": [
+    "INV-05",
+    "INV-08"
+  ],
+  "campaign": "TIER2_TIME_ROLLBACK",
+  "correlation_ids": [
+    "persistent-clock"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "clockRollbackDetectedAndHalted": true
+  },
+  "side_effects": {
+    "uncertainClockPermitted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "PersistentClock detected bootWallclock < lastKnownTime and threw SECURITY_STATE_UNCERTAIN."
+}

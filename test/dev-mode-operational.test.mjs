@@ -9,15 +9,22 @@ import { NativeCore } from '../src/security-authority/native/security-core.mjs';
 import { runtimeManager } from '../src/runtime-manager/runtime-manager.mjs';
 import { commandRouter } from '../src/command/commandRouter.mjs';
 
-test('Local Developer Operational Mode Boundary & Invariants', async (t) => {
+test('Operational Session Boundary & Invariants', async (t) => {
   NativeCore.init();
 
-  await t.test('initDevSession provisions full capabilities and OPERATIONAL state', async () => {
+  const validSessionFixture = {
+    sessionId: 'test-sess-operational-001',
+    accountId: 'operator@betting.local',
+    capabilities: Object.values(CAPABILITY),
+    license: { status: 'VALID' }
+  };
+
+  await t.test('establishSession provisions full capabilities and OPERATIONAL state', async () => {
     // 1. Initialize facade
     await securityFacade.initialize();
 
-    // 2. Call initDevSession
-    await securityFacade.initDevSession();
+    // 2. Call establishSession
+    await securityFacade.establishSession(validSessionFixture);
 
     // 3. Verify state
     assert.strictEqual(securityFacade.getSystemState(), SecurityState.OPERATIONAL);
@@ -31,7 +38,7 @@ test('Local Developer Operational Mode Boundary & Invariants', async (t) => {
       assert.strictEqual(
         authz.status,
         'OPERATIONAL',
-        `Capability ${cap} must be granted in Local Developer Operational Mode`
+        `Capability ${cap} must be granted in Operational Mode`
       );
     }
 
@@ -40,7 +47,7 @@ test('Local Developer Operational Mode Boundary & Invariants', async (t) => {
   });
 
   await t.test('SEC_001 invariant holds: active runtime dynamically masks CAP_AUTOMATION_START', async () => {
-    await securityFacade.initDevSession();
+    await securityFacade.establishSession(validSessionFixture);
     securityFacade.setActiveExecutionChecker(() => runtimeManager.activeRuntimes.size > 0);
 
     // With zero active runtimes
@@ -57,7 +64,7 @@ test('Local Developer Operational Mode Boundary & Invariants', async (t) => {
   });
 
   await t.test('Degraded mode can still be explicitly triggered and tested', async () => {
-    await securityFacade.initDevSession();
+    await securityFacade.establishSession(validSessionFixture);
     assert.strictEqual(securityFacade.isDegraded(), false);
 
     // Transition to degraded
@@ -65,8 +72,8 @@ test('Local Developer Operational Mode Boundary & Invariants', async (t) => {
     assert.strictEqual(securityFacade.isDegraded(), true);
     assert.strictEqual(securityFacade.isOperational(), false);
 
-    // Re-activating dev session restores operational status
-    await securityFacade.initDevSession();
+    // Re-establishing session restores operational status
+    await securityFacade.establishSession(validSessionFixture);
     assert.strictEqual(securityFacade.isOperational(), true);
     assert.strictEqual(securityFacade.isDegraded(), false);
   });

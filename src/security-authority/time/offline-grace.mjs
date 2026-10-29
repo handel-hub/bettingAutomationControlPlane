@@ -61,25 +61,36 @@ export class OfflineGrace {
     }
 
     // 2. Update Highest Observed Time
-    // We update it directly using OCC. If there's an OCC conflict, it just means another transition beat us to it,
-    // which is fine since the other transition would have updated highest_observed_time anyway.
+    let currentVersion = row.state_version;
     if (now > highestObserved) {
-        const nextStateData = { ...row, highest_observed_time: now };
-        await AEADStorageAdapter.commitTransitionWithOCC(row.state_version, nextStateData, "TIME_TICK");
+      const nextStateData = { ...row, highest_observed_time: now };
+      const committed = await AEADStorageAdapter.commitTransitionWithOCC(currentVersion, nextStateData, "TIME_TICK");
+      if (committed) {
+        currentVersion += 1;
+      }
     }
 
     // 3. Absolute Expiry Checking
     if (row.state === "OFFLINE_GRACE" && row.graceTokenData) {
-        const token = row.graceTokenData;
+      const token = row.graceTokenData;
+      
+      if (now > token.not_after) {
+        console.error(`[OfflineGrace] Grace period EXHAUSTED. Exceeded absolute not_after bound.`);
+        NativeCore.setRevokedSync(true);
         
-        if (now > token.not_after) {
-             console.error(`[OfflineGrace] Grace period EXHAUSTED. Exceeded absolute not_after bound.`);
-             NativeCore.setRevokedSync(true);
-             
-             // Transition to EXPIRED.
-             const expiredState = { ...row, state: "EXPIRED", highest_observed_time: now };
-             await AEADStorageAdapter.commitTransitionWithOCC(row.state_version + 1, expiredState, "GRACE_EXHAUSTED");
-        }
+        // Transition to EXPIRED using currentVersion and synchronize DecisionEngine in-memory state
+        const expiredState = { ...row, state: "EXPIRED", highest_observed_time: now };
+        const committed = await AEADStorageAdapter.commitTransitionWithOCC(currentVersion, expiredState, "GRACE_EXHAUSTED");
+        try {
+          const { engineInstance } = await import('../decision-engine.mjs');
+          if (engineInstance.inMemoryState) {
+            engineInstance.inMemoryState.state = /** @type {any} */ ("EXPIRED");
+            if (committed) {
+              engineInstance.inMemoryState.state_version = currentVersion + 1;
+            }
+          }
+        } catch { /* ignore */ }
+      }
     }
   }
 
@@ -89,6 +100,7 @@ export class OfflineGrace {
    * @param {string} token.machine_id
    * @param {number} token.session_generation
    * @param {number} token.not_after
+   * @param {string} [token.signature]
    * @param {string} currentMachineId
    * @param {number} currentGeneration
    * @returns {boolean}
@@ -98,6 +110,17 @@ export class OfflineGrace {
     if (token.machine_id !== currentMachineId) return false;
     if (token.session_generation !== currentGeneration) return false;
     if (clock.now() > token.not_after) return false;
+    if (token.signature) {
+      try {
+        // Verify Ed25519 signature if present on the GraceToken
+        const { licenseManager } = globalThis.__acpLicenseManagerCache || {};
+        if (licenseManager && !licenseManager.verifyGraceToken(token)) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
     return true;
   }
 }

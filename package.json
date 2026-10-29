@@ -4,16 +4,28 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.mjs",
+    "start:compiled": "node dist/runner.cjs",
+    "start:dist": "node dist/runner.cjs",
     "dev": "node src/index.mjs",
-    "test": "node --test test/*.test.mjs",
+    "build": "node scripts/build-dev.mjs",
+    "build:clean": "node scripts/build-dev.mjs --clean",
+    "build:test": "node scripts/build-dev.mjs --test",
+    "build:candidate": "node scripts/build-dev.mjs --variant=bytecode-candidate",
+    "build:bytecode": "node scripts/compile-bytecode.mjs",
+    "build:package": "node scripts/build-package.mjs",
+    "build:all": "node scripts/build-dev.mjs --test && node scripts/compile-bytecode.mjs",
+    "lab": "node acp-bytenode-compat-lab/orchestrate.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "test:statestore": "node --test test/state-store/**/*.test.mjs",
     "test:boundary": "node --test --test-concurrency=1 test/boundary-contract/*.test.mjs",
     "test:adversarial": "node --test --test-concurrency=1 src/security-authority/test/adversarial/*.test.mjs",
-    "test:all": "node --test --test-concurrency=1 test/*.test.mjs test/boundary/*.test.mjs test/boundary-contract/*.test.mjs test/state-store/**/*.test.mjs src/security-authority/test/adversarial/*.test.mjs"
+    "test:all": "node --test --test-concurrency=1 test/*.test.mjs test/boundary/*.test.mjs test/boundary-contract/*.test.mjs test/state-store/**/*.test.mjs src/security-authority/test/adversarial/*.test.mjs",
+    "update:ep-hash": "node scripts/update-ep-hash.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "busboy": "^1.6.0",
+    "bytenode": "^1.7.0",
     "express": "^5.2.1",
     "pino": "^10.3.1",
     "protobufjs": "^8.7.2",
@@ -23,10 +35,12 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.8.6"
+    "@napi-rs/cli": "^3.8.6",
+    "esbuild": "^0.28.2"
   },
   "allowScripts": {
     "sqlite3@6.0.1": true,
-    "better-sqlite3@13.0.3": true
+    "better-sqlite3@13.0.3": true,
+    "esbuild@0.28.2": true
   }
 }

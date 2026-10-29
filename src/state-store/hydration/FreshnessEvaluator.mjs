@@ -19,6 +19,7 @@ export class FreshnessEvaluator {
 
   /**
    * Checks whether a cache entry is fresh or stale.
+   * Anti-tamper defense: if current wall-clock is earlier than cached time (clock rolled back), fails closed (false).
    * @param {string | Date} cachedAt
    * @param {number} ttlSeconds
    * @returns {boolean} True if still fresh; false if stale.
@@ -27,14 +28,22 @@ export class FreshnessEvaluator {
     if (!cachedAt) return false;
     const cachedTime = new Date(cachedAt).getTime();
     if (isNaN(cachedTime)) return false;
-    return (Date.now() - cachedTime) < (ttlSeconds * 1000);
+    const now = Date.now();
+    if (now < cachedTime) return false;
+    return (now - cachedTime) < (ttlSeconds * 1000);
   }
 
   /**
    * Evaluates subscription operational grace period (2 hours max).
+   * Supports an optional monotonic hardware duration (in milliseconds) from process.hrtime.bigint().
    * @param {string | Date} lastValidatedAt
+   * @param {number} [elapsedMonotonicMs]
    */
-  static isSubscriptionWithinGracePeriod(lastValidatedAt) {
+  static isSubscriptionWithinGracePeriod(lastValidatedAt, elapsedMonotonicMs = null) {
+    if (!lastValidatedAt) return false;
+    if (typeof elapsedMonotonicMs === 'number' && elapsedMonotonicMs >= (FreshnessEvaluator.TTL_POLICIES.subscription_grace * 1000)) {
+      return false;
+    }
     return FreshnessEvaluator.isFresh(lastValidatedAt, FreshnessEvaluator.TTL_POLICIES.subscription_grace);
   }
 }

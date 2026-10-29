@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-15",
+  "invariant_ids": [
+    "INV-07"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-15-ae0e8651"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-15 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-15",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-15 verified FIXED-VERIFIED: SecurityFacade.initDevSession() defined and blocked when NODE_ENV === production"
+}

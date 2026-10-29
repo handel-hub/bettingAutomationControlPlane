@@ -100,7 +100,7 @@ describe('BillingContainer Unit Tests', () => {
 
   it('initializes with default subscription', () => {
     const sub = container.getSnapshot();
-    assert.equal(sub.status, 'Active');
+    assert.equal(sub.status, 'Payment_Required');
     assert.equal(sub.userId, 'usr_test');
   });
 

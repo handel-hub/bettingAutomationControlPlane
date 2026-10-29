@@ -1,0 +1,24 @@
+{
+  "test_id": "AUTH-01",
+  "invariant_ids": [
+    "INV-03",
+    "INV-07"
+  ],
+  "campaign": "TIER1_AUTH",
+  "correlation_ids": [
+    "auth01-b190183c-f691-43cc-ad96-11c58e2d75a7"
+  ],
+  "control_result": {
+    "passed": true,
+    "validLoginStatus": 200
+  },
+  "attack_result": {
+    "httpStatus": 401,
+    "lockoutCountAfterFailure": 1
+  },
+  "side_effects": {
+    "lockoutIncrementedDurably": true
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Failed login with uppercase email committed lockout_count=1 and LOGIN_FAILURE event before throwing 401."
+}

@@ -491,7 +491,7 @@ The existing execution configuration includes:
 ```text
 ResultTimeoutMs = 30000
 NavigationTimeoutMs = 10000
-LoginTimeoutMs = 15000
+LoginTimeoutMs = 25000
 DecisionFreshnessTTLMs = 3000
 ReconciliationTimeoutMs = 120000
 ```

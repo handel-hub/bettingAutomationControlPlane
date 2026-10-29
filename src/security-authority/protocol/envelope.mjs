@@ -19,6 +19,26 @@ import { machineIdentity as defaultMachineIdentity } from '../identity/machine-i
  */
 
 export class EnvelopeValidator {
+  constructor() {
+    /** @type {Map<string, number>} */
+    this.consumedNonces = new Map();
+  }
+
+  /**
+   * Periodically prunes expired nonces from the replay cache.
+   * @param {number} now
+   * @private
+   */
+  _cleanupNonces(now) {
+    if (this.consumedNonces.size > 2000) {
+      for (const [nonce, expiresAt] of this.consumedNonces.entries()) {
+        if (expiresAt <= now) {
+          this.consumedNonces.delete(nonce);
+        }
+      }
+    }
+  }
+
   /**
    * Validates an incoming Backend envelope before any logical processing.
    * Enforces cryptographic authenticity, freshness checks, and pinned key verification.
@@ -43,15 +63,30 @@ export class EnvelopeValidator {
       return false; // Missing payload or signature map
     }
 
-    // Freshness check: reject envelopes with excessive clock drift (> 60,000ms)
-    if (envelope.timestamp) {
-      const ts = typeof envelope.timestamp === 'number' 
-        ? envelope.timestamp 
-        : new Date(envelope.timestamp).getTime();
-      if (isNaN(ts) || Math.abs(Date.now() - ts) > 60000) {
-        console.error('[EnvelopeValidator] Timestamp expired or invalid:', envelope.timestamp);
+    // Freshness check: require timestamp and reject envelopes with excessive clock drift (> 60,000ms)
+    if (!envelope.timestamp) {
+      console.error('[EnvelopeValidator] Timestamp missing');
+      return false;
+    }
+
+    const ts = typeof envelope.timestamp === 'number' 
+      ? envelope.timestamp 
+      : new Date(envelope.timestamp).getTime();
+    const now = Date.now();
+    if (isNaN(ts) || Math.abs(now - ts) > 60000) {
+      console.error('[EnvelopeValidator] Timestamp expired or invalid:', envelope.timestamp);
+      return false;
+    }
+
+    // Single-use nonce replay defense
+    if (envelope.nonce) {
+      this._cleanupNonces(now);
+      const existing = this.consumedNonces.get(envelope.nonce);
+      if (existing && existing > now) {
+        console.error('[EnvelopeValidator] Replay detected: Nonce already consumed:', envelope.nonce);
         return false;
       }
+      this.consumedNonces.set(envelope.nonce, now + 300000); // 5 minute replay window
     }
 
     // Determine pinned pubkey from env (supports key rotation v2 -> v1)
@@ -65,15 +100,12 @@ export class EnvelopeValidator {
     } else if (process.env.PINNED_BACKEND_PUBKEY_HEX && (sigs['1'] || sigs['v1'] || sigs['2'] || sigs['v2'])) {
       signatureToVerify = sigs['1'] || sigs['v1'] || sigs['2'] || sigs['v2'];
       pubKeyHex = process.env.PINNED_BACKEND_PUBKEY_HEX;
-    } else if (process.env.NODE_ENV !== 'production' && (sigs['1'] || sigs['v1'])) {
-      // In development mode only, fallback to the standard active development v1 backend key
-      signatureToVerify = sigs['1'] || sigs['v1'];
-      pubKeyHex = 'f3cb899bb26ea049615344f249a4401373218739de5fee5dc1063101ff320a27';
     } else {
-      // In production or when key is unresolvable, reject closed
-      console.error("[EnvelopeValidator] CRITICAL: No matching signature or pinned key found in environment (production fail-closed).");
+      // Fail-closed when pinned key is missing or unresolvable from .env
+      console.error("[EnvelopeValidator] CRITICAL: PINNED_BACKEND_PUBKEY_HEX is missing from .env or signature version does not match. (fail-closed)");
       return false;
     }
+
 
     if (!signatureToVerify || typeof signatureToVerify !== 'string') {
       return false;

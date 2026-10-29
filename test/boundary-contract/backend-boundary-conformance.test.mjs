@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { WebSocketServer } from 'ws';
 import { BackendClient, ProtocolError } from '../../src/security-authority/protocol/backend-client.mjs';
+import { CanonicalSerializer } from '../../src/security-authority/protocol/canonical-serializer.mjs';
 import { BackendSyncService } from '../../src/sync/backendSyncService.mjs';
 import { repositoryFactory } from '../../src/repositories/repositoryFactory.mjs';
 import { securityFacade } from '../../src/security-authority/facade.mjs';
@@ -25,6 +26,21 @@ test('ACP ↔ Backend Boundary Contract Conformance', async (t) => {
 
   // Initialize Security Facade for state transitions
   await securityFacade.initialize(':memory:');
+
+  const { publicKey: backendPubKey, privateKey: backendPrivKey } = crypto.generateKeyPairSync('ed25519');
+  process.env.PINNED_BACKEND_PUBKEY_HEX = backendPubKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+  const buildSignedEnvelope = (payloadObj) => {
+    const envelope = {
+      version: 2,
+      timestamp: new Date().toISOString(),
+      server_epoch: 1,
+      payload: payloadObj,
+      generation: 1
+    };
+    const msg = Buffer.concat([Buffer.from('CONTROL_PLANE_V1'), CanonicalSerializer.serializeBackendResponse(envelope)]);
+    const sigHex = crypto.sign(null, msg, backendPrivKey).toString('hex');
+    return { ...envelope, ...payloadObj, signatures: { '1': sigHex } };
+  };
 
   // Setup Mock Backend Server
   await new Promise((resolve) => {
@@ -46,11 +62,13 @@ test('ACP ↔ Backend Boundary Contract Conformance', async (t) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'ok' }));
         } else if (req.url === '/api/v1/auth/init') {
+          const resp = buildSignedEnvelope({ sessionId: 'sess-boundary-1', sessionGeneration: 1 });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ sessionId: 'sess-boundary-1', sessionGeneration: 1 }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/machines/register') {
+          const resp = buildSignedEnvelope({ machineId: 'mach-boundary-1', status: 'REGISTERED' });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ machineId: 'mach-boundary-1', status: 'REGISTERED' }));
+          res.end(JSON.stringify(resp));
         } else if (req.url === '/api/v1/automation/snapshot') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -264,10 +282,35 @@ test('ACP ↔ Backend Boundary Contract Conformance', async (t) => {
       eventId: 'evt-5',
       eventType: 'ACCOUNT_STATUS_CHANGED',
       sequenceNumber: 5,
+      server_epoch: 1,
       payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
     });
     assert.strictEqual(syncService.lastObservedSequence, 5);
     assert.strictEqual(reconciliationTriggered, true, 'Monotonic gap (1 -> 5) must trigger authoritative state reconciliation');
+
+    // Frame 4: Server restart / Epoch increment (Epoch 2 with reset sequence 1)
+    reconciliationTriggered = false;
+    await syncService.handleServerEvent({
+      eventId: 'evt-epoch2-1',
+      eventType: 'ACCOUNT_STATUS_CHANGED',
+      sequenceNumber: 1,
+      server_epoch: 2,
+      payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
+    });
+    assert.strictEqual(syncService.lastObservedEpoch, 2, 'Epoch must update to 2');
+    assert.strictEqual(syncService.lastObservedSequence, 1, 'Sequence must reset cleanly to 1 under new epoch');
+    assert.strictEqual(reconciliationTriggered, true, 'Epoch change triggers authoritative snapshot reconciliation');
+
+    // Frame 5: Stale frame from prior epoch (Epoch 1) must be dropped
+    await syncService.handleServerEvent({
+      eventId: 'evt-old-epoch',
+      eventType: 'ACCOUNT_STATUS_CHANGED',
+      sequenceNumber: 99,
+      server_epoch: 1,
+      payload: { accountId: 'acc-conf-1', status: 'ACTIVE' }
+    });
+    assert.strictEqual(syncService.lastObservedEpoch, 2, 'Epoch remains 2');
+    assert.strictEqual(syncService.lastObservedSequence, 1, 'Stale epoch frame was dropped and did not update sequence');
 
     // Restore original method
     syncService.pullAuthoritativeSnapshot = originalPull;

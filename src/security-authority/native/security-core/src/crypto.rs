@@ -11,8 +11,11 @@ use rand::RngCore;
 use crate::os_secret::get_root_key;
 
 fn derive_db_key() -> Result<[u8; 32]> {
-    let root_key = get_root_key()?;
+    let mut root_key = get_root_key()?;
     let hk = Hkdf::<Sha256>::new(None, &root_key);
+    for b in root_key.iter_mut() {
+        *b = 0;
+    }
     let mut okm = [0u8; 32];
     hk.expand(b"DB_ENCRYPTION", &mut okm).map_err(|_| {
         Error::new(Status::GenericFailure, "HKDF failed".to_string())
@@ -21,9 +24,12 @@ fn derive_db_key() -> Result<[u8; 32]> {
 }
 
 pub fn encrypt(plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-    let key_bytes = derive_db_key()?;
+    let mut key_bytes = derive_db_key()?;
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
+    for b in key_bytes.iter_mut() {
+        *b = 0;
+    }
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; 12 bytes
     
     let payload = aes_gcm::aead::Payload {
@@ -47,9 +53,12 @@ pub fn decrypt(ciphertext_with_nonce: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         return Err(Error::new(Status::InvalidArg, "Ciphertext too short".to_string()));
     }
     
-    let key_bytes = derive_db_key()?;
+    let mut key_bytes = derive_db_key()?;
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
+    for b in key_bytes.iter_mut() {
+        *b = 0;
+    }
     
     let (nonce_bytes, ciphertext) = ciphertext_with_nonce.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -163,18 +172,27 @@ pub fn generate_ed25519_keypair() -> Result<Ed25519KeypairObj> {
 }
 
 pub fn sign_ed25519(private_key_hex: String, message: &[u8]) -> Result<String> {
-    let key_bytes = hex::decode(&private_key_hex).map_err(|_| {
+    let mut key_bytes = hex::decode(&private_key_hex).map_err(|_| {
         Error::new(Status::InvalidArg, "Invalid hex for private key".to_string())
     })?;
     
     if key_bytes.len() != 32 {
+        for b in key_bytes.iter_mut() {
+            *b = 0;
+        }
         return Err(Error::new(Status::InvalidArg, "Private key must be exactly 32 bytes".to_string()));
     }
     
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&key_bytes);
+    for b in key_bytes.iter_mut() {
+        *b = 0;
+    }
     
     let signing_key = SigningKey::from_bytes(&arr);
+    for b in arr.iter_mut() {
+        *b = 0;
+    }
     
     // Domain separation
     let mut prefixed_message = Vec::with_capacity(16 + message.len());

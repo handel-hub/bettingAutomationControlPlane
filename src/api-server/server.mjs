@@ -1,6 +1,7 @@
 // @ts-check
 import express from 'express';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import { traceIdMiddleware } from './middleware/traceId.mjs';
 import { rawBodySaver } from './middleware/rawBody.mjs';
 import { ingressAuthMiddleware } from './middleware/auth.mjs';
@@ -13,17 +14,31 @@ import { systemRouter } from './routes/systemRoutes.mjs';
 import { supportRouter } from './routes/supportRoutes.mjs';
 import { platformsRouter } from './routes/platformsRoutes.mjs';
 import { preludeRouter } from './routes/preludeRoute.mjs';
-import { wsServer } from './websocket/wsServer.mjs';
+import { authRouter } from './routes/authRoutes.mjs';
+import { wsServer, isAllowedOrigin, resolveSystemIPv4Addresses } from './websocket/wsServer.mjs';
 import { logger } from '../shared/logging.mjs';
 import { SanitizerGate } from '../state-store/validation/SanitizerGate.mjs';
 
-const ALLOWED_ORIGINS = new Set([
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:8000',
-  'http://127.0.0.1:8000',
-  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : [])
-]);
+const DEFAULT_PORTS = [3000, 3001, 5000, 8000];
+
+function buildAllowedOrigins() {
+  const origins = new Set();
+  const machineHostname = os.hostname().toLowerCase();
+  const hosts = ['localhost', machineHostname, `${machineHostname}.local`, ...resolveSystemIPv4Addresses()];
+  for (const host of hosts) {
+    for (const port of DEFAULT_PORTS) {
+      origins.add(`http://${host}:${port}`);
+    }
+  }
+  if (process.env.ALLOWED_ORIGINS) {
+    for (const custom of process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)) {
+      origins.add(custom);
+    }
+  }
+  return origins;
+}
+
+const ALLOWED_ORIGINS = buildAllowedOrigins();
 
 export class ApiServer {
   constructor() {
@@ -36,8 +51,12 @@ export class ApiServer {
     // CORS headers - validated origin check
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (!origin || ALLOWED_ORIGINS.has(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+      if (origin) {
+        if (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+        } else {
+          return res.status(403).json({ error: 'Forbidden: Untrusted Origin' });
+        }
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature, X-ACP-Token');
@@ -68,7 +87,8 @@ export class ApiServer {
       next();
     });
 
-    // Mount 7 Domain Routers
+    // Mount Domain Routers
+    this.app.use('/api/v1/auth', authRouter);
     this.app.use('/api/v1/automation', automationRouter);
     this.app.use('/api/v1/accounts', accountsRouter);
     this.app.use('/api/v1/billing', billingRouter);
@@ -79,22 +99,54 @@ export class ApiServer {
     this.app.use('/api/v1/platforms', platformsRouter);
     this.app.use('/api/v1/prelude', preludeRouter);
 
+    // Top-level Public Health Probes (ALB, Docker, System monitors)
+    this.app.get('/health', (req, res) => {
+      res.json({
+        status: 'ok',
+        uptime: Math.round(process.uptime()),
+        timestamp: new Date().toISOString()
+      });
+    });
+    this.app.get('/ping', (req, res) => res.status(200).send('pong'));
+
+    // Global terminal error-handling middleware for structured JSON error responses
+    this.app.use((err, req, res, _next) => {
+      const status = err.status || err.statusCode || 500;
+      const code = err.code || 'INTERNAL_ERROR';
+      const isRetryable = err.retryable ?? (status === 504 || status === 503 || status === 409);
+      logger.error({ err: err.message, status, code, url: req.originalUrl }, '[ApiServer] Unhandled route error');
+      res.status(status).json({
+        success: false,
+        code,
+        error: err.message || 'Internal server error',
+        retryable: isRetryable
+      });
+    });
+
     // Attach WebSocket server
     wsServer.attach(this.server);
   }
 
   /**
-   * Starts listening on the specified port and host (defaults to loopback).
+   * Starts listening on the specified port and host (defaults to 0.0.0.0 for loopback + LAN/mobile access).
    * @param {number} [port=8000]
-   * @param {string} [host='127.0.0.1']
+   * @param {string} [host='0.0.0.0']
    * @returns {Promise<number>}
    */
-  async listen(port = 8000, host = '127.0.0.1') {
-    return new Promise((resolve) => {
-      this.server.listen(port, host, () => {
+  async listen(port = 8000, host = '0.0.0.0') {
+    return new Promise((resolve, reject) => {
+      const onError = (err) => {
+        this.server.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        this.server.removeListener('error', onError);
         logger.info(`[ApiServer] Listening on HTTP & WebSocket ${host}:${port}`);
         resolve(port);
-      });
+      };
+
+      this.server.once('error', onError);
+      this.server.listen(port, host, onListening);
     });
   }
 

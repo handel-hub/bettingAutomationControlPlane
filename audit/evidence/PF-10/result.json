@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-10",
+  "invariant_ids": [
+    "INV-05"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-10-382203ec"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-10 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-10",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-10 verified FIXED-VERIFIED: Cold-boot whole-database SQLite file replacement detected via DPAPI high-water anchor"
+}

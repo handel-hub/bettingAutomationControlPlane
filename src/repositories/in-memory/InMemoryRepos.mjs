@@ -165,7 +165,15 @@ export class InMemoryAccountsRepo extends IAccountsRepository {
   async update(id, updates) {
     const acc = this.accounts.get(id);
     if (!acc) return null;
-    const updated = { ...acc, ...updates, lastUpdated: new Date().toISOString() };
+    const { id: _id, platformDisplayName: _pdn, platformId: _pid, ...safeUpdates } = updates || {};
+    const updated = {
+      ...acc,
+      ...safeUpdates,
+      id: acc.id,
+      platformDisplayName: acc.platformDisplayName,
+      ...(acc.platformId !== undefined ? { platformId: acc.platformId } : {}),
+      lastUpdated: new Date().toISOString()
+    };
     this.accounts.set(id, updated);
     return updated;
   }
@@ -238,7 +246,7 @@ export class InMemoryConfigRepo extends IAutomationConfigRepository {
         timeouts: {
           resultTimeoutMs: 30000,
           navigationTimeoutMs: 10000,
-          loginTimeoutMs: 15000,
+          loginTimeoutMs: 25000,
           decisionFreshnessTTLMs: 3000,
           reconciliationTimeoutMs: 120000
         },

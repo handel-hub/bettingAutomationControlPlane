@@ -1,4 +1,6 @@
 // @ts-check
+import net from 'node:net';
+import os from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
@@ -9,6 +11,27 @@ import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { DEFAULT_STRATEGY_CATALOG } from '../../state-store/types/contracts.mjs';
 import { operationTracker } from '../../state/operationTracker.mjs';
 import { sanitizeAccountForExport } from '../../state-store/validation/SanitizerGate.mjs';
+import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
+
+/**
+ * Dynamically resolves all active IPv4 addresses bound to the host system's network interfaces.
+ * @returns {Set<string>}
+ */
+export function resolveSystemIPv4Addresses() {
+  const interfaces = os.networkInterfaces();
+  const addresses = new Set(['127.0.0.1']);
+
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      const family = typeof iface.family === 'string' ? iface.family : String(iface.family);
+      if ((family === 'IPv4' || family === '4') && iface.address) {
+        addresses.add(iface.address);
+      }
+    }
+  }
+
+  return addresses;
+}
 
 /**
  * Verifies if an Origin header is permitted to connect to the Control Plane WebSocket.
@@ -18,7 +41,11 @@ import { sanitizeAccountForExport } from '../../state-store/validation/Sanitizer
  * @returns {boolean}
  */
 export function isAllowedOrigin(origin) {
-  if (!origin || origin === 'null') return true;
+  // Non-browser clients omit Origin; sandboxed iframes send 'null'
+  if (!origin) return true;
+  if (origin === 'null') {
+    return process.env.ALLOW_NULL_ORIGIN === 'true';
+  }
 
   // Custom environment override
   if (process.env.ALLOWED_ORIGINS) {
@@ -32,13 +59,31 @@ export function isAllowedOrigin(origin) {
     const parsed = new URL(origin);
     const host = parsed.hostname.toLowerCase();
 
-    // Allow local loopbacks on any port
-    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
+    // 1. Allow standard loopback hostnames, IPv6 loopback, and local mDNS (.local)
+    if (host === 'localhost' || host === '[::1]' || host === '::1' || host.endsWith('.local') || host === os.hostname().toLowerCase()) {
       return true;
     }
 
-    // Allow desktop / custom application schemes
-    if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:' || parsed.protocol === 'file:') {
+    // 2. Dynamically resolved host IPv4 addresses + loopback (127.0.0.0/8)
+    if (net.isIPv4(host)) {
+      if (resolveSystemIPv4Addresses().has(host)) {
+        return true;
+      }
+      const parts = host.split('.').map(Number);
+      if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
+        // 127.0.0.0/8 (Loopback)
+        if (parts[0] === 127) return true;
+        // Private LAN subnets only when explicitly enabled via ALLOW_LAN_ORIGINS=true
+        if (process.env.ALLOW_LAN_ORIGINS === 'true') {
+          if (parts[0] === 10) return true;
+          if (parts[0] === 192 && parts[1] === 168) return true;
+          if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        }
+      }
+    }
+
+    // 3. Allow desktop / custom application schemes
+    if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:') {
       return true;
     }
 
@@ -109,6 +154,10 @@ class WsStreamer {
       }
     });
 
+    this.wss.on('error', (err) => {
+      logger.error({ err: err.message, code: err.code }, '[WebSocket] WebSocketServer error');
+    });
+
     this.wss.on('connection', async (ws, req) => {
       // CSWSH Defense: Validate Origin
       const origin = req.headers['origin'];
@@ -142,8 +191,10 @@ class WsStreamer {
         const accountsView = await repositoryFactory.getAccountsRepo().list({}, { offset: 0, limit: 50 });
         const notificationsData = await repositoryFactory.getNotificationsRepo().list({ unreadOnly: false, severity: 'ALL' });
         
+        const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
+
         const runtimeState = {
-          lifecycleState: 'Authorized',
+          lifecycleState: computedLifecycleState,
           automationLifecycle: workspaceAggregator.lifecycle,
           automationMessage: workspaceAggregator.lifecycleMessage,
           automationCapabilities: automationSnapshot.capabilities,
@@ -171,7 +222,7 @@ class WsStreamer {
         this.send(ws, 'app:prelude', preludePayload.payload || preludePayload);
 
         // Emit backward-compatible individual domain topics
-        this.send(ws, 'app:state', 'Authorized');
+        this.send(ws, 'app:state', computedLifecycleState);
         this.send(ws, 'automation:snapshot', automationSnapshot);
         this.send(ws, 'billing:snapshot', billingSnapshot);
         this.send(ws, 'billing:plans', store.catalogs.getPlansCatalog());
@@ -211,8 +262,10 @@ class WsStreamer {
           if (parsed && (parsed.topic === 'system:resync' || parsed.type === 'RESYNC')) {
             const store = getSharedStateStore();
             const automationSnapshot = await workspaceAggregator.getSnapshot();
+            const billingSnapshot = store.billing.getSnapshot();
+            const computedLifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
             const runtimeState = {
-              lifecycleState: 'Authorized',
+              lifecycleState: computedLifecycleState,
               automationLifecycle: workspaceAggregator.lifecycle,
               automationMessage: workspaceAggregator.lifecycleMessage,
               automationCapabilities: automationSnapshot.capabilities,

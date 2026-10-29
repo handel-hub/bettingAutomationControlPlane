@@ -1,0 +1,21 @@
+{
+  "test_id": "ENT-01",
+  "invariant_ids": [
+    "INV-04"
+  ],
+  "campaign": "TIER1_ENT",
+  "correlation_ids": [
+    "b190183c-f691-43cc-ad96-11c58e2d75a7"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "expiredLicenseErrorCode": "BE_PERM_LICENSE_EXPIRED"
+  },
+  "side_effects": {
+    "unauthorizedExecutionPermitted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Expired license rejected with BE_PERM_LICENSE_EXPIRED."
+}

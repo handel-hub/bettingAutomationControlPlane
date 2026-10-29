@@ -1,0 +1,27 @@
+{
+  "test_id": "AUTH-02",
+  "invariant_ids": [
+    "INV-03",
+    "INV-04"
+  ],
+  "campaign": "TIER1_AUTH",
+  "correlation_ids": [
+    "auth02-98d2bbbf-829f-4512-8051-27e9b207e8b9"
+  ],
+  "control_result": {
+    "passed": true,
+    "httpStatus": 200
+  },
+  "attack_result": {
+    "sessionlessLogoutHttpStatus": 200,
+    "sessionlessRenewHttpStatus": 500,
+    "expectedHttpStatus": 401
+  },
+  "side_effects": {
+    "nonceConsumedWithoutSession": true,
+    "signedLogoutEnvelopeIssuedForNullSession": true,
+    "unhandled500OnRenew": true
+  },
+  "status": "EXECUTED-FAIL",
+  "notes": "FINDING RT-F03: envelopeValidator only checks sessionId if truthy; sessionId: null reaches /sessions/logout (returning 200 signed envelope) and /sessions/renew (throwing unhandled 500 Session state not found)."
+}

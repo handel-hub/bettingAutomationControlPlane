@@ -149,6 +149,12 @@ export class PipeTransport extends EventEmitter {
    * @private
    */
   _onData(connId, data) {
+    const MAX_IPC_PAYLOAD_BYTES = 10 * 1024 * 1024;
+    if (typeof data === 'string' && Buffer.byteLength(data, 'utf8') > MAX_IPC_PAYLOAD_BYTES) {
+      this._onDisconnect(connId);
+      this.emit('error', new Error(`IPC frame from connection ${connId} exceeded 10MB cap; connection dropped`));
+      return;
+    }
     this.emit('data', connId, data);
   }
 

@@ -13,7 +13,11 @@ let _sharedStore = null;
  */
 export function getSharedStateStore(options = {}) {
   if (!_sharedStore) {
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const isTest =
+      process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.execArgv.includes('--test') ||
+      Boolean(process.env.npm_lifecycle_event?.includes('test'));
     let defaultDbPath = ':memory:';
     if (!isTest) {
       const dataDir = path.join(process.cwd(), 'data');
@@ -26,7 +30,7 @@ export function getSharedStateStore(options = {}) {
     const userId = options.userId || process.env.ACP_USER_ID || 'usr_operator';
     _sharedStore = new StateStore({ dbPath, userId });
     _sharedStore.initialize();
-    if (_sharedStore.accountsContainer.getAll().length === 0) {
+    if (options.seedDefaults === true && _sharedStore.accountsContainer.getAll().length === 0) {
       _sharedStore._seedDefaultAccounts();
     }
   }
@@ -35,8 +39,20 @@ export function getSharedStateStore(options = {}) {
 
 /**
  * Explicitly sets the shared StateStore instance (useful for tests or custom boot).
- * @param {StateStore} store
+ * @param {StateStore | null} store
  */
 export function setSharedStateStore(store) {
   _sharedStore = store;
+}
+
+/**
+ * Closes and clears the shared StateStore singleton (useful for isolated tests).
+ */
+export function resetSharedStateStore() {
+  if (_sharedStore) {
+    try {
+      _sharedStore.close();
+    } catch { /* ignore */ }
+    _sharedStore = null;
+  }
 }

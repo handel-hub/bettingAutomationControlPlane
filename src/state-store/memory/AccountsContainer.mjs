@@ -44,13 +44,33 @@ export class AccountsContainer {
    * @param {number} [revision]
    */
   hydrate(accountsList, revision = null) {
+    const existingAccounts = new Map(this._accounts);
     this._accounts.clear();
     if (Array.isArray(accountsList)) {
       for (const raw of accountsList) {
-        const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
-        const rawPassword = !isMaskedPassword(raw.accountPassword) 
-          ? raw.accountPassword 
-          : (!isMaskedPassword(raw.account_password) ? raw.account_password : '[PROTECTED]');
+        const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+        
+        let existing = existingAccounts.get(raw.id);
+        if (!existing && raw.accountUsername) {
+          const rawPlat = (raw.platformDisplayName || raw.platformId || '').toLowerCase();
+          const rawUser = raw.accountUsername.toLowerCase();
+          for (const ea of existingAccounts.values()) {
+            const eaPlat = (ea.platformDisplayName || ea.platformId || '').toLowerCase();
+            if (eaPlat === rawPlat && ea.accountUsername.toLowerCase() === rawUser) {
+              existing = ea;
+              break;
+            }
+          }
+        }
+
+        let rawPassword = '[PROTECTED]';
+        if (!isMaskedPassword(raw.accountPassword)) {
+          rawPassword = raw.accountPassword;
+        } else if (!isMaskedPassword(raw.account_password)) {
+          rawPassword = raw.account_password;
+        } else if (existing && !isMaskedPassword(existing.accountPassword)) {
+          rawPassword = existing.accountPassword;
+        }
 
         const sanitized = {
           ...SanitizerGate.sanitize(raw),
@@ -140,10 +160,12 @@ export class AccountsContainer {
     const now = new Date().toISOString();
     const sanitized = SanitizerGate.sanitize(accountData);
 
-    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???');
+    const isMaskedPassword = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
+    const existingById = accountData.id ? this._accounts.get(accountData.id) : null;
+    const existingRecord = existing || existingById;
     const rawPassword = !isMaskedPassword(accountData.accountPassword)
       ? accountData.accountPassword
-      : (existing?.accountPassword || '[PROTECTED]');
+      : (existingRecord?.accountPassword && !isMaskedPassword(existingRecord.accountPassword) ? existingRecord.accountPassword : '[PROTECTED]');
 
     const record = {
       id: sanitized.id || crypto.randomUUID(),
@@ -163,9 +185,20 @@ export class AccountsContainer {
       pendingOperation: sanitized.pendingOperation || null,
       tags: Array.isArray(sanitized.tags) ? sanitized.tags : [],
       effectiveConfig: sanitized.effectiveConfig || existing?.effectiveConfig || null,
+      lastKnownBalance: sanitized.lastKnownBalance !== undefined ? sanitized.lastKnownBalance : (existing?.lastKnownBalance !== undefined ? existing.lastKnownBalance : undefined),
+      currencySymbol: sanitized.currencySymbol || existing?.currencySymbol || '₦',
       lastUpdated: now,
       lastSynchronization: sanitized.lastSynchronization || now
     };
+
+    if (record.lastKnownBalance !== undefined) {
+      this._balances.set(record.id, {
+        balance: Number(record.lastKnownBalance) || 0,
+        currencySymbol: record.currencySymbol || '₦',
+        lastUpdated: now,
+        isStale: false
+      });
+    }
 
     this._accounts.set(record.id, Object.freeze(record));
     this._revision += 1;

@@ -9,15 +9,15 @@ export class WatchdogMonitor extends EventEmitter {
   /**
    * @param {object} [options]
    * @param {number} [options.checkIntervalMs=500]
-   * @param {number} [options.warningTimeoutMs=3000]
-   * @param {number} [options.degradedTimeoutMs=5000]
-   * @param {number} [options.quarantineTimeoutMs=10000]
+   * @param {number} [options.warningTimeoutMs=6000]
+   * @param {number} [options.degradedTimeoutMs=12000]
+   * @param {number} [options.quarantineTimeoutMs=25000]
    */
   constructor({
     checkIntervalMs = 500,
-    warningTimeoutMs = 3000,
-    degradedTimeoutMs = 5000,
-    quarantineTimeoutMs = 10000
+    warningTimeoutMs = 6000,
+    degradedTimeoutMs = 12000,
+    quarantineTimeoutMs = 25000
   } = {}) {
     super();
     this.checkIntervalMs = checkIntervalMs;

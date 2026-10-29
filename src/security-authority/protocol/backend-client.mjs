@@ -127,14 +127,25 @@ export class BackendClient {
   }
 
   /**
+   * Internal fetch wrapper.
+   * @param {string} url
+   * @param {RequestInit} [options]
+   * @returns {Promise<Response>}
+   */
+  async _fetchWithPinning(url, options = {}) {
+    return fetch(url, options);
+  }
+
+  /**
    * Internal HTTP POST wrapper with exponential backoff for network-level failures.
    * Does NOT retry semantic/protocol errors.
    * @param {string} path 
    * @param {Object} data 
    * @param {number} [maxRetries=3]
+   * @param {Record<string, string>} [extraHeaders={}]
    * @returns {Promise<{ envelope?: any; data: any }>}
    */
-  async _postWithRetry(path, data, maxRetries = 3) {
+  async _postWithRetry(path, data, maxRetries = 3, extraHeaders = {}) {
     const url = `${this.endpoint}${path}`;
     const requestEnvelope = envelopeValidator.createRequest(data, this.machineIdentity, this.getSessionContext());
 
@@ -146,7 +157,8 @@ export class BackendClient {
           headers: { 
             'Content-Type': 'application/json',
             ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {}),
-            ...(this.machineId ? { 'x-machine-id': this.machineId } : {})
+            ...(this.machineId ? { 'x-machine-id': this.machineId } : {}),
+            ...extraHeaders
           },
           body: JSON.stringify(requestEnvelope)
         });
@@ -173,12 +185,31 @@ export class BackendClient {
           throw new ProtocolError(code, message, { ...errObj, retryable: true });
         }
 
-        // 2. Cryptographic Validation Pipeline if response is wrapped in an envelope
-        if (json.signatures && typeof json.signatures === 'object') {
-          if (!envelopeValidator.validateEnvelope(json)) {
-            throw new ProtocolError(Errors.ErrInvalidSignature, "Backend response failed cryptographic signature or freshness checks.");
+        // 2. Mandatory Cryptographic Validation Pipeline for protocol authority endpoints & signed envelopes
+        const UNSIGNED_EXEMPT_PATHS = new Set([
+          '/api/v1/sessions/logout',
+          '/api/v1/accounts',
+          '/api/v1/billing/checkout',
+          '/api/v1/billing/subscription/cancel',
+          '/api/v1/billing/subscription/resume',
+          '/api/v1/settings/intent',
+          '/api/v1/support/diagnostics'
+        ]);
+        const requiresSignedEnvelope =
+          !UNSIGNED_EXEMPT_PATHS.has(path) &&
+          !path.startsWith('/api/v1/accounts/') &&
+          !path.startsWith('/api/v1/automation/') &&
+          !path.startsWith('/api/v1/transfers/');
+
+        if (requiresSignedEnvelope || (json.signatures && typeof json.signatures === 'object')) {
+          if (!json.signatures || typeof json.signatures !== 'object' || !envelopeValidator.validateEnvelope(json)) {
+            throw new ProtocolError(
+              Errors.ErrInvalidSignature,
+              `Backend response on ${path} failed mandatory Ed25519 signature or freshness verification.`
+            );
           }
         }
+
 
         // 3. Extract payload: decode base64 or read JSON object directly
         let decodedPayload = json.payload !== undefined ? json.payload : json;
@@ -325,6 +356,45 @@ export class BackendClient {
       nonceValidated: data.nonceValidated,
       license: data.license,
       capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
+      signatures: envelope?.signatures
+    };
+  }
+
+  /**
+   * Registers a new operator account with the Backend and initializes an authenticated session.
+   * @param {Object} credentials
+   * @param {string} credentials.email
+   * @param {string} credentials.password
+   * @param {string} [credentials.name]
+   * @param {string} [clientNonce]
+   */
+  async registerOperator(credentials, clientNonce) {
+    const nonce = clientNonce || crypto.randomBytes(16).toString('hex');
+    const { data, envelope } = await this._postWithRetry('/api/v1/auth/register', {
+      email: credentials.email,
+      password: credentials.password,
+      name: credentials.name,
+      machineId: this.machineId,
+      protocolVersion: 2,
+      clientNonce: nonce
+    });
+
+    if (data.sessionId) {
+      this.sessionId = data.sessionId;
+    }
+    if (data.sessionGeneration) {
+      this.clientGeneration = data.sessionGeneration;
+    }
+
+    return {
+      sessionId: data.sessionId,
+      accountId: data.accountId,
+      sessionGeneration: data.sessionGeneration,
+      nonceValidated: data.nonceValidated,
+      license: data.license,
+      capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
       signatures: envelope?.signatures
     };
   }
@@ -433,6 +503,28 @@ export class BackendClient {
   }
 
   /**
+   * Updates an existing betting account (including credentials) on Backend.
+   * @param {string} accountId 
+   * @param {Object} updates 
+   * @returns {Promise<any>}
+   */
+  async updateBettingAccount(accountId, updates) {
+    const url = `${this.endpoint}/api/v1/accounts/${encodeURIComponent(accountId)}`;
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
+      },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) {
+      throw new ProtocolError(`HTTP_${res.status}`, `Failed to update betting account ${accountId}: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  /**
    * Executes an action on a betting account.
    * @param {string} accountId 
    * @param {string} actionType 
@@ -449,11 +541,11 @@ export class BackendClient {
    */
   async updateGlobalConfig(category, values) {
     const url = `${this.endpoint}/api/v1/automation/config/${category}`;
-    const res = await fetch(url, {
+    const res = await this._fetchWithPinning(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}` } : {})
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
       },
       body: JSON.stringify({ values })
     });
@@ -513,11 +605,11 @@ export class BackendClient {
    */
   async toggleBetCycle(accountId, enabled) {
     const url = `${this.endpoint}/api/v1/automation/accounts/${accountId}/bet-cycle`;
-    const res = await fetch(url, {
+    const res = await this._fetchWithPinning(url, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}` } : {})
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
       },
       body: JSON.stringify({ enabled })
     });
@@ -557,13 +649,18 @@ export class BackendClient {
    * @param {string} planId 
    * @param {string} [billingInterval='monthly'] 
    * @param {string} [returnUrl] 
+   * @param {string} [idempotencyKey]
    * @returns {Promise<any>}
    */
-  async initiateCheckout(planId, billingInterval = 'monthly', returnUrl = undefined) {
+  async initiateCheckout(planId, billingInterval = 'monthly', returnUrl = undefined, idempotencyKey = undefined) {
+    const key = idempotencyKey || `chk_${crypto.randomUUID()}`;
     const { data } = await this._postWithRetry('/api/v1/billing/checkout', {
       planId,
       billingInterval,
-      returnUrl
+      returnUrl,
+      idempotencyKey: key
+    }, 3, {
+      'Idempotency-Key': key
     });
     return data;
   }
@@ -635,9 +732,10 @@ export class BackendClient {
     const url = `${this.endpoint}/api/v1/platforms`;
     const headers = {
       'Accept': 'application/json',
+      ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {}),
       ...(options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {})
     };
-    const res = await fetch(url, { headers });
+    const res = await this._fetchWithPinning(url, { headers });
     if (res.status === 304) {
       return { notModified: true, etag: options.ifNoneMatch };
     }

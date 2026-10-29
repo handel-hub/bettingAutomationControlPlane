@@ -14,6 +14,57 @@ import { NativeCore } from '../native/security-core.mjs';
 export const AEADStorageAdapter = {
   /** @type {import('sqlite').Database | null} */
   _db: null,
+  /** @type {string | null} */
+  _dbPath: null,
+  /** @type {number} */
+  _minValidStateVersion: 0,
+  /** @type {Map<string, number>} */
+  _pathMinVersions: new Map(),
+
+  _getAnchorsFilePath() {
+    const baseDir = process.env.APPDATA || process.cwd();
+    const secDir = path.join(baseDir, '.security_authority');
+    if (!fs.existsSync(secDir)) {
+      try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
+    }
+    return path.join(secDir, 'db_anchors.bin');
+  },
+
+  _loadPersistedPathAnchors() {
+    try {
+      const anchorFile = this._getAnchorsFilePath();
+      if (!fs.existsSync(anchorFile)) return;
+      const encrypted = fs.readFileSync(anchorFile);
+      const aad = Buffer.from('ACP_DB_PATH_ANCHORS_V1', 'utf8');
+      const plain = NativeCore.decryptAead(encrypted, aad);
+      const parsed = JSON.parse(plain.toString('utf8'));
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          const num = Number(v);
+          if (Number.isFinite(num) && num > (this._pathMinVersions.get(k) || 0)) {
+            this._pathMinVersions.set(k, num);
+          }
+        }
+      }
+    } catch {
+      // Ignore if anchor file not yet created or key rotated
+    }
+  },
+
+  _savePersistedPathAnchor(resolvedPath, version) {
+    if (!resolvedPath || resolvedPath === ':memory:') return;
+    this._pathMinVersions.set(resolvedPath, version);
+    try {
+      const anchorFile = this._getAnchorsFilePath();
+      const obj = Object.fromEntries(this._pathMinVersions.entries());
+      const plain = Buffer.from(JSON.stringify(obj), 'utf8');
+      const aad = Buffer.from('ACP_DB_PATH_ANCHORS_V1', 'utf8');
+      const encrypted = NativeCore.encryptAead(plain, aad);
+      fs.writeFileSync(anchorFile, encrypted);
+    } catch {
+      // Ignore write error in restricted environments
+    }
+  },
 
   async initDatabase(dbPath) {
     if (!dbPath) throw new Error("Database path required");
@@ -26,12 +77,64 @@ export const AEADStorageAdapter = {
     // Initialize Rust crypto layer (generates/fetches root key)
     NativeCore.init();
 
-    this._db = await open({
-      filename: dbPath,
-      driver: sqlite3.Database
-    });
+    const resolvedPath = dbPath === ':memory:' ? ':memory:' : path.resolve(dbPath);
+    const fileExistedBeforeOpen = resolvedPath !== ':memory:' && fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).size > 0;
 
-    await this._migrateDatabase(this._db);
+    this._loadPersistedPathAnchors();
+    this._dbPath = resolvedPath;
+
+    if (!fileExistedBeforeOpen) {
+      // Fresh database creation: reset per-path watermark
+      this._minValidStateVersion = 0;
+      if (resolvedPath !== ':memory:') {
+        this._savePersistedPathAnchor(resolvedPath, 0);
+      }
+    } else {
+      // Existing database file (cold boot / reload): enforce persisted high-water version for this path
+      this._minValidStateVersion = this._pathMinVersions.get(resolvedPath) || 0;
+    }
+
+    try {
+      this._db = await open({
+        filename: dbPath,
+        driver: sqlite3.Database
+      });
+
+      await this._migrateDatabase(this._db);
+    } catch (err) {
+      const msg = err.message ? err.message.toLowerCase() : '';
+      if (
+        msg.includes('corrupt') ||
+        msg.includes('file is not a database') ||
+        msg.includes('malformed') ||
+        msg.includes('unsupported')
+      ) {
+        console.error(`[AEADStorageAdapter] CRITICAL: Security database corrupted: ${err.message}. Quarantining.`);
+        if (this._db) {
+          try { await this._db.close(); } catch { /* ignore */ }
+          this._db = null;
+        }
+        if (resolvedPath !== ':memory:' && fs.existsSync(resolvedPath)) {
+          const corruptPath = `${resolvedPath}.corrupt.${Date.now()}`;
+          try {
+            fs.renameSync(resolvedPath, corruptPath);
+            if (fs.existsSync(`${resolvedPath}-wal`)) fs.renameSync(`${resolvedPath}-wal`, `${corruptPath}-wal`);
+            if (fs.existsSync(`${resolvedPath}-shm`)) fs.renameSync(`${resolvedPath}-shm`, `${corruptPath}-shm`);
+          } catch (renameErr) {
+            console.error('[AEADStorageAdapter] Failed to quarantine corrupt DB file:', renameErr);
+          }
+        }
+        // Re-open clean database
+        this._minValidStateVersion = 0;
+        this._db = await open({
+          filename: dbPath,
+          driver: sqlite3.Database
+        });
+        await this._migrateDatabase(this._db);
+      } else {
+        throw err;
+      }
+    }
   },
 
   /**
@@ -144,11 +247,43 @@ export const AEADStorageAdapter = {
       console.error("[AEADStorageAdapter] CRITICAL: Decryption/MAC verification failed for security state!");
       throw new Error("SECURITY_STATE_UNCERTAIN: Database integrity verification failed.");
     }
+
+    const pathAnchor = (this._dbPath && this._pathMinVersions.get(this._dbPath)) || 0;
+    const effectiveMinVersion = Math.max(this._minValidStateVersion, pathAnchor);
+
+    if (effectiveMinVersion > 0 && row.state_version < effectiveMinVersion) {
+      console.error(`[AEADStorageAdapter] CRITICAL: State version rollback detected! Row version: ${row.state_version}, Minimum valid version: ${effectiveMinVersion}`);
+      throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+    }
+
+    if (this._minValidStateVersion > 0) {
+      try {
+        const anchoredVersion = Number(NativeCore.getTransitionIntent());
+        if (Number.isFinite(anchoredVersion) && anchoredVersion > 0 && row.state_version < anchoredVersion) {
+          if (anchoredVersion === row.state_version + 1) {
+            console.warn(`[AEADStorageAdapter] Reconciling uncommitted power-loss intent: anchored=${anchoredVersion}, row=${row.state_version}`);
+            try { NativeCore.setTransitionIntent(row.state_version); } catch { /* ignore */ }
+          } else {
+            console.error(`[AEADStorageAdapter] CRITICAL: DPAPI hardware anchor rollback detected! Row version: ${row.state_version}, Anchored version: ${anchoredVersion}`);
+            throw new Error("SECURITY_STATE_UNCERTAIN: State version rollback detected.");
+          }
+        }
+      } catch (err) {
+        if (err.message?.includes('SECURITY_STATE_UNCERTAIN')) throw err;
+      }
+    }
     
     // Validate backend-anchored generation for rollback detection
     if (data.session_generation && row.backend_generation !== data.session_generation) {
        console.error(`[AEADStorageAdapter] CRITICAL: Backend generation mismatch! Row: ${row.backend_generation}, Payload: ${data.session_generation}`);
        throw new Error("SECURITY_STATE_UNCERTAIN: Backend generation rollback detected.");
+    }
+
+    if (row.state_version > this._minValidStateVersion) {
+      this._minValidStateVersion = row.state_version;
+      if (this._dbPath && this._dbPath !== ':memory:') {
+        this._savePersistedPathAnchor(this._dbPath, row.state_version);
+      }
     }
     
     // Inject the fast-query columns into the returned data object for business logic
@@ -206,12 +341,22 @@ export const AEADStorageAdapter = {
           [nextVersion, backendGen, serverEpoch, highestTime, graceSig, encryptedBlob]
         );
         if (insertResult.changes > 0) {
+          this._minValidStateVersion = nextVersion;
+          if (this._dbPath && this._dbPath !== ':memory:') {
+            this._savePersistedPathAnchor(this._dbPath, nextVersion);
+          }
+          try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
           return true;
         }
       }
       return false; // OCC conflict
     }
 
+    this._minValidStateVersion = nextVersion;
+    if (this._dbPath && this._dbPath !== ':memory:') {
+      this._savePersistedPathAnchor(this._dbPath, nextVersion);
+    }
+    try { NativeCore.setTransitionIntent(nextVersion); } catch { /* ignore */ }
     return true;
   },
 

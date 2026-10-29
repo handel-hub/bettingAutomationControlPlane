@@ -1,7 +1,8 @@
 // @ts-check
 import { Command } from '../../command/command.mjs';
-import { commandRouter } from '../../command/commandRouter.mjs';
+import { commandRouter, COMMAND_CAPABILITY_MAP } from '../../command/commandRouter.mjs';
 import { securityFacade } from '../../security-authority/facade.mjs';
+import { logger } from '../../shared/logging.mjs';
 
 /**
  * Creates and routes a Command from an HTTP request.
@@ -16,9 +17,17 @@ import { securityFacade } from '../../security-authority/facade.mjs';
  * @param {Function} [params.onSuccess]
  */
 export async function executeCommand({ req, res, category, type, target = null, payload = {}, capability = null, onSuccess = null }) {
-  if (capability) {
-    const authResult = securityFacade.authorize(capability);
+  const effectiveCapability = capability || COMMAND_CAPABILITY_MAP[type] || null;
+  if (effectiveCapability) {
+    const authResult = securityFacade.authorize(/** @type {any} */ (effectiveCapability));
     if (authResult.status !== 'OPERATIONAL') {
+      logger.warn({
+        traceId: req.traceId,
+        type,
+        capability: effectiveCapability,
+        securityState: securityFacade.getSystemState(),
+        reason: authResult.message
+      }, `[CommandAdapter] Access denied for command [${type}]: ${authResult.message}`);
       return res.status(403).json({
         success: false,
         code: 'CAP_001',
@@ -61,11 +70,38 @@ export async function executeCommand({ req, res, category, type, target = null, 
       data: routeResult.results[0] || null
     });
   } catch (err) {
-    const statusCode = err.code === 'LF-701' ? 400 : (err.status || 500);
+    let statusCode = err.status || err.statusCode || 500;
+    let errorCode = err.code || 'INTERNAL_FAULT';
+    let isRetryable = err.retryable || false;
+
+    const errMsg = err.message || '';
+    if (errorCode === 'LF-701' || errMsg.includes('[LF-701]')) {
+      statusCode = 400;
+      errorCode = 'LF-701';
+      isRetryable = false;
+    } else if (
+      errorCode === 'EXECUTION_HANDSHAKE_TIMEOUT' ||
+      errMsg.includes('Handshake timeout') ||
+      errMsg.includes('Timed out waiting for Execution Plane')
+    ) {
+      statusCode = 504;
+      errorCode = 'EXECUTION_HANDSHAKE_TIMEOUT';
+      isRetryable = true;
+    } else if (
+      errorCode === 'EXECUTION_PREEMPTED' ||
+      errMsg.includes('Transport server stopped') ||
+      errMsg.includes('connection aborted')
+    ) {
+      statusCode = 409;
+      errorCode = 'EXECUTION_PREEMPTED';
+      isRetryable = true;
+    }
+
     return res.status(statusCode).json({
       success: false,
-      code: err.code || 'INTERNAL_FAULT',
+      code: errorCode,
       error: err.message,
+      retryable: isRetryable,
       details: err.details || null
     });
   }

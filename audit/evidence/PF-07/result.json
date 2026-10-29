@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-07",
+  "invariant_ids": [
+    "INV-09"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-07-9b95f459"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-07 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-07",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-07 verified FIXED-VERIFIED: Ed25519 license signature binds accountId and enforces expiresAt"
+}

@@ -1,0 +1,23 @@
+{
+  "test_id": "EP-01",
+  "invariant_ids": [
+    "INV-12"
+  ],
+  "campaign": "TIER2_EP",
+  "correlation_ids": [
+    "ep-ipc-boundary"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "oversizedDisconnected": true,
+    "rawMsgEmitted": false,
+    "envErrEmitted": true
+  },
+  "side_effects": {
+    "unverifiedCommandExecuted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "PipeTransport disconnected >10MB frame and SecureIpcClient dropped invalid ExecutionEnvelope without emitting message event."
+}

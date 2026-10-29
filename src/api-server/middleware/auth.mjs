@@ -1,51 +1,69 @@
-// @ts-check
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { securityFacade } from '../../security-authority/facade.mjs';
 import { logger } from '../../shared/logging.mjs';
 
 export const authConfig = {
   activeToken: process.env.ACP_AUTH_TOKEN || null,
-  requireAuth: process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true'
+  requireAuth: process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true' || Boolean(process.env.ACP_AUTH_TOKEN)
 };
 
 /**
- * Initializes or loads the local development token.
- * Writes to .acp-dev-token for local frontend console discovery.
+ * Initializes or loads the local IPC authentication token.
+ * Writes to .acp-ipc-token with 0o600 permissions so the local Frontend console
+ * can authenticate across all execution environments.
  * @returns {string}
  */
-export function initDevToken() {
+export function initIpcToken() {
   if (authConfig.activeToken) {
+    authConfig.requireAuth = process.env.ACP_AUTH_REQUIRED !== 'false';
     return authConfig.activeToken;
   }
 
-  // Load stable token from disk if exists, otherwise generate
-  const tokenPath = path.join(process.cwd(), '.acp-dev-token');
+  const ipcTokenPath = path.join(process.cwd(), '.acp-ipc-token');
   let savedToken = null;
-  if (!process.env.ACP_AUTH_TOKEN && fs.existsSync(tokenPath)) {
+
+  if (!process.env.ACP_AUTH_TOKEN && fs.existsSync(ipcTokenPath)) {
     try {
-      savedToken = fs.readFileSync(tokenPath, 'utf8').trim();
+      const val = fs.readFileSync(ipcTokenPath, 'utf8').trim();
+      if (val.length >= 16) {
+        savedToken = val;
+      }
     } catch {}
   }
 
-  const generated = process.env.ACP_AUTH_TOKEN || savedToken || `dev_${crypto.randomBytes(16).toString('hex')}`;
+  const generated = process.env.ACP_AUTH_TOKEN || savedToken || `ipc_${crypto.randomBytes(32).toString('hex')}`;
   authConfig.activeToken = generated;
-  authConfig.requireAuth = process.env.NODE_ENV === 'production' || process.env.ACP_AUTH_REQUIRED === 'true';
+  authConfig.requireAuth = process.env.ACP_AUTH_REQUIRED !== 'false';
 
   try {
-    if (!savedToken) {
-      fs.writeFileSync(tokenPath, generated, { encoding: 'utf8', mode: 0o600 });
-      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Ephemeral dev token provisioned');
-    } else {
-      logger.info({ tokenFile: '.acp-dev-token', requireAuth: authConfig.requireAuth }, '[Auth] Persisted dev token loaded');
+    fs.writeFileSync(ipcTokenPath, generated, { encoding: 'utf8', mode: 0o600 });
+    if (process.platform === 'win32') {
+      try {
+        const username = process.env.USERNAME || (typeof os.userInfo === 'function' ? os.userInfo()?.username : null);
+        if (username) {
+          execFileSync('icacls', [ipcTokenPath, '/inheritance:r', '/grant:r', `${username}:(R,W)`, 'SYSTEM:(R,W)'], { stdio: 'ignore', windowsHide: true });
+        }
+      } catch {
+        // Fall back gracefully if icacls is restricted in current execution sandbox
+      }
     }
+    logger.info(
+      { tokenFile: '.acp-ipc-token', persisted: Boolean(savedToken), requireAuth: authConfig.requireAuth },
+      '[Auth] Local IPC authentication token ready'
+    );
   } catch (err) {
-    logger.warn({ err: err.message }, '[Auth] Could not write .acp-dev-token file');
+    logger.warn({ err: err.message }, '[Auth] Could not write .acp-ipc-token file');
   }
 
   return generated;
 }
+
+export const initDevToken = initIpcToken;
+
 
 /**
  * Validates whether a token string is valid against the active token.
@@ -77,14 +95,21 @@ export function ingressAuthMiddleware(req, res, next) {
     return next();
   }
 
-  // Exempt health-check and public system pings
-  if (req.path === '/api/v1/system/health' || req.path === '/api/v1/system/ping') {
+  // Exempt health-check, public system pings, and local pairing discovery
+  if (
+    req.path === '/api/v1/system/health' ||
+    req.path === '/api/v1/system/ping' ||
+    req.path === '/api/v1/system/network-endpoints' ||
+    req.path === '/health' ||
+    req.path === '/health/' ||
+    req.path === '/ping' ||
+    req.path === '/ping/'
+  ) {
     return next();
   }
 
-  const headerVal = req.headers.authorization || req.headers['x-acp-token'];
-  const queryVal = typeof req.query?.token === 'string' ? req.query.token : null;
-  const token = headerVal || queryVal;
+  // Enforce header-only authentication for HTTP REST (disallow query param token leak)
+  const token = req.headers.authorization || req.headers['x-acp-token'];
 
   if (!isValidToken(token)) {
     return res.status(401).json({
