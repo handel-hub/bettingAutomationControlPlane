@@ -15,10 +15,13 @@ export const automationRouter = Router();
 automationRouter.get('/snapshot', async (req, res) => {
   try {
     const store = getSharedStateStore();
-    await workspaceAggregator.getSnapshot();
+    const aggSnapshot = await workspaceAggregator.getSnapshot();
     const runtimeState = {
       lifecycle: workspaceAggregator.lifecycle,
       lifecycleMessage: workspaceAggregator.lifecycleMessage,
+      capabilities: aggSnapshot.capabilities,
+      capabilityList: aggSnapshot.capabilityList,
+      fleetReadiness: aggSnapshot.fleetReadiness,
       activeAccountIds: workspaceAggregator.activeAccountIds,
       stagedAccountIds: workspaceAggregator.stagedAccountIds,
       activeBrowsers: workspaceAggregator.activeAccountIds.size,
@@ -46,12 +49,14 @@ automationRouter.get('/strategy-catalog', (req, res) => {
 
 // POST start automation
 automationRouter.post('/start', async (req, res) => {
+  const { accountIds } = req.body || {};
   return executeCommand({
     req,
     res,
     category: 'Execution',
     type: 'START_AUTOMATION',
     capability: CAPABILITY.AUTOMATION_START,
+    payload: { accountIds: Array.isArray(accountIds) ? accountIds : undefined },
     onSuccess: async () => {
       workspaceAggregator.startAutomation();
       const snapshot = await workspaceAggregator.getSnapshot();

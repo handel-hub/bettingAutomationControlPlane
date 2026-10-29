@@ -1,11 +1,16 @@
 use napi::{Error, Result, Status};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use windows::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
 };
 use std::ptr::null_mut;
 use rand::RngCore;
+
+lazy_static::lazy_static! {
+    static ref COUNTER_MUTEX: Mutex<()> = Mutex::new(());
+}
 
 fn get_key_path() -> Result<PathBuf> {
     let mut path = dirs::config_dir().ok_or_else(|| {
@@ -24,13 +29,20 @@ pub fn initialize_root_key() -> Result<()> {
         let mut key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut key);
         
-        let encrypted_key = protect_data(&key)?;
+        let encrypted_key = protect_data(&key);
+        for b in key.iter_mut() {
+            *b = 0;
+        }
+        let encrypted_key = encrypted_key?;
         fs::write(&path, encrypted_key).map_err(|e| {
             Error::new(Status::GenericFailure, format!("Failed to write root key: {}", e))
         })?;
     } else {
         // Verify it can be unprotected (proves machine identity matches)
-        let _ = get_root_key()?;
+        let mut root_key = get_root_key()?;
+        for b in root_key.iter_mut() {
+            *b = 0;
+        }
     }
     Ok(())
 }
@@ -97,8 +109,11 @@ fn unprotect_data(data: &[u8]) -> Result<Vec<u8>> {
         );
 
         if result.is_ok() {
-            let out_slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
+            let out_slice = std::slice::from_raw_parts_mut(data_out.pbData, data_out.cbData as usize);
             let vec = out_slice.to_vec();
+            for b in out_slice.iter_mut() {
+                *b = 0;
+            }
             let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _));
             Ok(vec)
         } else {
@@ -117,7 +132,7 @@ fn get_counter_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn get_monotonic_counter() -> Result<u32> {
+fn read_monotonic_counter_unlocked() -> Result<u32> {
     let path = get_counter_path()?;
     if !path.exists() {
         return Ok(0);
@@ -134,13 +149,29 @@ pub fn get_monotonic_counter() -> Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+pub fn get_monotonic_counter() -> Result<u32> {
+    let _guard = COUNTER_MUTEX.lock().map_err(|_| {
+        Error::new(Status::GenericFailure, "Counter mutex poisoned".to_string())
+    })?;
+    read_monotonic_counter_unlocked()
+}
+
 pub fn increment_monotonic_counter() -> Result<u32> {
-    let current = get_monotonic_counter()?;
-    let next = current + 1;
+    let _guard = COUNTER_MUTEX.lock().map_err(|_| {
+        Error::new(Status::GenericFailure, "Counter mutex poisoned".to_string())
+    })?;
+    let current = read_monotonic_counter_unlocked()?;
+    let next = current.checked_add(1).ok_or_else(|| {
+        Error::new(Status::GenericFailure, "Monotonic counter overflow".to_string())
+    })?;
     let path = get_counter_path()?;
+    let tmp_path = path.with_extension("bin.tmp");
     let encrypted_data = protect_data(&next.to_le_bytes())?;
-    fs::write(&path, encrypted_data).map_err(|e| {
-        Error::new(Status::GenericFailure, format!("Failed to write counter: {}", e))
+    fs::write(&tmp_path, encrypted_data).map_err(|e| {
+        Error::new(Status::GenericFailure, format!("Failed to write temp counter: {}", e))
+    })?;
+    fs::rename(&tmp_path, &path).map_err(|e| {
+        Error::new(Status::GenericFailure, format!("Failed to commit counter atomically: {}", e))
     })?;
     Ok(next)
 }
@@ -156,15 +187,25 @@ fn get_intent_path() -> Result<PathBuf> {
 }
 
 pub fn set_transition_intent(next_version: u32) -> Result<()> {
+    let _guard = COUNTER_MUTEX.lock().map_err(|_| {
+        Error::new(Status::GenericFailure, "Counter mutex poisoned".to_string())
+    })?;
     let path = get_intent_path()?;
+    let tmp_path = path.with_extension("bin.tmp");
     let encrypted_data = protect_data(&next_version.to_le_bytes())?;
-    fs::write(&path, encrypted_data).map_err(|e| {
-        Error::new(Status::GenericFailure, format!("Failed to write intent: {}", e))
+    fs::write(&tmp_path, encrypted_data).map_err(|e| {
+        Error::new(Status::GenericFailure, format!("Failed to write temp intent: {}", e))
+    })?;
+    fs::rename(&tmp_path, &path).map_err(|e| {
+        Error::new(Status::GenericFailure, format!("Failed to commit intent atomically: {}", e))
     })?;
     Ok(())
 }
 
 pub fn clear_transition_intent() -> Result<()> {
+    let _guard = COUNTER_MUTEX.lock().map_err(|_| {
+        Error::new(Status::GenericFailure, "Counter mutex poisoned".to_string())
+    })?;
     let path = get_intent_path()?;
     if path.exists() {
         fs::remove_file(&path).map_err(|e| {
@@ -175,6 +216,9 @@ pub fn clear_transition_intent() -> Result<()> {
 }
 
 pub fn get_transition_intent() -> Result<i64> {
+    let _guard = COUNTER_MUTEX.lock().map_err(|_| {
+        Error::new(Status::GenericFailure, "Counter mutex poisoned".to_string())
+    })?;
     let path = get_intent_path()?;
     if !path.exists() {
         return Ok(-1);

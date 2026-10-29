@@ -21,6 +21,8 @@ import { securityFacade } from '../security-authority/facade.mjs';
 import { executionBoundaryManager } from './boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
 import { logger } from '../shared/logging.mjs';
+import { resolveExecutionScriptHash } from '../security-authority/execution/execution-integrity.mjs';
+import { ExecutionHandshakeTimeoutError } from '../state-store/types/errors.mjs';
 
 /**
  * Orchestrates the spawning, monitoring, typed command delivery, and termination of 
@@ -374,17 +376,35 @@ export class RuntimeManager extends EventEmitter {
 
     let targetScript = scriptPath || process.env.RUNTIME_ENTRY_SCRIPT;
     if (!targetScript) {
-      const realWorkerCandidate = path.resolve(__dirname, '../../../bettingAutomation/src/worker/index.mjs');
+      let cpRoot = __dirname;
+      while (cpRoot && (!fs.existsSync(path.join(cpRoot, 'package.json')) || !fs.existsSync(path.join(cpRoot, 'src')))) {
+        const parent = path.dirname(cpRoot);
+        if (parent === cpRoot) break;
+        cpRoot = parent;
+      }
+      const backRoot = path.resolve(cpRoot, '..');
+      const compiledCandidate = path.resolve(backRoot, 'bettingAutomation/dist/runner.cjs');
+      const realWorkerCandidate = path.resolve(backRoot, 'bettingAutomation/src/worker/index.mjs');
+      const launcherCandidate = path.resolve(backRoot, 'bettingAutomation/launcher/index.mjs');
+
       const isTest = process.env.NODE_ENV === 'test' ||
                      process.env.npm_lifecycle_event?.includes('test') ||
                      process.env.ACP_USE_MOCK_WORKER === 'true';
       const preferMock = isTest || options.useMockWorker === true;
-      if (!preferMock && fs.existsSync(realWorkerCandidate)) {
+      const preferCompiled = process.env.USE_COMPILED === 'true' || options.useCompiled === true;
+
+      if (!preferMock && preferCompiled && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
+      } else if (!preferMock && fs.existsSync(realWorkerCandidate)) {
         targetScript = realWorkerCandidate;
+      } else if (!preferMock && fs.existsSync(compiledCandidate)) {
+        targetScript = compiledCandidate;
+      } else if (!preferMock && fs.existsSync(launcherCandidate)) {
+        targetScript = launcherCandidate;
       } else if (options.useDevWorkerFallback !== false) {
         const isDev = process.env.NODE_ENV !== 'production' || process.env.ACP_DEV_MODE === 'true' || isTest;
         if (isDev) {
-          targetScript = path.resolve(__dirname, '../../test/fixtures/mock-orchestrated-worker.mjs');
+          targetScript = path.resolve(cpRoot, 'test/fixtures/mock-orchestrated-worker.mjs');
         }
       }
     }
@@ -405,6 +425,8 @@ export class RuntimeManager extends EventEmitter {
         appRootModified = true;
       }
     }
+
+    const resolvedSha256 = resolveExecutionScriptHash(targetScript, expectedSha256);
 
     let pid;
     try {
@@ -427,6 +449,29 @@ export class RuntimeManager extends EventEmitter {
         this.activeRuntimes.delete(exitedPid);
         runtimeHeartbeat.remove(exitedPid);
 
+        // Clean up stale Chromium lockfiles if left behind in session directories
+        try {
+          let cpRoot = __dirname;
+          while (cpRoot && (!fs.existsSync(path.join(cpRoot, 'package.json')) || !fs.existsSync(path.join(cpRoot, 'src')))) {
+            const parent = path.dirname(cpRoot);
+            if (parent === cpRoot) break;
+            cpRoot = parent;
+          }
+          const backRoot = path.resolve(cpRoot, '..');
+          const sessionsDir = path.resolve(backRoot, 'bettingAutomation/sessions');
+          if (fs.existsSync(sessionsDir)) {
+            const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isDirectory()) {
+                const lockFile = path.join(sessionsDir, entry.name, 'SingletonLock');
+                if (fs.existsSync(lockFile)) {
+                  fs.unlinkSync(lockFile);
+                }
+              }
+            }
+          }
+        } catch { /* best effort cleanup */ }
+
         // Only propagate state transition if this process was genuinely starting or actively tracked
         if (wasActive || wasStarting) {
           if (this.engineStatus !== 'ABORTED') {
@@ -439,7 +484,7 @@ export class RuntimeManager extends EventEmitter {
         } else {
           logger.info({ pid: exitedPid }, '[RuntimeManager] Cleanly reaped exit of already-terminated or stale process');
         }
-      }, targetScript, expectedSha256);
+      }, targetScript, resolvedSha256);
     } finally {
       if (appRootModified) {
         delete process.env.APP_ROOT;
@@ -459,7 +504,7 @@ export class RuntimeManager extends EventEmitter {
           this.terminateRuntime(pid);
           this.engineStatus = 'ABORTED';
           this.emit('handshakeTimeout', { pid, handshakeTimeoutMs });
-          executionBoundaryManager.abortConnection(new Error(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
+          executionBoundaryManager.abortConnection(new ExecutionHandshakeTimeoutError(`Handshake timeout (${handshakeTimeoutMs}ms) exceeded for PID ${pid}`));
         }
       }, handshakeTimeoutMs);
 

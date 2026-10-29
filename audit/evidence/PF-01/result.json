@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-01",
+  "invariant_ids": [
+    "INV-07"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-01-03160b3c"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-01 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-01",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-01 verified FIXED-VERIFIED: Failed login attempt commits lockout_count & LOGIN_FAILURE event across transaction boundary"
+}

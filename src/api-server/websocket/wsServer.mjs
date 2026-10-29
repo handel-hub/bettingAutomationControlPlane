@@ -41,7 +41,11 @@ export function resolveSystemIPv4Addresses() {
  * @returns {boolean}
  */
 export function isAllowedOrigin(origin) {
-  if (!origin || origin === 'null') return true;
+  // Non-browser clients omit Origin; sandboxed iframes send 'null'
+  if (!origin) return true;
+  if (origin === 'null') {
+    return process.env.ALLOW_NULL_ORIGIN === 'true';
+  }
 
   // Custom environment override
   if (process.env.ALLOWED_ORIGINS) {
@@ -55,12 +59,12 @@ export function isAllowedOrigin(origin) {
     const parsed = new URL(origin);
     const host = parsed.hostname.toLowerCase();
 
-    // 1. Allow standard loopback hostnames and IPv6 loopback
-    if (host === 'localhost' || host === '[::1]' || host === '::1') {
+    // 1. Allow standard loopback hostnames, IPv6 loopback, and local mDNS (.local)
+    if (host === 'localhost' || host === '[::1]' || host === '::1' || host.endsWith('.local') || host === os.hostname().toLowerCase()) {
       return true;
     }
 
-    // 2. Dynamically resolved system IPv4 addresses + RFC 1918 Private Subnets
+    // 2. Dynamically resolved host IPv4 addresses + loopback (127.0.0.0/8)
     if (net.isIPv4(host)) {
       if (resolveSystemIPv4Addresses().has(host)) {
         return true;
@@ -69,17 +73,17 @@ export function isAllowedOrigin(origin) {
       if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
         // 127.0.0.0/8 (Loopback)
         if (parts[0] === 127) return true;
-        // 10.0.0.0/8 (Private)
-        if (parts[0] === 10) return true;
-        // 192.168.0.0/16 (Private)
-        if (parts[0] === 192 && parts[1] === 168) return true;
-        // 172.16.0.0/12 (Private 172.16.0.0 - 172.31.255.255)
-        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        // Private LAN subnets only when explicitly enabled via ALLOW_LAN_ORIGINS=true
+        if (process.env.ALLOW_LAN_ORIGINS === 'true') {
+          if (parts[0] === 10) return true;
+          if (parts[0] === 192 && parts[1] === 168) return true;
+          if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        }
       }
     }
 
     // 3. Allow desktop / custom application schemes
-    if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:' || parsed.protocol === 'file:') {
+    if (parsed.protocol === 'app:' || parsed.protocol === 'vscode-webview:') {
       return true;
     }
 

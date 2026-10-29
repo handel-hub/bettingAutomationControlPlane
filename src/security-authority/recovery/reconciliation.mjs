@@ -1,8 +1,10 @@
 // @ts-check
 
+import crypto from 'crypto';
 import { AEADStorageAdapter } from '../persistence/aead-storage-adapter.mjs';
 import { backendClient, ProtocolError, Errors } from '../protocol/backend-client.mjs';
 import { NativeCore } from '../native/security-core.mjs';
+import { engineInstance } from '../decision-engine.mjs';
 import { Mutex } from '../../shared/mutex.mjs';
 
 /**
@@ -13,6 +15,22 @@ export class ReconciliationManager {
   constructor() {
     this.reconcileMutex = new Mutex();
     this.isReconciling = false;
+  }
+
+  /**
+   * Computes a deterministic SHA-256 digest of the local security state row.
+   * @param {any} currentState
+   * @returns {string}
+   */
+  _computeStateHash(currentState) {
+    const canonicalSummary = JSON.stringify({
+      state: currentState?.state || 'UNINITIALIZED',
+      stateVersion: Number(currentState?.state_version || 0),
+      sessionId: currentState?.session?.sessionId || null,
+      licenseId: currentState?.license?.id || currentState?.license?.licenseId || null,
+      licenseStatus: currentState?.license?.status || null
+    });
+    return crypto.createHash('sha256').update(canonicalSummary, 'utf8').digest('hex');
   }
 
   /**
@@ -81,8 +99,7 @@ export class ReconciliationManager {
    * @param {any} currentState 
    */
   async _performNetworkSync(currentState) {
-    // In a real implementation, auditLogHash is derived from the latest row in security_audit_log
-    const localStateHash = "mock_audit_hash"; 
+    const localStateHash = this._computeStateHash(currentState);
     
     // The backendClient already has exponential backoff for network errors
     const response = await backendClient.reconcile(
@@ -116,6 +133,12 @@ export class ReconciliationManager {
     };
 
     await AEADStorageAdapter.commitTransitionWithOCC(row.state_version, wipedState, "TAMPER_DETECTED");
+    if (engineInstance.inMemoryState) {
+      engineInstance.inMemoryState.state = /** @type {any} */ ("COMPROMISED");
+      engineInstance.inMemoryState.session = null;
+      engineInstance.inMemoryState.authorization = null;
+      engineInstance.inMemoryState.license = null;
+    }
     
     // Halt Execution Plane
     NativeCore.setRevokedSync(true);
@@ -145,6 +168,9 @@ export class ReconciliationManager {
 
       const success = await AEADStorageAdapter.commitTransitionWithOCC(row.state_version, syncedState, "RECONCILE_SYNC");
       if (success) {
+        if (engineInstance.inMemoryState) {
+          engineInstance.inMemoryState.state = /** @type {any} */ ("OPERATIONAL");
+        }
         // Record Audit Event
         await AEADStorageAdapter.writeEvent({
             event_type: "RECONCILIATION_SUCCESS",

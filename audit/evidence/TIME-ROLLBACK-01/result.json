@@ -1,0 +1,22 @@
+{
+  "test_id": "TIME-ROLLBACK-01",
+  "invariant_ids": [
+    "INV-05",
+    "INV-08"
+  ],
+  "campaign": "TIER2_TIME_ROLLBACK",
+  "correlation_ids": [
+    "dpapi-db-anchor"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "coldBootSnapshotRollbackDetected": true
+  },
+  "side_effects": {
+    "staleSnapshotAccepted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Whole-file SQLite snapshot replacement across cold restart detected via DPAPI high-water version anchor."
+}

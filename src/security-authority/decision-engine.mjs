@@ -55,12 +55,11 @@ export class DecisionEngine {
       machine: rawState.machine
     };
 
-    if (this.inMemoryState.state === SecurityState.REVOKED) {
-      NativeCore.setRevokedSync(true);
-      return;
-    }
-
-    if (this.inMemoryState.state === SecurityState.COMPROMISED) {
+    if (
+      this.inMemoryState.state === SecurityState.REVOKED ||
+      this.inMemoryState.state === SecurityState.COMPROMISED ||
+      this.inMemoryState.state === SecurityState.TAMPER_SUSPECTED
+    ) {
       NativeCore.setRevokedSync(true);
       return;
     }
@@ -83,6 +82,14 @@ export class DecisionEngine {
       const isMachineValid = NativeCore.verifyMachineIdentitySync();
       if (!isMachineValid) {
         this.inMemoryState.state = SecurityState.COMPROMISED;
+        try {
+          await StorageAdapter.commitTransitionWithOCC(
+            this.inMemoryState.state_version,
+            { ...this.inMemoryState, state: SecurityState.COMPROMISED },
+            TransitionEvent.IDENTITY_MISMATCH
+          );
+          this.inMemoryState.state_version += 1;
+        } catch { /* ignore */ }
         NativeCore.setRevokedSync(true);
         return;
       }
@@ -155,14 +162,19 @@ export class DecisionEngine {
     if (this.inMemoryState.authorization?.status !== 'VALID') {
       return safetyCaps;
     }
-    const baseCaps = [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
+    const strictCaps = Boolean(/** @type {any} */ (this.inMemoryState).license?.strictCapabilities);
+    const baseCaps = strictCaps
+      ? [CAPABILITY.AUTOMATION_STOP]
+      : [CAPABILITY.CONFIG_MODIFY, CAPABILITY.AUTOMATION_STOP, 'CAP_ACCOUNT_MANAGE'];
     const caps = Array.from(new Set([...baseCaps, ...(this.inMemoryState.authorization.capability_set || [])]));
     if (typeof this.activeExecutionChecker === 'function') {
       try {
         if (this.activeExecutionChecker()) {
-          return caps.filter(c => c !== 'CAP_AUTOMATION_START');
+          return caps.filter(c => c !== CAPABILITY.AUTOMATION_START);
         }
-      } catch { /* ignore */ }
+      } catch {
+        // Ignore checker errors
+      }
     }
     return caps;
   }

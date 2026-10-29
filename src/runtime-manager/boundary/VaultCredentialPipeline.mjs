@@ -1,11 +1,14 @@
 // @ts-check
+import crypto from 'crypto';
 import { NativeCore } from '../../security-authority/native/security-core.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 
 /**
  * VaultCredentialPipeline
  * 
- * Manages in-memory credential storage and delegation to the SQLite StateStore.
+ * Manages in-memory AEAD-encrypted credential storage and delegation to the SQLite StateStore.
+ * Plaintext strings are never retained in `_vault`; credentials are encrypted at rest in memory
+ * and decrypted on demand only for immediate IPC dispatch.
  */
 export class VaultCredentialPipeline {
   /**
@@ -14,12 +17,13 @@ export class VaultCredentialPipeline {
    */
   constructor(options = {}) {
     this.native = options.nativeCore || NativeCore;
-    /** @type {Map<string, { plaintext?: string, encryptedPassword?: Buffer, updatedAt: string }>} */
+    this._ephemeralKey = crypto.randomBytes(32);
+    /** @type {Map<string, { encryptedPassword: Buffer, iv?: Buffer, authTag?: Buffer, mode: 'native' | 'node', updatedAt: string }>} */
     this._vault = new Map();
   }
 
   /**
-   * Stores a credential into memory vault.
+   * Stores a credential into memory vault using AEAD encryption.
    * @param {string} accountId
    * @param {string} plaintextPassword
    */
@@ -35,15 +39,41 @@ export class VaultCredentialPipeline {
       return;
     }
 
-    this._vault.set(accountId, {
-      plaintext: plaintextPassword,
-      updatedAt: new Date().toISOString()
-    });
+    // Zeroize any previous buffer for this account before overwriting
+    this.evictCredential(accountId);
+
+    const aad = Buffer.from(`ACP_VAULT_${accountId}`, 'utf8');
+    const plainBuf = Buffer.from(plaintextPassword, 'utf8');
+    try {
+      const encryptedPassword = Buffer.from(this.native.encryptAead(plainBuf, aad));
+      plainBuf.fill(0);
+      this._vault.set(accountId, {
+        encryptedPassword,
+        mode: 'native',
+        updatedAt: new Date().toISOString()
+      });
+      return;
+    } catch {
+      // Fallback to ephemeral in-process AES-256-GCM when native storage root is not initialized in unit tests
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', this._ephemeralKey, iv);
+      cipher.setAAD(aad);
+      const encryptedPassword = Buffer.concat([cipher.update(plainBuf), cipher.final()]);
+      const authTag = cipher.getAuthTag();
+      plainBuf.fill(0);
+      this._vault.set(accountId, {
+        encryptedPassword,
+        iv,
+        authTag,
+        mode: 'node',
+        updatedAt: new Date().toISOString()
+      });
+    }
   }
 
   /**
    * Retrieves password for account on-demand.
-   * Returns plaintext string for immediate IPC dispatch.
+   * Returns plaintext string for immediate IPC dispatch without caching plaintext in the vault entry.
    * @param {string} accountId
    * @param {string} [fallbackPassword]
    * @returns {string}
@@ -52,20 +82,26 @@ export class VaultCredentialPipeline {
     const isMasked = (pwd) => !pwd || pwd === '[PROTECTED]' || pwd.includes('***') || pwd.includes('???') || pwd.includes('•••');
 
     const entry = this._vault.get(accountId);
-    if (entry && entry.plaintext && !isMasked(entry.plaintext)) {
-      return entry.plaintext;
-    }
-    if (entry && entry.encryptedPassword) {
+    if (entry && Buffer.isBuffer(entry.encryptedPassword)) {
       try {
         const aad = Buffer.from(`ACP_VAULT_${accountId}`, 'utf8');
-        const decryptedBuf = this.native.decryptAead(entry.encryptedPassword, aad);
-        const plaintext = decryptedBuf.toString('utf8');
-        decryptedBuf.fill(0);
-        if (plaintext && !isMasked(plaintext)) {
-          entry.plaintext = plaintext;
-          return plaintext;
+        let decryptedBuf;
+        if (entry.mode === 'native') {
+          decryptedBuf = Buffer.from(this.native.decryptAead(entry.encryptedPassword, aad));
+        } else if (entry.mode === 'node' && entry.iv && entry.authTag) {
+          const decipher = crypto.createDecipheriv('aes-256-gcm', this._ephemeralKey, entry.iv);
+          decipher.setAAD(aad);
+          decipher.setAuthTag(entry.authTag);
+          decryptedBuf = Buffer.concat([decipher.update(entry.encryptedPassword), decipher.final()]);
         }
-      } catch { /* ignore */ }
+        if (decryptedBuf) {
+          const plaintext = decryptedBuf.toString('utf8');
+          decryptedBuf.fill(0);
+          if (plaintext && !isMasked(plaintext)) {
+            return plaintext;
+          }
+        }
+      } catch { /* ignore and fall through to SQLite store */ }
     }
 
     // Check authoritative SQLite State Store directly via getRawPassword
@@ -92,13 +128,15 @@ export class VaultCredentialPipeline {
   }
 
   /**
-   * Removes credentials from memory vault.
+   * Removes credentials from memory vault and zeroes underlying buffers.
    * @param {string} accountId
    */
   evictCredential(accountId) {
     const entry = this._vault.get(accountId);
     if (entry) {
-      if (entry.encryptedPassword) entry.encryptedPassword.fill(0);
+      if (Buffer.isBuffer(entry.encryptedPassword)) entry.encryptedPassword.fill(0);
+      if (Buffer.isBuffer(entry.iv)) entry.iv.fill(0);
+      if (Buffer.isBuffer(entry.authTag)) entry.authTag.fill(0);
       this._vault.delete(accountId);
     }
   }
@@ -112,11 +150,13 @@ export class VaultCredentialPipeline {
   }
 
   /**
-   * Clears the entire vault (e.g. on user logout).
+   * Clears the entire vault (e.g. on user logout) and safely zeroes all buffers.
    */
   clear() {
     for (const entry of this._vault.values()) {
-      entry.encryptedPassword.fill(0);
+      if (Buffer.isBuffer(entry.encryptedPassword)) entry.encryptedPassword.fill(0);
+      if (Buffer.isBuffer(entry.iv)) entry.iv.fill(0);
+      if (Buffer.isBuffer(entry.authTag)) entry.authTag.fill(0);
     }
     this._vault.clear();
   }

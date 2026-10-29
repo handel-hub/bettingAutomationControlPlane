@@ -82,4 +82,6 @@ src/security-authority/test/databases
 *.jsc
 acp-bytenode-compat-lab/runners/cjs/
 acp-bytenode-compat-lab/runners/bytenode/
+.security_authority/
+data/
 

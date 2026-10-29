@@ -1,0 +1,23 @@
+{
+  "test_id": "CP-TAMPER-01",
+  "invariant_ids": [
+    "INV-03",
+    "INV-09"
+  ],
+  "campaign": "TIER1_CP_TAMPER",
+  "correlation_ids": [
+    "b190183c-f691-43cc-ad96-11c58e2d75a7"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "crossAccountLicenseRejected": true,
+    "forgedSignatureRejected": true
+  },
+  "side_effects": {
+    "localSessionPromoted": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Control Plane LicenseManager rejected both forged Ed25519 signature and cross-account license payload."
+}

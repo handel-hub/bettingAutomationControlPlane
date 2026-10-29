@@ -1,0 +1,31 @@
+{
+  "test_id": "BASE-01",
+  "invariant_ids": [
+    "INV-01",
+    "INV-03",
+    "INV-04",
+    "INV-05",
+    "INV-09"
+  ],
+  "campaign": "PHASE3_BASELINE_JOURNEY",
+  "correlation_ids": [
+    "0c0a69fd-6842-4e99-8701-a7a50d97c0fe",
+    "32af8829-779e-45eb-a625-15ad5c7dec6d"
+  ],
+  "control_result": {
+    "passed": true,
+    "renewedGeneration": 3,
+    "cpPermittedWhenActive": true,
+    "cpPermittedAfterLogout": false
+  },
+  "attack_result": {
+    "notApplicable": true,
+    "baselineJourney": true
+  },
+  "side_effects": {
+    "dbStateTransition": "REGISTERED -> AUTHENTICATED -> PAID (PRO) -> AUTHORIZED -> RENEWED (gen 2) -> LOGGED_OUT",
+    "cpStateTransition": "SECURITY_STATE_READY -> OPERATIONAL -> SECURITY_STATE_READY"
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "End-to-end normal journey baseline completed across Backend, PostgreSQL, and Control Plane SecurityFacade."
+}

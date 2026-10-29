@@ -15,9 +15,27 @@ import { WebSocket } from 'ws';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+import { CAPABILITY } from '../../src/security-authority/authorization/capabilities.mjs';
+import { engineInstance } from '../../src/security-authority/decision-engine.mjs';
+
+import { StateStore } from '../../src/state-store/StateStore.mjs';
+import { setSharedStateStore, resetSharedStateStore } from '../../src/state-store/sharedStateStore.mjs';
+
 test('Phase 20: Full End-to-End Multi-Process Integration Test', async (t) => {
   NativeCore.init();
   const devToken = initDevToken();
+  const isolatedStore = new StateStore({ dbPath: ':memory:', userId: 'usr_e2e_isolated' });
+  isolatedStore.initialize();
+  setSharedStateStore(isolatedStore);
+
+  // @ts-ignore
+  engineInstance.inMemoryState = {
+    state: 'OPERATIONAL',
+    authorization: {
+      status: 'VALID',
+      capability_set: [CAPABILITY.AUTOMATION_START, CAPABILITY.AUTOMATION_STOP]
+    }
+  };
   // @ts-ignore
   securityFacade.authorize = () => ({ status: 'OPERATIONAL' });
   // @ts-ignore
@@ -45,6 +63,7 @@ test('Phase 20: Full End-to-End Multi-Process Integration Test', async (t) => {
     NativeCore.stopSecurePipeServer();
     await server.close();
     runtimeManager.spawnRuntime = originalSpawn;
+    resetSharedStateStore();
   });
 
   await t.test('executes complete business lifecycle: Prelude -> Register -> Start -> Bet -> Stop', async () => {

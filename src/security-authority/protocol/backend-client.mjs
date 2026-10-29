@@ -127,6 +127,16 @@ export class BackendClient {
   }
 
   /**
+   * Internal fetch wrapper.
+   * @param {string} url
+   * @param {RequestInit} [options]
+   * @returns {Promise<Response>}
+   */
+  async _fetchWithPinning(url, options = {}) {
+    return fetch(url, options);
+  }
+
+  /**
    * Internal HTTP POST wrapper with exponential backoff for network-level failures.
    * Does NOT retry semantic/protocol errors.
    * @param {string} path 
@@ -180,7 +190,6 @@ export class BackendClient {
           '/api/v1/sessions/logout',
           '/api/v1/accounts',
           '/api/v1/billing/checkout',
-          '/api/v1/billing/checkout/verify',
           '/api/v1/billing/subscription/cancel',
           '/api/v1/billing/subscription/resume',
           '/api/v1/settings/intent',
@@ -347,6 +356,7 @@ export class BackendClient {
       nonceValidated: data.nonceValidated,
       license: data.license,
       capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
       signatures: envelope?.signatures
     };
   }
@@ -384,6 +394,7 @@ export class BackendClient {
       nonceValidated: data.nonceValidated,
       license: data.license,
       capabilities: data.capabilities,
+      graceToken: data.graceToken || null,
       signatures: envelope?.signatures
     };
   }
@@ -530,11 +541,11 @@ export class BackendClient {
    */
   async updateGlobalConfig(category, values) {
     const url = `${this.endpoint}/api/v1/automation/config/${category}`;
-    const res = await fetch(url, {
+    const res = await this._fetchWithPinning(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}` } : {})
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
       },
       body: JSON.stringify({ values })
     });
@@ -594,11 +605,11 @@ export class BackendClient {
    */
   async toggleBetCycle(accountId, enabled) {
     const url = `${this.endpoint}/api/v1/automation/accounts/${accountId}/bet-cycle`;
-    const res = await fetch(url, {
+    const res = await this._fetchWithPinning(url, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}` } : {})
+        ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {})
       },
       body: JSON.stringify({ enabled })
     });
@@ -721,9 +732,10 @@ export class BackendClient {
     const url = `${this.endpoint}/api/v1/platforms`;
     const headers = {
       'Accept': 'application/json',
+      ...(this.sessionId ? { 'Authorization': `Bearer ${this.sessionId}`, 'x-session-id': this.sessionId } : {}),
       ...(options.ifNoneMatch ? { 'If-None-Match': options.ifNoneMatch } : {})
     };
-    const res = await fetch(url, { headers });
+    const res = await this._fetchWithPinning(url, { headers });
     if (res.status === 304) {
       return { notModified: true, etag: options.ifNoneMatch };
     }

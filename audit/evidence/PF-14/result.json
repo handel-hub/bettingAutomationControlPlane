@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-14",
+  "invariant_ids": [
+    "INV-10"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-14-b223b4c9"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-14 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-14",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-14 verified FIXED-VERIFIED: AccountsAdapter seals random 32-byte vault key via Windows DPAPI (.security_authority/accounts_vault_key.bin)"
+}

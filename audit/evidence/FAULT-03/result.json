@@ -1,0 +1,22 @@
+{
+  "test_id": "FAULT-03",
+  "invariant_ids": [
+    "INV-04",
+    "INV-08"
+  ],
+  "campaign": "PHASE5_FAULT_RECOVERY",
+  "correlation_ids": [
+    "3c2b086e-9a2f-4643-b6ee-f2b6865b11d7"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "renewRejectedAfterLicenseRevocation": true
+  },
+  "side_effects": {
+    "zombieSessionSurvivedRevocation": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Administrative LICENSE revocation cascaded to active session and blocked session renewal."
+}

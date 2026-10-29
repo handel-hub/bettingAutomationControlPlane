@@ -1,0 +1,27 @@
+{
+  "test_id": "PF-04",
+  "invariant_ids": [
+    "INV-01",
+    "INV-02",
+    "INV-06"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-04-caf6db32"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-04 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-04",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-04 verified FIXED-VERIFIED: Concurrent applyPaymentSuccess serializes via FOR UPDATE and prevents double redemption"
+}

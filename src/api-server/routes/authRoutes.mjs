@@ -6,6 +6,7 @@ import { repositoryFactory } from '../../repositories/repositoryFactory.mjs';
 import { wsServer } from '../websocket/wsServer.mjs';
 import { getSharedStateStore } from '../../state-store/sharedStateStore.mjs';
 import { resolveAuthoritativeLifecycleState } from '../../state/lifecycleStateResolver.mjs';
+import { workspaceAggregator } from '../../state/workspaceAggregator.mjs';
 
 export const authRouter = Router();
 
@@ -15,20 +16,30 @@ export const authRouter = Router();
 async function broadcastAuthTransition() {
   const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
   const lifecycleState = resolveAuthoritativeLifecycleState({ billingSnapshot });
+  const automationSnapshot = await workspaceAggregator.getSnapshot();
 
   try {
     const store = getSharedStateStore();
     store.preludeProjection.invalidate();
     const prelude = store.getPreludeSnapshot({
       lifecycleState,
+      automationLifecycle: automationSnapshot.lifecycle,
+      automationMessage: automationSnapshot.lifecycleMessage,
+      automationCapabilities: automationSnapshot.capabilities,
+      automationAccounts: automationSnapshot.accounts,
       acpConnected: true,
       backendConnected: backendSyncService.isConnected
     });
-    wsServer.broadcast('app:prelude', prelude);
+    wsServer.broadcast('app:prelude', prelude.payload || prelude);
   } catch { /* ignore */ }
 
   wsServer.broadcast('app:state', lifecycleState);
   wsServer.broadcast('billing:snapshot', billingSnapshot);
+  wsServer.broadcast('automation:snapshot', automationSnapshot);
+  wsServer.broadcast('automation:delta', {
+    type: 'CAPABILITIES_CHANGED',
+    capabilities: automationSnapshot.capabilities
+  });
 
   try {
     const accountsView = await repositoryFactory.getAccountsRepo().list();

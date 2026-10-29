@@ -1,0 +1,27 @@
+{
+  "test_id": "PAY-04",
+  "invariant_ids": [
+    "INV-01",
+    "INV-02"
+  ],
+  "campaign": "TIER1_PAY",
+  "correlation_ids": [
+    "tx_ref_pay04_3919cf6a-e5fd-41c8-8cd8-1b7f7036294e",
+    "7a2be9b8-3ebd-490a-a045-faa123021efd",
+    "e677aefd-c4c1-4f99-a9f1-2a8b76498f91"
+  ],
+  "control_result": {
+    "passed": true,
+    "victimInitiatedReference": "tx_ref_pay04_3919cf6a-e5fd-41c8-8cd8-1b7f7036294e"
+  },
+  "attack_result": {
+    "attackerVerifyHttpStatus": 200,
+    "expectedHttpStatus": 403,
+    "invoiceCreditedToAccountId": "e677aefd-c4c1-4f99-a9f1-2a8b76498f91"
+  },
+  "side_effects": {
+    "crossAccountReferenceTheftSucceeded": true
+  },
+  "status": "EXECUTED-FAIL",
+  "notes": "FINDING RT-F01: Account B redeemed Account A checkout reference because handleVerify does not verify tx.data.customer.email against the caller email or bind checkout references on initiation."
+}

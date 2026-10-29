@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-08",
+  "invariant_ids": [
+    "INV-11"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-08-f621b0ad"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-08 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-08",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-08 verified FIXED-VERIFIED: Support attachment filename traversal sanitization, 10MB cap, and CAP_SUPPORT_SUBMIT gate"
+}

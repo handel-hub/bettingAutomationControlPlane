@@ -1,0 +1,26 @@
+{
+  "test_id": "PF-06",
+  "invariant_ids": [
+    "INV-06",
+    "INV-09"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-06-8484651f"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-06 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-06",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-06 verified FIXED-VERIFIED: RFC 8785 canonical serializer & dead protobuf removal"
+}

@@ -7,6 +7,7 @@ import { backendSyncService } from '../sync/backendSyncService.mjs';
 import { runtimeManager } from '../runtime-manager/runtime-manager.mjs';
 import { executionBoundaryManager } from '../runtime-manager/boundary/index.mjs';
 import { workspaceAggregator } from '../state/workspaceAggregator.mjs';
+import { operationTracker } from '../state/operationTracker.mjs';
 import { ExecutionPayloadBuilder } from '../runtime-manager/boundary/ExecutionPayloadBuilder.mjs';
 import { vaultCredentialPipeline } from '../runtime-manager/boundary/VaultCredentialPipeline.mjs';
 import { getSharedStateStore } from '../state-store/sharedStateStore.mjs';
@@ -20,18 +21,6 @@ export function registerDefaultCommandHandlers() {
   // Execution category - Guarded strictly: Execution Plane is disabled in degraded mode
   commandRouter.register('Execution', 'START_AUTOMATION', async (cmd) => {
     logger.info({ traceId: cmd.traceId, payload: cmd.payload }, '[Command] START_AUTOMATION executing');
-
-    const isDev = (process.env.ACP_DEV_MODE === 'true' || 
-                   process.env.NODE_ENV === 'development' || 
-                   process.argv.includes('--dev')) && 
-                  process.env.ACP_FORCE_DEGRADED !== 'true' && 
-                  process.env.NODE_ENV !== 'production';
-
-    // Development mode self-healing: automatically restore operational status if transiently degraded
-    if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync() || !securityFacade.isOperational())) {
-      logger.info('[Command] Development mode self-healing: re-asserting dev session before START_AUTOMATION');
-      await securityFacade.initDevSession();
-    }
 
     if (securityFacade.isDegraded()) {
       throw new Error('[LF-701] Execution Denied: Control Plane is in DEGRADED mode (Backend or Internet Offline)');
@@ -56,6 +45,45 @@ export function registerDefaultCommandHandlers() {
         workspaceAggregator.setLifecycle('STOPPED');
       }
 
+      // If explicit accountIds were provided in the command payload, synchronize stagedAccountIds
+      if (Array.isArray(cmd.payload?.accountIds) && cmd.payload.accountIds.length > 0) {
+        workspaceAggregator.stagedAccountIds.clear();
+        for (const id of cmd.payload.accountIds) {
+          workspaceAggregator.stagedAccountIds.add(id);
+        }
+        workspaceAggregator.hasInitializedStaging = true;
+      }
+
+      // If staging was never initialized (e.g. headless/test start), auto-seed up to maxCapacity
+      if (!workspaceAggregator.hasInitializedStaging && workspaceAggregator.stagedAccountIds.size === 0) {
+        const nonSuspended = (store.accountsContainer?.getAll?.() || []).filter(acc => acc.backendState !== 'SUSPENDED');
+        for (const acc of nonSuspended.slice(0, 2)) {
+          workspaceAggregator.stagedAccountIds.add(acc.id);
+        }
+        workspaceAggregator.hasInitializedStaging = true;
+      }
+
+      const stagedIds = Array.from(workspaceAggregator.stagedAccountIds || []);
+
+      // If any targeted staged account is missing its local password (e.g. after cache reset),
+      // self-heal from the authoritative Backend snapshot before spawning the worker.
+      const allAccounts = store.accountsContainer?.getAll?.() || [];
+      const targetAccounts = stagedIds.length > 0
+        ? allAccounts.filter(acc => workspaceAggregator.stagedAccountIds.has(acc.id))
+        : allAccounts;
+      const hasMissingPassword = targetAccounts.length > 0 && targetAccounts.some(acc => {
+        const pwd = ExecutionPayloadBuilder.resolvePassword(acc, store);
+        return !pwd || pwd.trim() === '';
+      });
+      if (hasMissingPassword && backendSyncService.client?.sessionId) {
+        try {
+          logger.info('[Command] Refreshing authoritative account credentials from Backend before starting automation...');
+          await backendSyncService.pullAuthoritativeSnapshot();
+        } catch (syncErr) {
+          logger.warn({ err: syncErr.message }, '[Command] Pre-start snapshot refresh warning');
+        }
+      }
+
       // 1. Record Desired State = RUNNING
       store.lifecycle.setDesiredState('RUNNING', 'USER_COMMAND_START');
 
@@ -77,7 +105,10 @@ export function registerDefaultCommandHandlers() {
 
       // 4. Two-Phase Spawn Commit: Send startCluster instruction over pipe with rollback on failure
       try {
-        await executionBoundaryManager.startCluster({ traceId: cmd.traceId });
+        await executionBoundaryManager.startCluster({ 
+          traceId: cmd.traceId,
+          targetAccountIds: stagedIds
+        });
       } catch (clusterErr) {
         logger.error({ err: clusterErr.message, pid }, '[Command] Failed to start cluster on newly spawned runtime. Rolling back process.');
         runtimeManager.terminateRuntime(pid);
@@ -105,29 +136,21 @@ export function registerDefaultCommandHandlers() {
         await executionBoundaryManager.stopCluster(3000, { traceId: cmd.traceId });
       } catch (stopErr) {
         logger.warn({ err: stopErr.message }, '[Command] Graceful stopCluster timed out or failed. Enforcing force-kill fallback.');
-        runtimeManager.terminateAll();
       } finally {
-        // Enforce physical process termination and await OS death on Windows
-        runtimeManager.terminateAll();
+        // Enforce physical process termination and await OS death BEFORE clearing activeRuntimes
         if (typeof runtimeManager.terminateAllAndWait === 'function') {
           await runtimeManager.terminateAllAndWait(2500);
         }
+        runtimeManager.terminateAll();
         executionBoundaryManager.stopServer();
 
-        // 3. Update Observed State = STOPPED
+        // 3. Clear any pending tactical operations & update Observed State = STOPPED
+        operationTracker.failAllPending('AUTOMATION_STOPPED');
         store.lifecycle.setObservedState('STOPPED', 'STOP_COMPLETED');
-        workspaceAggregator.setLifecycle('STOPPED');
-
-        // 4. Dev mode self-healing: clear any lingering revocation
-        const isDev = (process.env.ACP_DEV_MODE === 'true' || 
-                       process.env.NODE_ENV === 'development' || 
-                       process.argv.includes('--dev')) && 
-                      process.env.ACP_FORCE_DEGRADED !== 'true' && 
-                      process.env.NODE_ENV !== 'production';
-        if (isDev && (securityFacade.isDegraded() || securityFacade.isSessionRevokedSync())) {
-          logger.info('[Command] Re-asserting Local Developer Operational Mode after automation stop');
-          await securityFacade.initDevSession();
+        if (store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+          store.accounts.resetObservedStates('STOP_COMPLETED');
         }
+        workspaceAggregator.stopAutomation();
       }
 
       return { stopped: true };
@@ -147,6 +170,9 @@ export function registerDefaultCommandHandlers() {
       } catch {
         runtimeManager.terminateAll();
       } finally {
+        if (typeof runtimeManager.terminateAllAndWait === 'function') {
+          await runtimeManager.terminateAllAndWait(1000);
+        }
         runtimeManager.terminateAll();
         executionBoundaryManager.stopServer();
       }
@@ -159,9 +185,13 @@ export function registerDefaultCommandHandlers() {
         }
       } catch {}
 
-      // 3. Mark observed state STOPPED
+      // 3. Clear pending operations & mark observed state STOPPED
+      operationTracker.failAllPending('EMERGENCY_STOP');
       store.lifecycle.setObservedState('STOPPED', 'EMERGENCY_STOP_COMPLETED');
-      workspaceAggregator.setLifecycle('STOPPED');
+      if (store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+        store.accounts.resetObservedStates('EMERGENCY_STOP_COMPLETED');
+      }
+      workspaceAggregator.stopAutomation();
 
       logger.warn({ traceId: cmd.traceId }, '[Command] EMERGENCY_STOP completed: all runtimes killed, account leases frozen.');
       return { emergencyStopped: true, halted: true };
@@ -276,7 +306,8 @@ export function registerDefaultCommandHandlers() {
       const store = getSharedStateStore();
       store.accounts.upsert(created);
     } catch { /* ignore */ }
-    workspaceAggregator.stageAccount(created.id);
+    // Do not auto-stage newly registered accounts into the automation fleet;
+    // they remain in general portfolio storage until explicitly staged by the operator.
     try {
       const syncResult = await backendSyncService.syncMutation('REGISTER_ACCOUNT', {
         id: created.id,
@@ -293,10 +324,24 @@ export function registerDefaultCommandHandlers() {
         if (cmd.payload?.accountPassword) {
           vaultCredentialPipeline.storeCredential(syncResult.id, cmd.payload.accountPassword);
         }
-        workspaceAggregator.unstageAccount(oldId);
-        workspaceAggregator.stageAccount(created.id);
+        if (workspaceAggregator.stagedAccountIds.has(oldId)) {
+          workspaceAggregator.unstageAccount(oldId);
+          workspaceAggregator.stageAccount(created.id);
+        }
       }
     } catch (err) {
+      if (err?.isPolicyRejection) {
+        try {
+          await repositoryFactory.getAccountsRepo().delete(created.id);
+        } catch { /* ignore */ }
+        try {
+          const store = getSharedStateStore();
+          store.accounts.delete(created.id);
+        } catch { /* ignore */ }
+        vaultCredentialPipeline.evictCredential(created.id);
+        workspaceAggregator.unstageAccount(created.id);
+        throw err;
+      }
       logger.warn({ err: err.message }, '[Command] Backend sync queued in outbox for REGISTER_ACCOUNT');
     }
     return created;

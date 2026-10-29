@@ -4,6 +4,7 @@ import { migration002 } from './migrations/002_desired_vs_observed_state.mjs';
 import { migration003 } from './migrations/003_account_password_persistence.mjs';
 import { migration004 } from './migrations/004_platform_display_name_and_actions.mjs';
 import { migration005 } from './migrations/005_purge_synthetic_dev_records.mjs';
+import { migration006 } from './migrations/006_encrypt_plaintext_passwords.mjs';
 
 /**
  * Migration manager for ACP State Store SQLite schema.
@@ -14,7 +15,7 @@ export class SchemaMigrator {
    * @param {import('../persistence/SqliteStorageEngine.mjs').SqliteStorageEngine} engine
    * @param {Array<any>} [migrations]
    */
-  constructor(engine, migrations = [migration001, migration002, migration003, migration004, migration005]) {
+  constructor(engine, migrations = [migration001, migration002, migration003, migration004, migration005, migration006]) {
     this.engine = engine;
     this.migrations = migrations.sort((a, b) => a.version - b.version);
   }

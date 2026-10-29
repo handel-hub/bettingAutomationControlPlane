@@ -88,7 +88,8 @@ export class CanonicalSerializer {
       timestamp: envelope.timestamp,
       server_epoch: Number(envelope.server_epoch ?? envelope.epoch ?? 1),
       payload: envelope.payload,
-      generation: Number(envelope.generation ?? 1)
+      generation: Number(envelope.generation ?? 1),
+      ...(envelope.nonce ? { nonce: String(envelope.nonce) } : {})
     };
 
     const canonicalString = CanonicalSerializer.canonicalStringify(envelopeToVerify);

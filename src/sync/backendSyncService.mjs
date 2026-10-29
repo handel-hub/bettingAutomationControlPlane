@@ -9,6 +9,7 @@ import { machineIdentity } from '../security-authority/identity/machine-identity
 import { NativeCore } from '../security-authority/native/security-core.mjs';
 import { wsServer } from '../api-server/websocket/wsServer.mjs';
 import { securityFacade } from '../security-authority/facade.mjs';
+import { licenseManager } from '../security-authority/licensing/license-manager.mjs';
 import { clock } from '../security-authority/time/clock.mjs';
 import { FreshnessEvaluator } from '../state-store/hydration/FreshnessEvaluator.mjs';
 import { logger } from '../shared/logging.mjs';
@@ -36,6 +37,8 @@ export class BackendSyncService {
     this.isConnected = false;
     this.isHydrated = false;
     this.lastSyncTimestamp = null;
+    /** @type {any} */
+    this.lastGraceToken = null;
     /** @type {bigint | null} */
     this.lastSyncHrtime = null;
     /** @type {number} */
@@ -65,7 +68,11 @@ export class BackendSyncService {
     if (!fs.existsSync(secDir)) {
       try { fs.mkdirSync(secDir, { recursive: true }); } catch { /* ignore */ }
     }
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.npm_lifecycle_event?.includes('test'));
+    const isTest =
+      process.env.NODE_ENV === 'test' ||
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      process.execArgv.includes('--test') ||
+      Boolean(process.env.npm_lifecycle_event?.includes('test'));
     const defaultCachePath = isTest
       ? path.join(os.tmpdir(), `acp_test_cache_${process.pid}.enc`)
       : path.join(secDir, 'acp_cache.enc');
@@ -111,6 +118,41 @@ export class BackendSyncService {
   }
 
   /**
+   * Encrypts an outbox mutation payload using NativeCore AEAD before SQLite persistence.
+   * @private
+   * @param {any} payload
+   * @returns {string}
+   */
+  _encryptOutboxPayload(payload) {
+    const jsonStr = JSON.stringify(payload);
+    try {
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const encrypted = NativeCore.encryptAead(Buffer.from(jsonStr, 'utf8'), aad);
+      return `enc:v1:${Buffer.from(encrypted).toString('base64')}`;
+    } catch {
+      return jsonStr;
+    }
+  }
+
+  /**
+   * Decrypts an outbox mutation payload loaded from SQLite persistence.
+   * @private
+   * @param {string} rawPayload
+   * @returns {any}
+   */
+  _decryptOutboxPayload(rawPayload) {
+    if (typeof rawPayload === 'string' && rawPayload.startsWith('enc:v1:')) {
+      const cipherBuf = Buffer.from(rawPayload.slice('enc:v1:'.length), 'base64');
+      const aad = Buffer.from('ACP_SYNC_OUTBOX_V1', 'utf8');
+      const plainBuf = NativeCore.decryptAead(cipherBuf, aad);
+      const str = Buffer.from(plainBuf).toString('utf8');
+      plainBuf.fill(0);
+      return JSON.parse(str);
+    }
+    return JSON.parse(rawPayload);
+  }
+
+  /**
    * Hydrates pending outbox entries from persistence.
    * @private
    */
@@ -125,17 +167,19 @@ export class BackendSyncService {
       const existingIds = new Set(this.outbox.map(i => i.id));
       for (const row of rows) {
         if (!existingIds.has(row.id)) {
-          this.outbox.push({
-            id: row.id,
-            mutationType: row.mutation_type,
-            payload: JSON.parse(row.payload_json),
-            attempts: row.attempts,
-            status: row.status,
-            createdAt: row.created_at,
-            nextRetryAt: row.next_retry_at,
-            lastError: row.last_error
-          });
-          existingIds.add(row.id);
+          try {
+            this.outbox.push({
+              id: row.id,
+              mutationType: row.mutation_type,
+              payload: this._decryptOutboxPayload(row.payload_json),
+              attempts: row.attempts,
+              status: row.status,
+              createdAt: row.created_at,
+              nextRetryAt: row.next_retry_at,
+              lastError: row.last_error
+            });
+            existingIds.add(row.id);
+          } catch { /* ignore corrupted outbox entry */ }
         }
       }
     } catch { /* ignore */ }
@@ -147,6 +191,22 @@ export class BackendSyncService {
    * @param {any} payload
    */
   enqueueOutbox(type, payload) {
+    const MAX_OUTBOX_CAPACITY = 5000;
+    if (this.outbox.length >= MAX_OUTBOX_CAPACITY) {
+      // Find oldest non-critical telemetry mutation to evict first
+      const purgeIdx = this.outbox.findIndex(item => 
+        item.status !== 'IN_FLIGHT' && 
+        (item.mutationType === 'TELEMETRY' || item.mutationType === 'TELEMETRY_LOG' || item.mutationType === 'METRIC_EVENT' || item.mutationType === 'PING')
+      );
+      const targetIdx = purgeIdx !== -1 ? purgeIdx : 0;
+      const evicted = this.outbox.splice(targetIdx, 1)[0];
+      if (evicted && this.engine) {
+        try {
+          this.engine.run('DELETE FROM sync_outbox WHERE id = ?', [evicted.id]);
+        } catch { /* ignore */ }
+      }
+    }
+
     const id = `out_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const item = {
       id,
@@ -163,10 +223,11 @@ export class BackendSyncService {
 
     if (this.engine) {
       try {
+        const serializedPayload = this._encryptOutboxPayload(item.payload);
         this.engine.run(`
           INSERT INTO sync_outbox (id, mutation_type, payload_json, attempts, status, last_error, created_at, next_retry_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `, [item.id, item.mutationType, JSON.stringify(item.payload), item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
+        `, [item.id, item.mutationType, serializedPayload, item.attempts, item.status, null, item.createdAt, item.nextRetryAt]);
       } catch { /* ignore */ }
     }
 
@@ -251,6 +312,9 @@ export class BackendSyncService {
       try {
         authRes = await this.client.initAuth({ email, password });
         this.lastAuthResult = authRes;
+        if (authRes?.graceToken) {
+          this.lastGraceToken = authRes.graceToken;
+        }
         if (clock) {
           await clock.updateAnchor(Date.now()).catch(() => {});
         }
@@ -314,10 +378,12 @@ export class BackendSyncService {
         currentPlansEtag = store.metadataAdapter?.get('plans_catalog')?.etag;
       } catch { /* ignore */ }
 
-      const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
-      if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
-        const platforms = platformRes.registry.platforms || platformRes.registry;
-        catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+      if (this.client.sessionId) {
+        const platformRes = await this.client.getPlatformRegistry({ ifNoneMatch: currentPlatformEtag });
+        if (!platformRes.notModified && platformRes.registry && catalogsRepo) {
+          const platforms = platformRes.registry.platforms || platformRes.registry;
+          catalogsRepo.hydratePlatforms(platforms, platformRes.etag);
+        }
       }
 
       const plansRes = await this.client.getPlansCatalog({ ifNoneMatch: currentPlansEtag });
@@ -347,6 +413,9 @@ export class BackendSyncService {
 
     const authRes = await this.client.initAuth({ email, password });
     this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
     this.isConnected = true;
 
     if (clock) {
@@ -383,6 +452,9 @@ export class BackendSyncService {
 
     const authRes = await this.client.registerOperator({ email, password, name });
     this.lastAuthResult = authRes;
+    if (authRes?.graceToken) {
+      this.lastGraceToken = authRes.graceToken;
+    }
     this.isConnected = true;
 
     if (clock) {
@@ -405,12 +477,31 @@ export class BackendSyncService {
    */
   async logoutOperator() {
     this.disconnectWebSocket();
-    this.client.setSession(null, this.client.machineId);
-    this.lastAuthResult = null;
-    this.lastSyncTimestamp = null;
-    this.lastSyncHrtime = null;
+    if (this.client?.sessionId && typeof this.client.logout === 'function') {
+      await this.client.logout().catch(() => {});
+    }
     await securityFacade.logout().catch(() => {});
     await securityFacade.transitionToUnauthenticated().catch(() => {});
+    this.client.setSession(null, this.client.machineId);
+    this.lastAuthResult = null;
+    this.lastGraceToken = null;
+    this.lastSyncTimestamp = null;
+    this.lastSyncHrtime = null;
+    this.outbox = [];
+    if (this.engine) {
+      try {
+        this.engine.run('DELETE FROM sync_outbox');
+      } catch { /* ignore */ }
+    }
+    if (this.cacheFilePath && fs.existsSync(this.cacheFilePath)) {
+      try {
+        fs.unlinkSync(this.cacheFilePath);
+      } catch { /* ignore */ }
+    }
+    try {
+      const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+      vaultCredentialPipeline.clear();
+    } catch { /* ignore */ }
     try {
       const { getSharedStateStore } = await import('../state-store/sharedStateStore.mjs');
       const store = getSharedStateStore();
@@ -594,8 +685,40 @@ export class BackendSyncService {
     // 2. Domain Event Routing
     switch (eventType) {
       case 'LICENSE_UPDATED': {
+        const licPayload = payload?.license || payload || {};
+        const caps = Array.isArray(licPayload.capabilities)
+          ? licPayload.capabilities
+          : (Array.isArray(payload?.capabilities)
+            ? payload.capabilities
+            : ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY']);
+        const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+        const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+        await securityFacade.establishSession({
+          ...(this.lastAuthResult || {}),
+          sessionId,
+          sessionGeneration,
+          capabilities: caps,
+          license: {
+            ...(this.lastAuthResult?.license || {}),
+            ...licPayload,
+            licenseId: payload?.licenseKey || licPayload.licenseId || this.lastAuthResult?.license?.licenseId || `lic-${payload?.accountId || 'active'}`,
+            status: licPayload.status || 'VALID',
+            planId: licPayload.planId || this.lastAuthResult?.license?.planId || 'pro',
+            capabilities: caps
+          }
+        }).catch(() => {});
         const billingSnapshot = await repositoryFactory.getBillingRepo().getSnapshot();
         wsServer.broadcast('billing:snapshot', billingSnapshot);
+        try {
+          const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+          const snap = await workspaceAggregator.getSnapshot();
+          wsServer.broadcast('automation:snapshot', snap);
+          wsServer.broadcast('automation:delta', {
+            type: 'CAPABILITIES_CHANGED',
+            capabilities: snap.capabilities,
+            fleetReadiness: snap.fleetReadiness
+          });
+        } catch { /* ignore */ }
         break;
       }
 
@@ -607,8 +730,12 @@ export class BackendSyncService {
         break;
       }
 
-      case 'SUBSCRIPTION_STATUS_CHANGED': {
-        if (payload.subscription) {
+      case 'SUBSCRIPTION_STATUS_CHANGED':
+      case 'subscription:expired': {
+        if (eventType === 'subscription:expired') {
+          await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Payment_Required' });
+        } else if (payload.subscription) {
           const sub = payload.subscription;
           const normalizedStatus = sub.status === 'ACTIVE' ? 'Active' : (sub.status === 'PAST_DUE' ? 'Past_Due' : (sub.status === 'CANCELLED' ? 'Cancelled' : sub.status));
           const normalizedSub = {
@@ -618,8 +745,34 @@ export class BackendSyncService {
           };
           await repositoryFactory.getBillingRepo().updateSubscription(normalizedSub);
           if (normalizedStatus === 'Active') {
+            const defaultCaps = ['CAP_AUTOMATION_START', 'CAP_AUTOMATION_STOP', 'CAP_FILE_UPLOAD', 'CAP_TACTICAL_BET', 'CAP_CASH_OUT', 'CAP_CONFIG_MODIFY'];
+            const sessionId = this.client?.sessionId || this.lastAuthResult?.sessionId || 'active-session';
+            const sessionGeneration = this.lastAuthResult?.sessionGeneration || 1;
+            await securityFacade.establishSession({
+              ...(this.lastAuthResult || {}),
+              sessionId,
+              sessionGeneration,
+              capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps,
+              license: {
+                ...(this.lastAuthResult?.license || {}),
+                status: 'VALID',
+                planId: normalizedSub.planId || 'pro',
+                capabilities: Array.isArray(sub.capabilities) && sub.capabilities.length > 0 ? sub.capabilities : defaultCaps
+              }
+            }).catch(() => {});
             wsServer.broadcast('app:state', { state: 'Authorized' });
-          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required') {
+            try {
+              const { workspaceAggregator } = await import('../state/workspaceAggregator.mjs');
+              const snap = workspaceAggregator.getSnapshot();
+              wsServer.broadcast('automation:snapshot', snap);
+              wsServer.broadcast('automation:delta', {
+                type: 'CAPABILITIES_CHANGED',
+                capabilities: snap.capabilities,
+                fleetReadiness: snap.fleetReadiness
+              });
+            } catch { /* ignore */ }
+          } else if (normalizedStatus === 'Past_Due' || normalizedStatus === 'Payment_Required' || normalizedStatus === 'EXPIRED' || normalizedStatus === 'Expired') {
+            await securityFacade.transitionToDegraded('SUBSCRIPTION_EXPIRED_PUSH').catch(() => {});
             wsServer.broadcast('app:state', { state: 'Payment_Required' });
           }
         }
@@ -684,10 +837,9 @@ export class BackendSyncService {
 
       case 'FORCE_LOGOUT': {
         logger.warn('[BackendSyncService] Backend issued FORCE_LOGOUT. Invalidating session context.');
+        await this.logoutOperator().catch(() => {});
         this.client.setSession(null, null);
-        await securityFacade.logout().catch(() => {});
         wsServer.broadcast('app:state', 'Unauthenticated');
-        this.disconnectWebSocket();
         break;
       }
 
@@ -709,6 +861,20 @@ export class BackendSyncService {
     // 1. PersistentClock rollback check - fail-closed if boot-time clock rollback or anchor tampering detected
     if (clock && clock.isUncertain) {
       logger.warn('[BackendSyncService] Clock rollback detected or time anchor uncertain. Grace period denied.');
+      return false;
+    }
+
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace period denied.');
+        if (!securityFacade.isDegraded()) {
+          securityFacade.transitionToDegraded('INVALID_GRACE_TOKEN').catch(() => {});
+        }
+        return false;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace period denied.');
       return false;
     }
 
@@ -748,6 +914,17 @@ export class BackendSyncService {
     // 1. Clock rollback or uncertainty check - fail-closed
     if (clock && clock.isUncertain) {
       logger.warn('[BackendSyncService] Clock rollback or uncertain time anchor detected. Grace lease denied.');
+      return null;
+    }
+
+    // 2. Cryptographic GraceToken verification if present (or mandatory in production)
+    if (this.lastGraceToken) {
+      if (!licenseManager.verifyGraceToken(this.lastGraceToken)) {
+        logger.warn('[BackendSyncService] Offline GraceToken failed cryptographic signature or expiry verification. Grace lease denied.');
+        return null;
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      logger.warn('[BackendSyncService] Missing signed GraceToken in production. Grace lease denied.');
       return null;
     }
 
@@ -858,6 +1035,14 @@ export class BackendSyncService {
       }
       if (Array.isArray(autoSnapshot?.accounts) && autoSnapshot.accounts.length > 0) {
         accountsRepo.hydrate(autoSnapshot.accounts);
+        try {
+          const { vaultCredentialPipeline } = await import('../runtime-manager/boundary/VaultCredentialPipeline.mjs');
+          for (const acc of autoSnapshot.accounts) {
+            if (acc?.id && acc?.accountPassword) {
+              vaultCredentialPipeline.storeCredential(acc.id, acc.accountPassword);
+            }
+          }
+        } catch { /* ignore */ }
       }
     } catch (err) {
       logger.warn({ err: err.message }, '[BackendSyncService] Could not fetch automation snapshot directly');
@@ -913,6 +1098,8 @@ export class BackendSyncService {
       const cachePayload = {
         version: 1,
         savedAt: new Date().toISOString(),
+        lastSyncTimestamp: this.lastSyncTimestamp || null,
+        graceToken: this.lastGraceToken || null,
         globalConfig: configRepo.globalConfig,
         accounts: Array.from(accountsRepo.accounts.values())
       };
@@ -945,6 +1132,9 @@ export class BackendSyncService {
       const decrypted = NativeCore.decryptAead(encrypted, aad);
 
       const cachePayload = JSON.parse(decrypted.toString('utf8'));
+      if (cachePayload.graceToken) {
+        this.lastGraceToken = cachePayload.graceToken;
+      }
       if (Array.isArray(cachePayload.accounts)) {
         repositoryFactory.getAccountsRepo().hydrate(cachePayload.accounts);
       }
@@ -1043,21 +1233,29 @@ export class BackendSyncService {
         i--;
       } catch (err) {
         if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-          logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating session...');
-          try {
-            const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-            const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-            await this.client.initAuth({ email, password });
-            await this._dispatchMutation(item.mutationType, item.payload);
-            flushed++;
-            if (this.engine) {
-              try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+          const email = process.env.OPERATOR_EMAIL || null;
+          const password = process.env.OPERATOR_PASSWORD || null;
+          if (email && password) {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH. Re-authenticating with configured operator credentials...');
+            try {
+              const authRes = await this.client.initAuth({ email, password });
+              if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+              await this._dispatchMutation(item.mutationType, item.payload);
+              flushed++;
+              if (this.engine) {
+                try { this.engine.run(`DELETE FROM sync_outbox WHERE id = ?`, [item.id]); } catch { /* ignore */ }
+              }
+              this.outbox.splice(i, 1);
+              i--;
+              continue;
+            } catch (retryErr) {
+              logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
             }
-            this.outbox.splice(i, 1);
-            i--;
-            continue;
-          } catch (retryErr) {
-            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication retry failed during outbox flush');
+          } else {
+            logger.warn('[BackendSyncService] Outbox flush detected GENERATION_MISMATCH without configured auto-reauth credentials. Requiring interactive re-authentication.');
+            await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+            wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
+            break;
           }
         }
 
@@ -1126,16 +1324,23 @@ export class BackendSyncService {
       return result;
     } catch (err) {
       if (err.message?.includes('GENERATION_MISMATCH') || err.code === 'BE_REV_GENERATION_MISMATCH') {
-        logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session to reconcile generation counter...');
-        try {
-          const email = process.env.OPERATOR_EMAIL || 'operator@bettingautomation.io';
-          const password = process.env.OPERATOR_PASSWORD || 'Password123!';
-          await this.client.initAuth({ email, password });
-          const result = await this._dispatchMutation(type, payload);
-          this.saveLocalCache();
-          return result;
-        } catch (retryErr) {
-          logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+        const email = process.env.OPERATOR_EMAIL || null;
+        const password = process.env.OPERATOR_PASSWORD || null;
+        if (email && password) {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected. Re-authenticating session with configured operator credentials...');
+          try {
+            const authRes = await this.client.initAuth({ email, password });
+            if (authRes?.graceToken) this.lastGraceToken = authRes.graceToken;
+            const result = await this._dispatchMutation(type, payload);
+            this.saveLocalCache();
+            return result;
+          } catch (retryErr) {
+            logger.error({ err: retryErr.message }, '[BackendSyncService] Re-authentication failed after generation mismatch');
+          }
+        } else {
+          logger.warn('[BackendSyncService] GENERATION_MISMATCH detected without configured auto-reauth credentials. Requiring interactive re-authentication.');
+          await securityFacade.transitionToDegraded('GENERATION_MISMATCH_REAUTH_REQUIRED').catch(() => {});
+          wsServer.broadcast('app:state', { state: 'Unauthenticated', reason: 'GENERATION_MISMATCH' });
         }
       }
 
@@ -1144,6 +1349,23 @@ export class BackendSyncService {
         logger.info({ type }, '[BackendSyncService] Resource already exists on Backend; ignoring duplicate');
         this.saveLocalCache();
         return { exists: true, duplicated: true };
+      }
+
+      // Fail-fast on authoritative Backend policy/entitlement/validation rejections (do not enqueue in retry outbox)
+      const policyRejectCodes = new Set([
+        'ENTITLEMENT_LIMIT_REACHED',
+        'BE_PERM_ENTITLEMENT_EXCEEDED',
+        'BE_PERM_LICENSE_EXPIRED',
+        'BE_PERM_FORBIDDEN',
+        'BE_VAL_SCHEMA_VIOLATION',
+        'BE_VAL_INVALID_UUID',
+        'HTTP_403',
+        'HTTP_400'
+      ]);
+      if (policyRejectCodes.has(err.code) || err.status === 403 || err.status === 400) {
+        err.isPolicyRejection = true;
+        logger.warn({ type, code: err.code, err: err.message }, '[BackendSyncService] Authoritative Backend policy rejection; failing fast without outbox retry');
+        throw err;
       }
 
       logger.warn({ type, err: err.message }, '[BackendSyncService] Failed to sync mutation directly to Backend; enqueuing in retry outbox');

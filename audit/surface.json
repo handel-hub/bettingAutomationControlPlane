@@ -1,0 +1,750 @@
+{
+  "generatedAt": "2026-10-12T22:54:32.089Z",
+  "routeInventory": {
+    "backendRoutesCount": 71,
+    "backendRoutes": [
+      {
+        "file": "routes/accounts.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/accounts.mjs",
+        "method": "POST",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/accounts.mjs",
+        "method": "GET",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/accounts.mjs",
+        "method": "PATCH",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/accounts.mjs",
+        "method": "POST",
+        "routePattern": "/:id/action"
+      },
+      {
+        "file": "routes/accounts.mjs",
+        "method": "POST",
+        "routePattern": "/bulk-action"
+      },
+      {
+        "file": "routes/auth.mjs",
+        "method": "POST",
+        "routePattern": "/init"
+      },
+      {
+        "file": "routes/auth.mjs",
+        "method": "POST",
+        "routePattern": "/register"
+      },
+      {
+        "file": "routes/authorization.mjs",
+        "method": "POST",
+        "routePattern": "/resolve"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "GET",
+        "routePattern": "/snapshot"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "PUT",
+        "routePattern": "/config/:category"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "POST",
+        "routePattern": "/config/:category"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "POST",
+        "routePattern": "/config/global/:category"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "POST",
+        "routePattern": "/accounts/:id/bet-cycle"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "PATCH",
+        "routePattern": "/accounts/:id/bet-cycle"
+      },
+      {
+        "file": "routes/automation.mjs",
+        "method": "POST",
+        "routePattern": "/accounts/:id/override"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "GET",
+        "routePattern": "/plans"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/checkout"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/checkout/initialize"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/checkout/verify"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/verify"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/subscription/cancel"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/cancel"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/subscription/resume"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/resume"
+      },
+      {
+        "file": "routes/billing.mjs",
+        "method": "POST",
+        "routePattern": "/session"
+      },
+      {
+        "file": "routes/machines.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/machines.mjs",
+        "method": "DELETE",
+        "routePattern": "/:machineId"
+      },
+      {
+        "file": "routes/machines.mjs",
+        "method": "POST",
+        "routePattern": "/register"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "POST",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "PATCH",
+        "routePattern": "/:id/read"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "POST",
+        "routePattern": "/mark-all-read"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "DELETE",
+        "routePattern": "/clear-all"
+      },
+      {
+        "file": "routes/notifications.mjs",
+        "method": "DELETE",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/payments.mjs",
+        "method": "POST",
+        "routePattern": "/checkout"
+      },
+      {
+        "file": "routes/payments.mjs",
+        "method": "GET",
+        "routePattern": "/callback"
+      },
+      {
+        "file": "routes/payments.mjs",
+        "method": "POST",
+        "routePattern": "/webhook"
+      },
+      {
+        "file": "routes/platforms.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/platforms.mjs",
+        "method": "GET",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/platforms.mjs",
+        "method": "POST",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/platforms.mjs",
+        "method": "PATCH",
+        "routePattern": "/:id/status"
+      },
+      {
+        "file": "routes/prelude.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/reconciliation.mjs",
+        "method": "POST",
+        "routePattern": "/sync"
+      },
+      {
+        "file": "routes/sessions.mjs",
+        "method": "POST",
+        "routePattern": "/renew"
+      },
+      {
+        "file": "routes/sessions.mjs",
+        "method": "POST",
+        "routePattern": "/logout"
+      },
+      {
+        "file": "routes/settings.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/settings.mjs",
+        "method": "POST",
+        "routePattern": "/intent"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "POST",
+        "routePattern": "/channels"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "GET",
+        "routePattern": "/snapshot"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "GET",
+        "routePattern": "/tickets"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "POST",
+        "routePattern": "/tickets"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "POST",
+        "routePattern": "/attachments"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "POST",
+        "routePattern": "/diagnostics"
+      },
+      {
+        "file": "routes/support.mjs",
+        "method": "GET",
+        "routePattern": "/channels"
+      },
+      {
+        "file": "routes/system.mjs",
+        "method": "GET",
+        "routePattern": "/version"
+      },
+      {
+        "file": "routes/system.mjs",
+        "method": "POST",
+        "routePattern": "/restart-and-update"
+      },
+      {
+        "file": "routes/telemetry.mjs",
+        "method": "POST",
+        "routePattern": "/audit"
+      },
+      {
+        "file": "routes/telemetry.mjs",
+        "method": "GET",
+        "routePattern": "/audit"
+      },
+      {
+        "file": "routes/telemetry.mjs",
+        "method": "POST",
+        "routePattern": "/heartbeat"
+      },
+      {
+        "file": "routes/transfers.mjs",
+        "method": "POST",
+        "routePattern": "/:remoteSessionId/chunks"
+      },
+      {
+        "file": "routes/transfers.mjs",
+        "method": "POST",
+        "routePattern": "/:remoteSessionId/complete"
+      },
+      {
+        "file": "routes/transfers.mjs",
+        "method": "GET",
+        "routePattern": "/:remoteSessionId/status"
+      },
+      {
+        "file": "routes/transfers.mjs",
+        "method": "POST",
+        "routePattern": "/:remoteSessionId/cancel"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "POST",
+        "routePattern": "/admin/login"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "GET",
+        "routePattern": "/admin/overview"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "POST",
+        "routePattern": "/admin/accounts/:id/suspend"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "POST",
+        "routePattern": "/admin/machines/:id/revoke"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "POST",
+        "routePattern": "/admin/sessions/:id/invalidate"
+      },
+      {
+        "file": "admin/routes.mjs",
+        "method": "POST",
+        "routePattern": "/admin/licenses/:id/revoke"
+      }
+    ],
+    "controlPlaneRoutesCount": 46,
+    "controlPlaneRoutes": [
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "PATCH",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/:id/action"
+      },
+      {
+        "file": "routes/accountsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/bulk-action"
+      },
+      {
+        "file": "routes/authRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/session"
+      },
+      {
+        "file": "routes/authRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/login"
+      },
+      {
+        "file": "routes/authRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/register"
+      },
+      {
+        "file": "routes/authRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/logout"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/snapshot"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/strategy-catalog"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/start"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/stop"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/operations/place-bet"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/operations/cash-out"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/operations/validate"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/accounts/activate"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/accounts/:id/deactivate"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "PATCH",
+        "routePattern": "/accounts/:id/bet-cycle"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "PUT",
+        "routePattern": "/accounts/:id/config"
+      },
+      {
+        "file": "routes/automationRoutes.mjs",
+        "method": "PUT",
+        "routePattern": "/config/:category"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/plans"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/checkout/initialize"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/checkout/verify"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/session"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/subscription/cancel"
+      },
+      {
+        "file": "routes/billingRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/subscription/resume"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "PATCH",
+        "routePattern": "/:id/read"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/:id/read"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/mark-all-read"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/read-all"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "DELETE",
+        "routePattern": "/clear-all"
+      },
+      {
+        "file": "routes/notificationsRoutes.mjs",
+        "method": "DELETE",
+        "routePattern": "/:id"
+      },
+      {
+        "file": "routes/platformsRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/preludeRoute.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/settingsRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/"
+      },
+      {
+        "file": "routes/settingsRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/intent"
+      },
+      {
+        "file": "routes/supportRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/snapshot"
+      },
+      {
+        "file": "routes/supportRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/tickets"
+      },
+      {
+        "file": "routes/supportRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/attachments"
+      },
+      {
+        "file": "routes/supportRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/diagnostics"
+      },
+      {
+        "file": "routes/systemRoutes.mjs",
+        "method": "GET",
+        "routePattern": "/version"
+      },
+      {
+        "file": "routes/systemRoutes.mjs",
+        "method": "POST",
+        "routePattern": "/restart-and-update"
+      }
+    ],
+    "frontendApiCalls": [
+      "${this.baseUrl}${endpoint.startsWith(",
+      "/api/v1/accounts",
+      "/api/v1/accounts/bulk-action",
+      "/api/v1/auth/login",
+      "/api/v1/auth/logout",
+      "/api/v1/auth/register",
+      "/api/v1/auth/session",
+      "/api/v1/automation/accounts/activate",
+      "/api/v1/automation/operations/cash-out",
+      "/api/v1/automation/operations/place-bet",
+      "/api/v1/automation/operations/validate",
+      "/api/v1/automation/snapshot",
+      "/api/v1/automation/start",
+      "/api/v1/automation/stop",
+      "/api/v1/automation/strategy-catalog",
+      "/api/v1/billing",
+      "/api/v1/billing/checkout/initialize",
+      "/api/v1/billing/checkout/verify",
+      "/api/v1/billing/plans",
+      "/api/v1/billing/subscription/cancel",
+      "/api/v1/billing/subscription/resume",
+      "/api/v1/notifications",
+      "/api/v1/notifications/read-all",
+      "/api/v1/platforms",
+      "/api/v1/prelude",
+      "/api/v1/settings",
+      "/api/v1/settings/intent",
+      "/api/v1/settings/presentation",
+      "/api/v1/support/snapshot",
+      "/api/v1/support/tickets",
+      "/api/v1/system/restart-and-update",
+      "/api/v1/system/version"
+    ],
+    "undocumentedOrInternalEndpoints": [
+      {
+        "component": "Backend",
+        "endpoint": "GET /health",
+        "auth": "NONE",
+        "notes": "Public liveness probe"
+      },
+      {
+        "component": "Backend",
+        "endpoint": "POST /admin/revoke",
+        "auth": "Admin JWT (SUPER_ADMIN)",
+        "notes": "Administrative revocation endpoint"
+      },
+      {
+        "component": "Backend",
+        "endpoint": "POST /admin/keys/rotate",
+        "auth": "Admin JWT (SUPER_ADMIN)",
+        "notes": "KMS signing key rotation"
+      },
+      {
+        "component": "ControlPlane",
+        "endpoint": "GET /health",
+        "auth": "NONE",
+        "notes": "Local liveness probe"
+      },
+      {
+        "component": "ControlPlane",
+        "endpoint": "POST /api/v1/system/restart-and-update",
+        "auth": "IPC Token + CAP_UPDATE_INSTALL / SUPER_ADMIN on Backend",
+        "notes": "System restart/update intent"
+      },
+      {
+        "component": "ExecutionPlane",
+        "endpoint": "Named Pipe \\\\.\\pipe\\acp_ep_*",
+        "auth": "NativeCore PID Attestation + Mutual HMAC + ExecutionEnvelope",
+        "notes": "Commands: CONFIG_UPDATE, CREDENTIAL_INJECT, LEASE_RENEW, SHUTDOWN, KILL_SWITCH"
+      }
+    ]
+  },
+  "listeningSocketsAndPolicies": [
+    {
+      "component": "Backend HTTP/WS",
+      "bindAddress": "0.0.0.0:4000 (configurable via PORT)",
+      "authMechanism": "Bearer sessionId (UUID validated) + Envelope V2 Ed25519 signature on machine/auth/reconcile routes + Admin JWT on /admin/*",
+      "corsOriginPolicy": "Configurable CORS_ORIGIN (default restrictive in production)",
+      "wsUpgradePolicy": "Path /ws/sync; requires valid sessionId + machineId + ACTIVE session + ACTIVE account + non-revoked machine"
+    },
+    {
+      "component": "Control Plane HTTP/WS",
+      "bindAddress": "127.0.0.1:8080 (default host 127.0.0.1 in server.mjs)",
+      "authMechanism": "X-ACP-IPC-Token / Bearer token (.acp-ipc-token mode 0600) via ipcAuthMiddleware",
+      "corsOriginPolicy": "Strict localhost-only origin allowlist (isAllowedOrigin rejects null and non-localhost LAN origins)",
+      "wsUpgradePolicy": "Path /ws; enforces isAllowedOrigin + IPC token validation"
+    },
+    {
+      "component": "Control Plane <-> Execution Plane IPC",
+      "bindAddress": "\\\\.\\pipe\\acp_ep_<uuid>",
+      "authMechanism": "Windows Named Pipe + Rust NativeCore spawned-PID check + HMAC-SHA256 challenge-response + 10MB frame cap + strict ExecutionEnvelope schema",
+      "filePermissions": "OS Named Pipe DACL (current user) + .security_authority/*.bin sealed with Windows DPAPI (CryptProtectData)"
+    }
+  ],
+  "secretsScan": {
+    "liveSecretsDetectedCount": 0,
+    "findings": [],
+    "notes": "Zero live Paystack/Flutterwave/AWS/PEM private keys found in source trees. Test fixtures use deterministic ephemeral or stub keys."
+  },
+  "dependencyAndProvenanceReview": {
+    "backend": {
+      "nativeModules": [
+        "@node-rs/argon2"
+      ],
+      "overrides": {
+        "axios": "^1.18.1"
+      }
+    },
+    "controlPlane": {
+      "nativeModules": [
+        "better-sqlite3",
+        "sqlite3",
+        "esbuild",
+        "src/security-authority/native/security-core (Rust NAPI-RS addon: winapi DPAPI + ed25519-dalek + aes-gcm + zeroize)"
+      ],
+      "allowScripts": {
+        "sqlite3@6.0.1": true,
+        "better-sqlite3@13.0.3": true,
+        "esbuild@0.28.2": true
+      }
+    },
+    "executionPlane": {
+      "nativeModules": [
+        "playwright / chromium automation runtime",
+        "bytenode"
+      ]
+    }
+  },
+  "updateAndIntegrityChannel": {
+    "executionPlaneManifestPath": "config/execution-integrity.json",
+    "manifestContent": {
+      "version": 1,
+      "enforceInProduction": true,
+      "allowAutoComputeInDev": true,
+      "defaultSha256": "2100180d02858d828840efdfbd6daec53b2e7d42b069124d5a4d1b2c0985911d",
+      "updatedAt": "2026-10-12T21:34:15.809Z",
+      "targets": {
+        "../bettingAutomation/src/worker/index.mjs": {
+          "sha256": "2100180d02858d828840efdfbd6daec53b2e7d42b069124d5a4d1b2c0985911d",
+          "updatedAt": "2026-10-12T21:34:15.805Z"
+        },
+        "../bettingAutomation/launcher/index.mjs": {
+          "sha256": "de7ce69a3aeacde12b42e32ff879695f950832d44d0863417d7ae4e13e685ff8",
+          "updatedAt": "2026-10-12T21:34:15.808Z"
+        },
+        "test/fixtures/mock-orchestrated-worker.mjs": {
+          "sha256": "787e1e0e05994456ac123674bb35e79aef4f7e587b511d9bd6935449ba1134fd",
+          "updatedAt": "2026-10-12T21:34:15.809Z"
+        }
+      }
+    },
+    "verificationMechanism": "SHA-256 hash verification of launcher/index.mjs in execution-integrity.mjs before RuntimeManager spawns EP child process; production builds disallow EXECUTION_PLANE_SHA256 env override when enforceInDev=true / production mode.",
+    "updateChannelGaps": "POST /api/v1/system/restart-and-update is RBAC-gated to SUPER_ADMIN/CAP_UPDATE_INSTALL on Backend, but no detached Ed25519 signature over a full multi-file update bundle/installer exists yet (single entry script SHA-256 + Bytenode .jsc SHA-256 verification)."
+  }
+}

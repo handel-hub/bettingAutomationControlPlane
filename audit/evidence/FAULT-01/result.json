@@ -1,0 +1,22 @@
+{
+  "test_id": "FAULT-01",
+  "invariant_ids": [
+    "INV-05",
+    "INV-08"
+  ],
+  "campaign": "PHASE5_FAULT_RECOVERY",
+  "correlation_ids": [
+    "fault01-aad-mac"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "tamperedRowHaltedWithMacFailure": true
+  },
+  "side_effects": {
+    "corruptedStateLoaded": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Tampered SQLite backend_generation column detected immediately by AES-256-GCM AAD MAC verification."
+}

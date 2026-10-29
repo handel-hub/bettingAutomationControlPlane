@@ -4,13 +4,21 @@ import assert from 'node:assert/strict';
 import { ApiServer } from '../../src/api-server/server.mjs';
 import { WebSocket } from 'ws';
 
+import { StateStore } from '../../src/state-store/StateStore.mjs';
+import { setSharedStateStore, resetSharedStateStore } from '../../src/state-store/sharedStateStore.mjs';
+
 test('Boundary Contract: Catalogs, Routes & WebSocket Heartbeat', async (t) => {
+  const isolatedStore = new StateStore({ dbPath: ':memory:', userId: 'usr_catalogs_test' });
+  isolatedStore.initialize();
+  setSharedStateStore(isolatedStore);
+
   const server = new ApiServer();
   const port = 8093;
   await server.listen(port, '127.0.0.1');
 
   t.after(async () => {
     await server.close();
+    resetSharedStateStore();
   });
 
   const baseUrl = `http://127.0.0.1:${port}`;

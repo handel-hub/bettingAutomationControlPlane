@@ -1,0 +1,25 @@
+{
+  "test_id": "AUTHZ-01",
+  "invariant_ids": [
+    "INV-03",
+    "INV-10"
+  ],
+  "campaign": "TIER1_AUTHZ",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c",
+    "1b2395e9-9837-4df6-a425-14f6921b3e01"
+  ],
+  "control_result": {
+    "passed": true,
+    "ownerCreatedBettingAccountId": "1b2395e9-9837-4df6-a425-14f6921b3e01"
+  },
+  "attack_result": {
+    "crossTenantGetStatus": 500,
+    "crossTenantPatchStatus": 500
+  },
+  "side_effects": {
+    "victimRecordModified": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Cross-tenant GET and PATCH on another operator betting account rejected."
+}

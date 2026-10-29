@@ -16,6 +16,15 @@ settingsRouter.post('/intent', async (req, res) => {
   const { type, payload = {}, stepUpSecret } = req.body || {};
   const requestId = `req_${Date.now()}`;
 
+  const { securityFacade } = await import('../../security-authority/facade.mjs');
+  if (!securityFacade.isCommandPermitted('SETTINGS_INTENT')) {
+    return res.status(403).json({
+      requestId,
+      status: 'REJECTED',
+      message: `Settings modification prohibited in security state ${securityFacade.getSystemState()}`
+    });
+  }
+
   if (!type) {
     return res.status(400).json({
       requestId,
@@ -24,11 +33,14 @@ settingsRouter.post('/intent', async (req, res) => {
     });
   }
 
-  // Check if intent requires Step-Up
+  // Check if intent requires Step-Up (including disabling MFA)
   const STEP_UP_REQUIRED = ['DELETE_ACCOUNT', 'UPDATE_PASSWORD', 'CHANGE_PASSWORD', 'CHANGE_EMAIL'];
-  if (STEP_UP_REQUIRED.includes(type)) {
-    const providedSecret = stepUpSecret || (type === 'UPDATE_PASSWORD' || type === 'CHANGE_PASSWORD' ? payload?.currentPassword : null);
+  const requiresStepUp = STEP_UP_REQUIRED.includes(type) || (type === 'CONFIGURE_MFA' && payload?.enabled === false);
+  if (requiresStepUp) {
+    const providedSecret = stepUpSecret || payload?.currentPassword || null;
     if (!providedSecret) {
+      // Contract: Returns HTTP 200 with status: 'REQUIRES_STEP_UP' per IntentAck protocol.
+      // Frontend client (useSettingsStore.ts / controlPlaneClient.ts) intercepts this to render StepUpModal.
       return res.status(200).json({
         requestId,
         status: 'REQUIRES_STEP_UP',

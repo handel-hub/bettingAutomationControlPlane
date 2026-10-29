@@ -50,6 +50,11 @@ test('CapabilityResolver: accurately reflects lifecycle states and disabled reas
   assert.equal(stoppedCaps.canPlaceBet, false);
   assert.match(stoppedCaps.placeBetDisabledReason, /must be running/);
   assert.equal(stoppedCaps.canEditProxy, true);
+  assert.equal(stoppedCaps.includes('CAP_AUTOMATION_START'), true);
+  assert.equal(stoppedCaps.includes('CAP_AUTOMATION_STOP'), false);
+  assert.equal(stoppedCaps.includes('canStartAutomation'), true);
+  assert.equal(Array.isArray(stoppedCaps.rawCapabilities), true);
+  assert.ok(stoppedCaps.rawCapabilities.includes('CAP_AUTOMATION_START'));
 
   // When RUNNING with 1 browser
   const runningCaps = CapabilityResolver.resolve({
@@ -129,6 +134,10 @@ test('WorkspaceAggregator: compiles complete workspace snapshot', async () => {
 
   assert.equal(snapshot.lifecycle, 'STOPPED');
   assert.ok(snapshot.capabilities);
+  assert.equal(typeof snapshot.capabilities.canStartAutomation, 'boolean');
+  assert.ok(Array.isArray(snapshot.capabilityList));
+  assert.equal(snapshot.capabilityList.includes('CAP_AUTOMATION_START'), snapshot.capabilities.canStartAutomation);
+  assert.ok(snapshot.capabilityList.includes('CAP_CONFIG_MODIFY'));
   assert.ok(snapshot.globalConfig);
   assert.ok(snapshot.globalConfig.pricing);
   assert.ok(Array.isArray(snapshot.accounts));

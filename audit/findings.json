@@ -1,0 +1,116 @@
+[
+  {
+    "finding_id": "RT-F01",
+    "test_id": "PAY-04",
+    "title": "Cross-Account Payment Reference Claiming & Unverified Customer Email / Plan Amount Bypass on /api/v1/billing/checkout/verify",
+    "flow": "Subscription Checkout & Payment Verification (POST /api/v1/billing/checkout -> POST /api/v1/billing/checkout/verify)",
+    "components": [
+      "bettingAutomationBackend/src/api/routes/billing.mjs",
+      "bettingAutomationBackend/src/domain/payment/service.mjs"
+    ],
+    "attacker": "T2 (Authenticated User) / T3 (User controlling own install)",
+    "preconditions": "Victim (Account A) initiates checkout and completes payment at provider; Attacker (Account B) obtains or guesses the transaction reference before Victim calls /checkout/verify, or provider verification payload omits metadata.account_id and only populates customer.email.",
+    "invariant_violated": [
+      "INV-01",
+      "INV-02"
+    ],
+    "reproduction_script": "audit/repro/RT-F01-PAY-04.mjs",
+    "observed_behavior": "POST /api/v1/billing/checkout/verify called by Account B with Account A reference returns HTTP 200 OK and provisions an active Pro subscription and signed license for Account B, locking Account A out with 409 PAYMENT_ALREADY_REDEEMED. Additionally, line 217 (!txMeta.plan_id && planId !== \"pro\" && amount !== expectedPrice) exempts planId=\"pro\" from exact amount matching when metadata is absent.",
+    "correlation_ids": [
+      "PAY-04"
+    ],
+    "source_locations": [
+      "bettingAutomationBackend/src/api/routes/billing.mjs:81-103 (handleCheckout)",
+      "bettingAutomationBackend/src/api/routes/billing.mjs:155-223 (handleVerify)"
+    ],
+    "db_evidence": "invoices row created with reference=<victim_ref> and account_id=<attacker_account_id>; licenses and subscriptions rows activated for attacker_account_id.",
+    "impact": "Direct financial/entitlement theft across tenant accounts: an attacker can claim another operator payment reference or spoof plan tier when provider metadata is omitted.",
+    "cvss_v31": {
+      "score": 8.1,
+      "severity": "HIGH",
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H",
+      "rationale": "Network-reachable by any low-privileged authenticated operator (T2); results in high integrity loss (unauthorized paid entitlement grant) and high availability loss for the victim whose payment reference is consumed."
+    },
+    "confidence": "confirmed",
+    "classification": "demonstrated_vulnerability",
+    "root_cause": "Missing server-side checkout session binding (reference -> accountId, planId, billingInterval, expectedAmount) at checkout initiation, missing verification of tx.data.customer.email against the authenticated account email, and a hardcoded planId !== \"pro\" exemption in handleVerify.",
+    "relation_to_prior_findings": "Adjacent to F-04 (concurrent same-account double redemption), which serialized redemptions per account but did not bind initiated checkout references or customer.email to the initiating account.",
+    "recommended_fix": "1. Record initiated checkouts in memory/DB binding reference -> { accountId, planId, billingInterval, amount } and verify ownership in handleVerify. 2. In handleVerify (billing.mjs), also verify tx.data?.customer?.email (if present) matches the caller account email in PostgreSQL, and verify query param account=<id> if embedded in reference/URL. 3. Remove the planId !== \"pro\" exemption at billing.mjs:217 so unverified metadata always requires amount === expectedPrice."
+  },
+  {
+    "finding_id": "RT-F02",
+    "test_id": "ENT-02",
+    "title": "Starter Plan Platform Entitlement Restriction Bypass via Substring Inclusion (normalizedPlatform.includes(normAllowed))",
+    "flow": "Betting Account Registration (POST /api/v1/accounts -> createBettingAccount)",
+    "components": [
+      "bettingAutomationBackend/src/domain/betting-accounts/service.mjs"
+    ],
+    "attacker": "T2 (Authenticated User on Starter Tier) / T3 (Modified Control Plane)",
+    "preconditions": "Operator holds a valid Starter plan license where limits.allowedPlatformIds is restricted to [\"sportybet\"].",
+    "invariant_violated": [
+      "INV-03",
+      "INV-04"
+    ],
+    "reproduction_script": "audit/repro/RT-F02-ENT-02.mjs",
+    "observed_behavior": "Calling createBettingAccount with platformDisplayName: \"Bet9ja (sportybet)\" succeeds and persists the unpermitted bookmaker account because normalizedPlatform.includes(\"sportybet\") evaluates to true.",
+    "correlation_ids": [
+      "ENT-02"
+    ],
+    "source_locations": [
+      "bettingAutomationBackend/src/domain/betting-accounts/service.mjs:150-155 (createBettingAccount)"
+    ],
+    "db_evidence": "Row inserted into betting_accounts with platform_display_name = \"Bet9ja (sportybet)\" under a Starter-tier account.",
+    "impact": "Operators on restricted single-bookmaker plans (Starter) can register betting accounts for arbitrary bookmakers by appending an allowed platform name as a substring.",
+    "cvss_v31": {
+      "score": 6.5,
+      "severity": "MEDIUM",
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+      "rationale": "Allows low-privileged authenticated Starter-tier users to bypass paid tier feature restrictions on the Backend."
+    },
+    "confidence": "confirmed",
+    "classification": "demonstrated_vulnerability",
+    "root_cause": "Permissive substring check (normalizedPlatform.includes(normAllowed)) instead of exact canonical platform identifier/display-name matching in createBettingAccount.",
+    "relation_to_prior_findings": "Regression/incomplete enforcement adjacent to F-03 (plan limits enforcement).",
+    "recommended_fix": "Replace normalizedPlatform.includes(normAllowed) in betting-accounts/service.mjs:153 with exact canonical matching (normAllowed === normalizedPlatform || normalizedPlatform.replace(/[^a-z0-9]/g, \"\") === normAllowed.replace(/[^a-z0-9]/g, \"\"))."
+  },
+  {
+    "finding_id": "RT-F03",
+    "test_id": "AUTH-02",
+    "title": "Sessionless Protocol Envelopes (sessionId: null) Bypass Session Gate in envelopeValidator, Causing Unauthenticated 200 Logout Envelope Signing and 500 Error on /sessions/renew",
+    "flow": "Session Renewal & Logout Protocol Endpoints (POST /api/v1/sessions/logout, POST /api/v1/sessions/renew, POST /api/v1/authorization/resolve)",
+    "components": [
+      "bettingAutomationBackend/src/api/middleware/envelope-validator.mjs",
+      "bettingAutomationBackend/src/api/routes/sessions.mjs",
+      "bettingAutomationBackend/src/domain/session/service.mjs"
+    ],
+    "attacker": "T3 (User controlling registered machine without active session)",
+    "preconditions": "Caller possesses a registered machine keypair (machine.status = REGISTERED) but has no active session (sessionId: null).",
+    "invariant_violated": [
+      "INV-03",
+      "INV-04"
+    ],
+    "reproduction_script": "audit/repro/RT-F03-AUTH-02.mjs",
+    "observed_behavior": "Sending a machine-signed envelope with sessionId: null to POST /api/v1/sessions/logout bypasses the session check in envelopeValidator (which only runs if (envelope.sessionId)), consumes a nonce, and returns HTTP 200 with a freshly signed Backend Envelope V2 ({ success: true, loggedOut: true }). Sending sessionId: null to POST /api/v1/sessions/renew reaches renew(null, ...) and throws an unhandled Error(\"Session state not found\") resulting in HTTP 500.",
+    "correlation_ids": [
+      "AUTH-02"
+    ],
+    "source_locations": [
+      "bettingAutomationBackend/src/api/middleware/envelope-validator.mjs:107-155",
+      "bettingAutomationBackend/src/domain/session/service.mjs:17-20",
+      "bettingAutomationBackend/src/domain/session/service.mjs:142-176"
+    ],
+    "db_evidence": "used_nonces row inserted for sessionless request; HTTP 200 signed response envelope returned on /logout; HTTP 500 logged on /renew.",
+    "impact": "Violates fail-closed session authentication on session-scoped protocol routes, acts as an unauthenticated Backend envelope signing oracle on /sessions/logout, and triggers unhandled 500 errors on /sessions/renew.",
+    "cvss_v31": {
+      "score": 5.3,
+      "severity": "MEDIUM",
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:L",
+      "rationale": "Requires a registered machine key; permits unauthenticated signed response generation on /logout and 500 error generation on /renew."
+    },
+    "confidence": "confirmed",
+    "classification": "demonstrated_vulnerability",
+    "root_cause": "envelopeValidator treated envelope.sessionId as optional across all envelope-validated routes instead of requiring a valid UUID sessionId on session-bound routes (/sessions/*, /authorization/*, /reconciliation/*).",
+    "relation_to_prior_findings": "Incomplete generalization of REM-01 (which added a sessionId check only inside reconciliation.mjs route handler rather than at the envelopeValidator middleware boundary).",
+    "recommended_fix": "In envelopeValidator (src/api/middleware/envelope-validator.mjs:107), require envelope.sessionId to be a non-empty valid UUID (throwing 401 BE_AUTH_SESSION_EXPIRED / SESSION_REVOKED when missing), and ensure session/service.mjs:19 attaches status=401, code=\"SESSION_REVOKED\" if session state is not found."
+  }
+]

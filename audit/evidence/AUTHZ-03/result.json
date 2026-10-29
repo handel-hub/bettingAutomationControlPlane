@@ -1,0 +1,21 @@
+{
+  "test_id": "AUTHZ-03",
+  "invariant_ids": [
+    "INV-04"
+  ],
+  "campaign": "TIER1_AUTHZ",
+  "correlation_ids": [
+    "078142c0-9a55-4a74-8a76-a94b1a98af9c"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "suspendedAccountHttpStatus": 403
+  },
+  "side_effects": {
+    "dataReturnedToSuspendedAccount": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Suspended account immediately denied by operatorAuth."
+}

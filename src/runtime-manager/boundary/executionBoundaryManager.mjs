@@ -18,6 +18,7 @@ import { ExecutionPayloadBuilder } from './ExecutionPayloadBuilder.mjs';
 import { vaultCredentialPipeline } from './VaultCredentialPipeline.mjs';
 import { logger } from '../../shared/logging.mjs';
 import { SanitizerGate } from '../../state-store/validation/SanitizerGate.mjs';
+import { ExecutionHandshakeTimeoutError, ExecutionPreemptedError } from '../../state-store/types/errors.mjs';
 
 /**
  * ExecutionBoundaryManager
@@ -111,13 +112,13 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
   stopServer() {
     this.watchdog.stop();
-    this.abortConnection(new Error('Transport server stopped'));
+    this.abortConnection(new ExecutionPreemptedError('Transport server stopped'));
     this.transport.stopServer();
 
     // Cancel all pending correlation timers
     for (const [msgId, pending] of this.pendingCorrelations.entries()) {
       clearTimeout(pending.timer);
-      pending.reject(new Error('Transport server stopped'));
+      pending.reject(new ExecutionPreemptedError('Transport server stopped'));
       this.pendingCorrelations.delete(msgId);
     }
 
@@ -130,7 +131,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * @param {Error|string} [reason]
    */
   abortConnection(reason) {
-    const err = reason instanceof Error ? reason : new Error(reason || 'Execution Plane connection aborted');
+    const err = reason instanceof Error ? reason : new ExecutionPreemptedError(reason || 'Execution Plane connection aborted');
     this.emit('connectionAborted', err);
   }
 
@@ -168,7 +169,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
       const onAbort = (err) => {
         cleanup();
-        reject(err instanceof Error ? err : new Error(String(err)));
+        reject(err instanceof Error ? err : new ExecutionPreemptedError(String(err)));
       };
 
       const onQuarantine = (data) => {
@@ -178,7 +179,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
 
       timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`Timed out waiting for Execution Plane client connection after ${timeoutMs}ms`));
+        reject(new ExecutionHandshakeTimeoutError(`Timed out waiting for Execution Plane client connection after ${timeoutMs}ms`));
       }, timeoutMs);
 
       if (timer.unref) timer.unref();
@@ -281,11 +282,12 @@ export class ExecutionBoundaryManager extends EventEmitter {
    * Compiles the authoritative cold-boot LIFECYCLE:INITIALIZE payload from StateStore.
    * Decrypts credentials strictly into temporary memory for this frame; never leaks to disk.
    * @param {string} [traceId]
+   * @param {Array<string> | Set<string>} [targetAccountIds]
    * @returns {object}
    */
-  compileInitializationPayload(traceId) {
+  compileInitializationPayload(traceId, targetAccountIds = null) {
     const store = this.stateStore || getSharedStateStore();
-    return ExecutionPayloadBuilder.buildInitializationPayload(store, traceId);
+    return ExecutionPayloadBuilder.buildInitializationPayload(store, traceId, targetAccountIds);
   }
 
   /**
@@ -295,10 +297,11 @@ export class ExecutionBoundaryManager extends EventEmitter {
    */
   initialize(initPayload = null, options = {}) {
     const opts = typeof options === 'string' ? { traceId: options } : (options || {});
-    const payload = initPayload || this.compileInitializationPayload(opts.traceId);
+    const targetAccountIds = opts.targetAccountIds || opts.accountIds || null;
+    const payload = initPayload || this.compileInitializationPayload(opts.traceId, targetAccountIds);
     this.engineStatus = 'INITIALIZING';
     const mergedOpts = {
-      timeoutMs: 60000,
+      timeoutMs: 600000,
       ...opts
     };
     return this.dispatchEnvelope(ExecutionMessageType.INITIALIZE, payload, mergedOpts);
@@ -330,8 +333,9 @@ export class ExecutionBoundaryManager extends EventEmitter {
     // Initialize worker with full state store configuration & credentials
     return this.initialize(opts.initPayload || null, {
       waitForAck: opts.waitForAck ?? true,
-      timeoutMs: opts.timeoutMs ?? 60000,
-      traceId: opts.traceId
+      timeoutMs: opts.timeoutMs ?? 600000,
+      traceId: opts.traceId,
+      targetAccountIds: opts.targetAccountIds || opts.accountIds || null
     });
   }
 

@@ -1,0 +1,22 @@
+{
+  "test_id": "PAY-03",
+  "invariant_ids": [
+    "INV-01",
+    "INV-04"
+  ],
+  "campaign": "TIER1_PAY",
+  "correlation_ids": [
+    "b190183c-f691-43cc-ad96-11c58e2d75a7"
+  ],
+  "control_result": {
+    "passed": true
+  },
+  "attack_result": {
+    "errorCode": "LICENSE_REVOKED"
+  },
+  "side_effects": {
+    "revokedLicenseReactivated": false
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "Administratively REVOKED license blocked from self-reactivation via applyPaymentSuccess."
+}

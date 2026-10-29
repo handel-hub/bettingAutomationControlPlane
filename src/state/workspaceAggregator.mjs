@@ -17,6 +17,8 @@ export class WorkspaceAggregator {
     this.activeAccountIds = new Set();
     /** @type {Set<string>} staged account IDs ready in automation */
     this.stagedAccountIds = new Set();
+    /** @type {boolean} whether staging was explicitly initialized or modified */
+    this.hasInitializedStaging = false;
     /** @type {any} */
     this.fleetReadiness = null;
   }
@@ -51,23 +53,34 @@ export class WorkspaceAggregator {
     this.setLifecycle('STOPPED', 'Execution engine standby');
     // Stop all active browser processes
     this.activeAccountIds.clear();
+    operationTracker.failAllPending('AUTOMATION_STOPPED');
+    try {
+      const store = getSharedStateStore();
+      if (store && store.accounts && typeof store.accounts.resetObservedStates === 'function') {
+        store.accounts.resetObservedStates('STOP_COMPLETED');
+      }
+    } catch { /* ignore */ }
   }
 
   activateAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.add(accountId);
     this.activeAccountIds.add(accountId);
   }
 
   deactivateAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.delete(accountId);
     this.activeAccountIds.delete(accountId);
   }
 
   stageAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.add(accountId);
   }
 
   unstageAccount(accountId) {
+    this.hasInitializedStaging = true;
     this.stagedAccountIds.delete(accountId);
     this.activeAccountIds.delete(accountId);
   }
@@ -83,13 +96,13 @@ export class WorkspaceAggregator {
     const accounts = accountsRes?.viewportAccounts || [];
     const maxCapacity = globalConfig?.browserSpawning?.maxAccountsToSpawn || 2;
 
-    // Auto-stage non-suspended accounts if stagedAccountIds is empty or has no match
+    // Auto-stage non-suspended accounts ONLY on cold initial boot if staging has never been touched
     const nonSuspendedAccounts = accounts.filter(acc => acc.backendState !== 'SUSPENDED');
-    const hasAnyStaged = nonSuspendedAccounts.some(acc => this.stagedAccountIds.has(acc.id));
-    if (!hasAnyStaged && nonSuspendedAccounts.length > 0) {
+    if (!this.hasInitializedStaging && this.stagedAccountIds.size === 0 && nonSuspendedAccounts.length > 0) {
       for (const acc of nonSuspendedAccounts.slice(0, maxCapacity)) {
         this.stagedAccountIds.add(acc.id);
       }
+      this.hasInitializedStaging = true;
     }
 
     // Only accounts that are NOT SUSPENDED and are staged in automation
@@ -104,6 +117,7 @@ export class WorkspaceAggregator {
     const accountSnapshots = await Promise.all(stagedAccounts.map(async (acc) => {
       const overrides = await configRepo.getAccountConfig(acc.id);
       const isBrowserActive = this.activeAccountIds.has(acc.id);
+      const isWorkspaceStopped = this.lifecycle === 'STOPPED';
 
       return {
         id: acc.id,
@@ -112,8 +126,8 @@ export class WorkspaceAggregator {
         accountUsername: acc.accountUsername,
         accountStatus: isBrowserActive ? 'IN_USE' : 'IDLE',
         browserStatus: isBrowserActive ? 'ACTIVE' : 'STOPPED',
-        desiredState: acc.desiredState || (isBrowserActive ? 'RUNNING' : 'STOPPED'),
-        observedState: acc.observedState || (isBrowserActive ? 'RUNNING' : 'STOPPED'),
+        desiredState: isWorkspaceStopped && !isBrowserActive ? 'STOPPED' : (acc.desiredState || (isBrowserActive ? 'RUNNING' : 'STOPPED')),
+        observedState: isWorkspaceStopped && !isBrowserActive ? 'STOPPED' : (acc.observedState || (isBrowserActive ? 'RUNNING' : 'STOPPED')),
         executionStatusReason: acc.executionStatusReason || null,
         betCycleEnabled: overrides.betCycleEnabled ?? true,
         pricingSource: overrides.pricingSource || 'GLOBAL',
@@ -172,10 +186,15 @@ export class WorkspaceAggregator {
         ? 'READY' 
         : 'ERROR';
 
+    const capabilityList = Array.isArray(capabilities?.rawCapabilities)
+      ? [...capabilities.rawCapabilities]
+      : [];
+
     return {
       lifecycle: this.lifecycle,
       lifecycleMessage: this.lifecycleMessage,
       capabilities,
+      capabilityList,
       globalConfig,
       accounts: accountSnapshots,
       systemStatus: {

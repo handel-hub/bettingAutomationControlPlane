@@ -252,6 +252,30 @@ export const Transitions = [
     nextState: SecurityState.LOGGING_OUT
   },
   {
+    currentState: SecurityState.OFFLINE_GRACE,
+    event: TransitionEvent.LOGOUT_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.LOGGING_OUT
+  },
+  {
+    currentState: SecurityState.EXPIRED,
+    event: TransitionEvent.LOGOUT_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.LOGGING_OUT
+  },
+  {
+    currentState: SecurityState.AUTHZ_FAILURE,
+    event: TransitionEvent.LOGOUT_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.LOGGING_OUT
+  },
+  {
+    currentState: SecurityState.REAUTHENTICATION_REQUIRED,
+    event: TransitionEvent.LOGOUT_INTENT,
+    guard: (state, payload) => true,
+    nextState: SecurityState.LOGGING_OUT
+  },
+  {
     currentState: SecurityState.LOGGING_OUT,
     event: TransitionEvent.LOGOUT_SEQUENCE_COMPLETE,
     guard: (state, payload) => payload.allStepsCompleted === true,

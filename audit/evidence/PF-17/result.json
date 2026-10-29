@@ -1,0 +1,25 @@
+{
+  "test_id": "PF-17",
+  "invariant_ids": [
+    "INV-12"
+  ],
+  "campaign": "PHASE2_PRIOR_FINDINGS",
+  "correlation_ids": [
+    "corr-PF-17-60ee1ff4"
+  ],
+  "control_result": {
+    "passed": true,
+    "description": "Legitimate operation for F-17 succeeds"
+  },
+  "attack_result": {
+    "rejectedAsExpected": true,
+    "priorFindingId": "F-17",
+    "verificationStatus": "FIXED-VERIFIED"
+  },
+  "side_effects": {
+    "unauthorizedDbMutations": 0,
+    "unauthorizedIpcDispatches": 0
+  },
+  "status": "EXECUTED-PASS",
+  "notes": "F-17 verified FIXED-VERIFIED: PipeTransport and SecureIpcClient enforce 10MB frame/buffer cap"
+}

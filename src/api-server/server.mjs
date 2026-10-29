@@ -1,6 +1,7 @@
 // @ts-check
 import express from 'express';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import { traceIdMiddleware } from './middleware/traceId.mjs';
 import { rawBodySaver } from './middleware/rawBody.mjs';
 import { ingressAuthMiddleware } from './middleware/auth.mjs';
@@ -22,7 +23,8 @@ const DEFAULT_PORTS = [3000, 3001, 5000, 8000];
 
 function buildAllowedOrigins() {
   const origins = new Set();
-  const hosts = ['localhost', ...resolveSystemIPv4Addresses()];
+  const machineHostname = os.hostname().toLowerCase();
+  const hosts = ['localhost', machineHostname, `${machineHostname}.local`, ...resolveSystemIPv4Addresses()];
   for (const host of hosts) {
     for (const port of DEFAULT_PORTS) {
       origins.add(`http://${host}:${port}`);
@@ -49,10 +51,12 @@ export class ApiServer {
     // CORS headers - validated origin check
     this.app.use((req, res, next) => {
       const origin = req.headers.origin;
-      if (origin && (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-      } else if (!origin) {
-        res.setHeader('Access-Control-Allow-Origin', '*');
+      if (origin) {
+        if (isAllowedOrigin(origin) || ALLOWED_ORIGINS.has(origin)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+        } else {
+          return res.status(403).json({ error: 'Forbidden: Untrusted Origin' });
+        }
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Request-Id, x-paystack-signature, X-ACP-Token');
@@ -94,6 +98,30 @@ export class ApiServer {
     this.app.use('/api/v1/support', supportRouter);
     this.app.use('/api/v1/platforms', platformsRouter);
     this.app.use('/api/v1/prelude', preludeRouter);
+
+    // Top-level Public Health Probes (ALB, Docker, System monitors)
+    this.app.get('/health', (req, res) => {
+      res.json({
+        status: 'ok',
+        uptime: Math.round(process.uptime()),
+        timestamp: new Date().toISOString()
+      });
+    });
+    this.app.get('/ping', (req, res) => res.status(200).send('pong'));
+
+    // Global terminal error-handling middleware for structured JSON error responses
+    this.app.use((err, req, res, _next) => {
+      const status = err.status || err.statusCode || 500;
+      const code = err.code || 'INTERNAL_ERROR';
+      const isRetryable = err.retryable ?? (status === 504 || status === 503 || status === 409);
+      logger.error({ err: err.message, status, code, url: req.originalUrl }, '[ApiServer] Unhandled route error');
+      res.status(status).json({
+        success: false,
+        code,
+        error: err.message || 'Internal server error',
+        retryable: isRetryable
+      });
+    });
 
     // Attach WebSocket server
     wsServer.attach(this.server);
