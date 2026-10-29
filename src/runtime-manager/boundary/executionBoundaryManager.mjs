@@ -301,7 +301,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
     const payload = initPayload || this.compileInitializationPayload(opts.traceId, targetAccountIds);
     this.engineStatus = 'INITIALIZING';
     const mergedOpts = {
-      timeoutMs: 60000,
+      timeoutMs: 600000,
       ...opts
     };
     return this.dispatchEnvelope(ExecutionMessageType.INITIALIZE, payload, mergedOpts);
@@ -333,7 +333,7 @@ export class ExecutionBoundaryManager extends EventEmitter {
     // Initialize worker with full state store configuration & credentials
     return this.initialize(opts.initPayload || null, {
       waitForAck: opts.waitForAck ?? true,
-      timeoutMs: opts.timeoutMs ?? 60000,
+      timeoutMs: opts.timeoutMs ?? 600000,
       traceId: opts.traceId,
       targetAccountIds: opts.targetAccountIds || opts.accountIds || null
     });
